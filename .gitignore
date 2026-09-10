@@ -1,0 +1,134 @@
+# ==============================================================================
+# Build output
+# ==============================================================================
+build/
+build-*/
+out/
+bin/
+obj/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# CMake
+_deps/
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+
+# ==============================================================================
+# IDE and Editor
+# ==============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vim/
+*.code-workspace
+.clangd/
+.cache/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sln
+*.vcxproj
+*.vcxproj.*
+Debug/
+Release/
+x64/
+x86/
+
+# ==============================================================================
+# Logs and Runtime Output
+# ==============================================================================
+*.log
+*.log.*
+logs/
+axiomdlp.log*
+*.pid
+*.sock
+*.db
+*.sqlite
+*.sqlite3
+
+# ==============================================================================
+# Configuration and Secrets
+# ==============================================================================
+.env
+.env.local
+*.key
+*.pem
+*.crt
+secrets/
+config.local.*
+
+# ==============================================================================
+# Test and Coverage
+# ==============================================================================
+Testing/
+*.gcov
+*.gcda
+*.gcno
+coverage/
+*.profraw
+*.profdata
+
+# ==============================================================================
+# Third-Party (do not commit downloaded libraries)
+# ==============================================================================
+third_party/
+external/
+vendor/
+vcpkg/
+conan/
+
+# ==============================================================================
+# OS-Specific
+# ==============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ==============================================================================
+# Archives and Packages
+# ==============================================================================
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+*.deb
+*.rpm
+*.msi
+*.dmg
