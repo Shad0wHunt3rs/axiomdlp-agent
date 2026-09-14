@@ -1,31 +1,18 @@
-cmake_minimum_required(VERSION 3.16)
-project(axiomdlp_agent CXX)
+cmake_minimum_required(VERSION 3.24)
+project(axiomdlp-agent VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-include(FetchContent)
-
-FetchContent_Declare(
-    quill
-    GIT_REPOSITORY https://github.com/odygrd/quill.git
-    GIT_TAG        v9.0.2
-    GIT_SHALLOW    TRUE
-    GIT_PROGRESS   TRUE
-)
-
-FetchContent_MakeAvailable(quill)
-
-set(SOURCES
+add_executable(axiomdlp-agent
     src/main.cpp
-    src/logger/logger.cpp
 )
 
-add_executable(axiomdlp_agent ${SOURCES})
-target_link_libraries(axiomdlp_agent PRIVATE quill::quill)
+target_include_directories(axiomdlp-agent PRIVATE src)
 
-if(WIN32)
-    target_link_libraries(axiomdlp_agent PRIVATE ws2_32)
+if(MSVC)
+    target_compile_options(axiomdlp-agent PRIVATE /W4 /permissive-)
 else()
-    target_link_libraries(axiomdlp_agent PRIVATE pthread)
+    target_compile_options(axiomdlp-agent PRIVATE -Wall -Wextra -Wpedantic)
 endif()
