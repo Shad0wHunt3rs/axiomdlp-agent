@@ -1,0 +1,87 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+
+    {
+      "name": "linux-x86_64-debug",
+      "displayName": "Linux x86_64 — Debug",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-x86_64-release",
+      "displayName": "Linux x86_64 — Release",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+
+    {
+      "name": "linux-i686-debug",
+      "displayName": "Linux i686 (32-bit) — Debug",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-i686-release",
+      "displayName": "Linux i686 (32-bit) — Release",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+
+    {
+      "name": "windows-x86_64-debug",
+      "displayName": "Windows x86_64 — Debug",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-x86_64.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows-x86_64-release",
+      "displayName": "Windows x86_64 — Release",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-x86_64.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+
+    {
+      "name": "windows-i686-debug",
+      "displayName": "Windows i686 (32-bit) — Debug",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-i686.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows-i686-release",
+      "displayName": "Windows i686 (32-bit) — Release",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-i686.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "linux-x86_64-debug",     "configurePreset": "linux-x86_64-debug" },
+    { "name": "linux-x86_64-release",   "configurePreset": "linux-x86_64-release" },
+    { "name": "linux-i686-debug",       "configurePreset": "linux-i686-debug" },
+    { "name": "linux-i686-release",     "configurePreset": "linux-i686-release" },
+    { "name": "windows-x86_64-debug",   "configurePreset": "windows-x86_64-debug" },
+    { "name": "windows-x86_64-release", "configurePreset": "windows-x86_64-release" },
+    { "name": "windows-i686-debug",     "configurePreset": "windows-i686-debug" },
+    { "name": "windows-i686-release",   "configurePreset": "windows-i686-release" }
+  ]
+}
