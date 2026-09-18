@@ -2,14 +2,23 @@ cmake_minimum_required(VERSION 3.24)
 project(axiomdlp-agent VERSION 0.1.0 LANGUAGES CXX)
 
 # ----------------------------------------------------------------
+# Shared source cache for FetchContent dependencies
+# ----------------------------------------------------------------
+set(AXIOM_DEPS_DIR "${CMAKE_SOURCE_DIR}/.deps" CACHE PATH "Shared FetchContent source cache")
+file(MAKE_DIRECTORY "${AXIOM_DEPS_DIR}")
+
+if(EXISTS "${AXIOM_DEPS_DIR}/spdlog-src")
+    set(FETCHCONTENT_SOURCE_DIR_SPDLOG "${AXIOM_DEPS_DIR}/spdlog-src"
+        CACHE PATH "spdlog source cache" FORCE)
+endif()
+
+# ----------------------------------------------------------------
 # Language settings
 # ----------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# Position-independent executables for Linux hardening (harmless on Windows).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ----------------------------------------------------------------
@@ -32,13 +41,36 @@ else()
 endif()
 
 message(STATUS "AxiomDLP Agent target: ${AXIOM_TARGET}")
+message(STATUS "Dependency source cache: ${AXIOM_DEPS_DIR}")
 
 # ----------------------------------------------------------------
 # Third-party dependencies
 # ----------------------------------------------------------------
 include(FetchContent)
 
-# spdlog as a static library — no shared object to ship.
+# --- nlohmann/json (header-only) ---
+# Prefer the system package (installed via apt) when available.
+# Fall back to FetchContent only if not found.
+find_package(nlohmann_json QUIET)
+
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "System nlohmann_json not found; fetching via FetchContent")
+    set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+    set(JSON_Install    OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG        v3.11.3
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+else()
+    message(STATUS "Using system nlohmann_json (${nlohmann_json_VERSION})")
+endif()
+
+# --- spdlog (compiled library) ---
+# Always use FetchContent so we get a per-target compiled build.
+# The apt package is Linux-only and would break Windows cross-compiles.
 set(SPDLOG_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_EXAMPLE  OFF CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
@@ -59,42 +91,36 @@ FetchContent_MakeAvailable(spdlog)
 add_executable(axiomdlp-agent
     src/main.cpp
     src/core/logger.cpp
+    src/core/config.cpp
 )
 
 target_include_directories(axiomdlp-agent PRIVATE src)
-target_link_libraries(axiomdlp-agent PRIVATE spdlog::spdlog)
+
+target_link_libraries(axiomdlp-agent PRIVATE
+    spdlog::spdlog
+    nlohmann_json::nlohmann_json
+)
 
 # ----------------------------------------------------------------
 # Platform-specific settings
 # ----------------------------------------------------------------
-
-# --- Windows (MinGW-w64, both 32-bit and 64-bit) ---
 if(WIN32)
-    # Fully static binary: no libstdc++-6.dll, no libgcc_s_seh-1.dll, no libwinpthread-1.dll.
     target_link_options(axiomdlp-agent PRIVATE
-        -static
-        -static-libgcc
-        -static-libstdc++
+        -static -static-libgcc -static-libstdc++
     )
-
-    # Windows headers hygiene.
     target_compile_definitions(axiomdlp-agent PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
-        _WIN32_WINNT=0x0601   # Windows 7 or later
+        _WIN32_WINNT=0x0601
     )
 endif()
 
-# --- Linux ---
 if(UNIX AND NOT APPLE)
-    # Standard Linux hardening.
     target_compile_options(axiomdlp-agent PRIVATE
-        -fstack-protector-strong
-        -fPIE
+        -fstack-protector-strong -fPIE
     )
     target_link_options(axiomdlp-agent PRIVATE
-        -pie
-        -Wl,-z,relro,-z,now
+        -pie -Wl,-z,relro,-z,now
     )
 endif()
 

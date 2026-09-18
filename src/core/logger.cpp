@@ -8,7 +8,7 @@
 #include <spdlog/sinks/rotating_file_sink.h>
 
 #include <filesystem>
-#include <vector>
+#include <array>
 
 namespace axiom::core {
 
@@ -33,7 +33,8 @@ void Logger::init(const std::string& log_dir,
         log_path, 1024 * 1024 * 5, 3);
     file_sink->set_level(spdlog::level::trace);
 
-    std::vector<spdlog::sink_ptr> sinks{console_sink, file_sink};
+    // Zero-overhead stack allocation using std::array instead of std::vector
+    std::array<spdlog::sink_ptr, 2> sinks{console_sink, file_sink};
 
     // Async logger — never blocks the caller.
     // overrun_oldest: if the queue is full, drop the oldest message rather than block.
@@ -53,7 +54,7 @@ void Logger::init(const std::string& log_dir,
     logger->flush_on(spdlog::level::warn);
 
     // Register as the global default logger.
-    spdlog::set_default_logger(logger);
+    spdlog::set_default_logger(std::move(logger));
 }
 
 void Logger::shutdown() {

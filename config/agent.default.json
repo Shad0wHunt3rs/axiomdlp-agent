@@ -1,0 +1,7 @@
+{
+  "logging": {
+    "dir":   "logs",
+    "file":  "agent.log",
+    "level": "info"
+  }
+}
