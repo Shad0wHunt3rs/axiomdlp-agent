@@ -134,12 +134,12 @@ if(WIN32)
     )
 endif()
 
-if(UNIX AND NOT APPLE AND NOT CMAKE_CROSSCOMPILING)
+if(UNIX AND NOT APPLE)
     # ----------------------------------------------------------------
     # libsystemd (sd_notify) is OPTIONAL.
     #
-    # Native Linux builds (32-bit and 64-bit) attempt to link libsystemd
-    # via pkg-config. Cross-compiled targets skip it.
+    # Linux targets (32-bit and 64-bit) attempt to link libsystemd via
+    # pkg-config. Windows targets skip this block entirely (UNIX is false).
     #
     # For 32-bit builds, PKG_CONFIG_LIBDIR must point at the i386
     # pkg-config directory so that the correct .pc file is used.
@@ -148,8 +148,6 @@ if(UNIX AND NOT APPLE AND NOT CMAKE_CROSSCOMPILING)
 
     include(FindPkgConfig QUIET)
     if(PkgConfig_FOUND)
-        # Tell pkg-config which architecture's .pc files to use.
-        # Debian/Ubuntu multiarch layout.
         if(CMAKE_SIZEOF_VOID_P EQUAL 4)
             set(ENV{PKG_CONFIG_LIBDIR}
                 "/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig")
