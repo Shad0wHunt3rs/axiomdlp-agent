@@ -67,6 +67,10 @@ void WINAPI service_main(DWORD, LPSTR*) {
 
 } // namespace
 
+// ----------------------------------------------------------------
+// The Windows service implementation.
+// ----------------------------------------------------------------
+
 class WindowsService final : public IService {
 public:
     explicit WindowsService(std::string name) : name_(std::move(name)) {}
@@ -109,6 +113,10 @@ private:
     std::string name_;
 };
 
+// ----------------------------------------------------------------
+// Factory + platform metadata.
+// ----------------------------------------------------------------
+
 std::unique_ptr<IService> make_service(const std::string& service_name) {
     return std::make_unique<WindowsService>(service_name);
 }
@@ -116,6 +124,14 @@ std::unique_ptr<IService> make_service(const std::string& service_name) {
 std::string default_service_name() {
     return "AxiomDLPAgent";
 }
+
+// ----------------------------------------------------------------
+// Install.
+//
+// Full sequence:
+//   1. Create the service (auto-start).
+//   2. Start it now.
+// ----------------------------------------------------------------
 
 int install_service(const std::string& binary_path,
                     const std::string& service_name) {
@@ -127,6 +143,7 @@ int install_service(const std::string& binary_path,
 
     const std::string quoted = "\"" + binary_path + "\"";
 
+    // 1. Create the service (auto-start at boot).
     SC_HANDLE svc = CreateServiceA(
         scm, service_name.c_str(), service_name.c_str(),
         SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
@@ -134,9 +151,15 @@ int install_service(const std::string& binary_path,
         quoted.c_str(), nullptr, nullptr, nullptr, nullptr, nullptr);
 
     if (!svc) {
-        DWORD err = GetLastError();
+        const DWORD err = GetLastError();
         if (err == ERROR_SERVICE_EXISTS) {
             SPDLOG_WARN("service {} already installed", service_name);
+            // Try to open it and start it below.
+            svc = OpenServiceA(scm, service_name.c_str(), SERVICE_START | SERVICE_QUERY_STATUS);
+            if (!svc) {
+                CloseServiceHandle(scm);
+                return 1;
+            }
         } else {
             SPDLOG_ERROR("CreateService failed: {}", err);
             CloseServiceHandle(scm);
@@ -144,12 +167,37 @@ int install_service(const std::string& binary_path,
         }
     } else {
         SPDLOG_INFO("service {} installed", service_name);
-        CloseServiceHandle(svc);
     }
 
+    // 2. Start the service now (if it isn't already running).
+    SERVICE_STATUS status{};
+    if (!QueryServiceStatus(svc, &status)) {
+        SPDLOG_WARN("QueryServiceStatus failed: {}", GetLastError());
+    } else if (status.dwCurrentState == SERVICE_RUNNING) {
+        SPDLOG_INFO("service {} already running", service_name);
+    } else {
+        if (StartServiceA(svc, 0, nullptr)) {
+            SPDLOG_INFO("started service {}", service_name);
+        } else {
+            const DWORD err = GetLastError();
+            if (err == ERROR_SERVICE_ALREADY_RUNNING) {
+                SPDLOG_INFO("service {} already running", service_name);
+            } else {
+                SPDLOG_WARN("StartService failed (err={}); "
+                            "start manually with: sc start {}",
+                            err, service_name);
+            }
+        }
+    }
+
+    CloseServiceHandle(svc);
     CloseServiceHandle(scm);
     return 0;
 }
+
+// ----------------------------------------------------------------
+// Uninstall.
+// ----------------------------------------------------------------
 
 int uninstall_service(const std::string& service_name) {
     SC_HANDLE scm = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_CONNECT);
@@ -158,21 +206,57 @@ int uninstall_service(const std::string& service_name) {
         return 1;
     }
 
-    SC_HANDLE svc = OpenServiceA(scm, service_name.c_str(), DELETE);
+    SC_HANDLE svc = OpenServiceA(
+        scm, service_name.c_str(),
+        SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE);
+
     if (!svc) {
-        SPDLOG_ERROR("OpenService failed: {}", GetLastError());
+        const DWORD err = GetLastError();
+        if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
+            SPDLOG_INFO("service {} not installed; nothing to do", service_name);
+            CloseServiceHandle(scm);
+            return 0;
+        }
+        SPDLOG_ERROR("OpenService failed: {}", err);
         CloseServiceHandle(scm);
         return 1;
+    }
+
+    SERVICE_STATUS status{};
+    if (ControlService(svc, SERVICE_CONTROL_STOP, &status)) {
+        SPDLOG_INFO("stop requested for {}", service_name);
+
+        for (int i = 0; i < 100; ++i) {
+            if (!QueryServiceStatus(svc, &status)) break;
+            if (status.dwCurrentState == SERVICE_STOPPED) {
+                SPDLOG_INFO("service {} stopped", service_name);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    } else {
+        const DWORD err = GetLastError();
+        if (err == ERROR_SERVICE_NOT_ACTIVE) {
+            SPDLOG_INFO("service {} was not running", service_name);
+        } else {
+            SPDLOG_WARN("ControlService failed (err={}); continuing with delete", err);
+        }
     }
 
     if (!DeleteService(svc)) {
-        SPDLOG_ERROR("DeleteService failed: {}", GetLastError());
-        CloseServiceHandle(svc);
-        CloseServiceHandle(scm);
-        return 1;
+        const DWORD err = GetLastError();
+        if (err == ERROR_SERVICE_MARKED_FOR_DELETE) {
+            SPDLOG_INFO("service {} already marked for deletion", service_name);
+        } else {
+            SPDLOG_ERROR("DeleteService failed: {}", err);
+            CloseServiceHandle(svc);
+            CloseServiceHandle(scm);
+            return 1;
+        }
+    } else {
+        SPDLOG_INFO("service {} uninstalled", service_name);
     }
 
-    SPDLOG_INFO("service {} uninstalled", service_name);
     CloseServiceHandle(svc);
     CloseServiceHandle(scm);
     return 0;
