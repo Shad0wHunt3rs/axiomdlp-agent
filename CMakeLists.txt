@@ -11,6 +11,10 @@ if(EXISTS "${AXIOM_DEPS_DIR}/spdlog-src")
     set(FETCHCONTENT_SOURCE_DIR_SPDLOG "${AXIOM_DEPS_DIR}/spdlog-src"
         CACHE PATH "spdlog source cache" FORCE)
 endif()
+if(EXISTS "${AXIOM_DEPS_DIR}/nlohmann_json-src")
+    set(FETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON "${AXIOM_DEPS_DIR}/nlohmann_json-src"
+        CACHE PATH "nlohmann/json source cache" FORCE)
+endif()
 
 # ----------------------------------------------------------------
 # Language settings
@@ -22,7 +26,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ----------------------------------------------------------------
-# Detect target triple for logging
+# Detect target triple
 # ----------------------------------------------------------------
 if(WIN32)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -48,9 +52,7 @@ message(STATUS "Dependency source cache: ${AXIOM_DEPS_DIR}")
 # ----------------------------------------------------------------
 include(FetchContent)
 
-# --- nlohmann/json (header-only) ---
-# Prefer the system package (installed via apt) when available.
-# Fall back to FetchContent only if not found.
+# --- nlohmann/json (header-only; prefer system) ---
 find_package(nlohmann_json QUIET)
 
 if(NOT nlohmann_json_FOUND)
@@ -68,9 +70,7 @@ else()
     message(STATUS "Using system nlohmann_json (${nlohmann_json_VERSION})")
 endif()
 
-# --- spdlog (compiled library) ---
-# Always use FetchContent so we get a per-target compiled build.
-# The apt package is Linux-only and would break Windows cross-compiles.
+# --- spdlog (compiled; always FetchContent for cross-compile) ---
 set(SPDLOG_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_EXAMPLE  OFF CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
@@ -86,12 +86,29 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(spdlog)
 
 # ----------------------------------------------------------------
+# Platform-specific sources
+# ----------------------------------------------------------------
+if(WIN32)
+    set(AXIOM_PLATFORM_SOURCES
+        src/platform/windows/paths_windows.cpp
+        src/platform/windows/service_win.cpp
+    )
+elseif(UNIX AND NOT APPLE)
+    set(AXIOM_PLATFORM_SOURCES
+        src/platform/linux/paths_linux.cpp
+        src/platform/linux/service_linux.cpp
+    )
+endif()
+
+# ----------------------------------------------------------------
 # Agent executable
 # ----------------------------------------------------------------
 add_executable(axiomdlp-agent
     src/main.cpp
-    src/core/logger.cpp
+    src/core/application.cpp
     src/core/config.cpp
+    src/core/logger.cpp
+    ${AXIOM_PLATFORM_SOURCES}
 )
 
 target_include_directories(axiomdlp-agent PRIVATE src)
@@ -105,6 +122,8 @@ target_link_libraries(axiomdlp-agent PRIVATE
 # Platform-specific settings
 # ----------------------------------------------------------------
 if(WIN32)
+    target_link_libraries(axiomdlp-agent PRIVATE advapi32 shell32)
+
     target_link_options(axiomdlp-agent PRIVATE
         -static -static-libgcc -static-libstdc++
     )
@@ -115,7 +134,45 @@ if(WIN32)
     )
 endif()
 
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND NOT CMAKE_CROSSCOMPILING)
+    # ----------------------------------------------------------------
+    # libsystemd (sd_notify) is OPTIONAL.
+    #
+    # Native Linux builds (32-bit and 64-bit) attempt to link libsystemd
+    # via pkg-config. Cross-compiled targets skip it.
+    #
+    # For 32-bit builds, PKG_CONFIG_LIBDIR must point at the i386
+    # pkg-config directory so that the correct .pc file is used.
+    # ----------------------------------------------------------------
+    set(AXIOM_HAVE_SYSTEMD OFF)
+
+    include(FindPkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        # Tell pkg-config which architecture's .pc files to use.
+        # Debian/Ubuntu multiarch layout.
+        if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+            set(ENV{PKG_CONFIG_LIBDIR}
+                "/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig")
+        else()
+            set(ENV{PKG_CONFIG_LIBDIR}
+                "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig")
+        endif()
+
+        pkg_check_modules(SYSTEMD QUIET libsystemd)
+        if(SYSTEMD_FOUND)
+            set(AXIOM_HAVE_SYSTEMD ON)
+        endif()
+    endif()
+
+    if(AXIOM_HAVE_SYSTEMD)
+        message(STATUS "libsystemd found: sd_notify enabled")
+        target_compile_definitions(axiomdlp-agent PRIVATE HAVE_SYSTEMD)
+        target_include_directories(axiomdlp-agent PRIVATE ${SYSTEMD_INCLUDE_DIRS})
+        target_link_libraries(axiomdlp-agent PRIVATE ${SYSTEMD_LIBRARIES})
+    else()
+        message(STATUS "libsystemd not available: sd_notify disabled")
+    endif()
+
     target_compile_options(axiomdlp-agent PRIVATE
         -fstack-protector-strong -fPIE
     )
