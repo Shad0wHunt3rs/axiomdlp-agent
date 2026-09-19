@@ -13,7 +13,7 @@ namespace axiom::core {
 
 Application::Options Application::parse_args(int argc, char** argv) {
     Options o;
-    for (int i = 1; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i) {   //  It begins at index 1 because index 0 always points to the path of the executing binary itself.
         const char* a = argv[i];
         if (std::strcmp(a, "--install") == 0)         { o.install   = true; }
         else if (std::strcmp(a, "--uninstall") == 0) { o.uninstall = true; }

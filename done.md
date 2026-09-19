@@ -1,74 +1,64 @@
 # AxiomDLP Endpoint Agent — README
 
-A cross-platform Data Leak Prevention (DLP) endpoint agent written in modern C++. Runs as a background service on Linux and Windows. Currently builds for four targets from a single Linux host.
+A cross-platform Data Leak Prevention (DLP) endpoint agent written in modern C++. Runs as a native background service on Linux and Windows. Builds four targets from a single Linux host.
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#1-project-overview)
-2. [Current Status](#2-current-status)
+1. [Overview](#1-overview)
+2. [Project Status](#2-project-status)
 3. [Architecture](#3-architecture)
 4. [Directory Structure](#4-directory-structure)
 5. [Build System](#5-build-system)
-6. [Core Subsystems](#6-core-subsystems)
-7. [Platform Abstraction](#7-platform-abstraction)
-8. [Building the Agent](#8-building-the-agent)
-9. [Running the Agent](#9-running-the-agent)
-10. [Installing as a Service](#10-installing-as-a-service)
-11. [Configuration Reference](#11-configuration-reference)
-12. [Dependencies](#12-dependencies)
-13. [Development Workflow](#13-development-workflow)
-14. [Roadmap](#14-roadmap)
-15. [License](#15-license)
+6. [Dependencies](#6-dependencies)
+7. [Configuration](#7-configuration)
+8. [Running as a Service](#8-running-as-a-service)
+9. [Platform-Specific Details](#9-platform-specific-details)
+10. [Verified Behavior](#10-verified-behavior)
+11. [Known Issues](#11-known-issues)
+12. [Development Workflow](#12-development-workflow)
+13. [Roadmap](#13-roadmap)
+14. [License](#14-license)
 
 ---
 
-## 1. Project Overview
+## 1. Overview
 
-**AxiomDLP Endpoint Agent** is the endpoint-side component of the AxiomDLP platform. It runs as a privileged background service on user machines and is designed to:
+**AxiomDLP Endpoint Agent** is the endpoint-side component of the AxiomDLP platform. It is designed to:
 
-- Monitor local activity (file access, clipboard, USB, printing, browser uploads)
+- Run as a privileged background service on user endpoints
+- Monitor local activity (filesystem, USB, clipboard, printing, browser)
 - Detect sensitive data in real time
 - Enforce DLP policies locally
-- Work fully offline with a local policy cache and event queue
+- Work fully offline with a local cache
 - Report events to the AxiomDLP Core backend
 - Complement the existing email milter (which handles SMTP egress)
 
-**Design goals:**
-
-- **Cross-platform** — Linux and Windows from one codebase
-- **Modular** — every feature is a plugin; new ones add without touching the core
-- **Offline-first** — local policy cache and event queue
-- **Kernel-ready** — enforcement abstraction allows user-mode → kernel-mode upgrades
-- **Fail-safe** — bad config, missing libraries, or unavailable features never crash the agent
-- **Observable** — structured async logging, health, config-driven behavior
-
-**Status:** Foundation complete. The agent is a working service with logging, config, and lifecycle. No DLP features yet.
+**Current state:** The foundational infrastructure is complete. The agent installs, runs, and stops as a real system service on both Linux and Windows. It does not yet perform any DLP work — it is the platform that future DLP features will be built on.
 
 ---
 
-## 2. Current Status
+## 2. Project Status
 
-### What Works Today
+### Completed
 
-| Capability | Status |
+| Component | Status |
 |-----------|--------|
-| Build for Linux x86_64 | ✅ Working |
-| Build for Linux i686 | ✅ Working |
-| Build for Windows x86_64 (cross-compiled from Linux) | ✅ Working |
-| Build for Windows i686 (cross-compiled from Linux) | ✅ Working |
-| Async structured logging (console + rotating file) | ✅ Working |
-| Config loading from JSON with validation | ✅ Working |
-| systemd service integration (Linux) | ✅ Working |
-| Windows SCM service integration | ✅ Compiled (not yet tested on a live Windows machine) |
-| Graceful shutdown via signals / SCM controls | ✅ Working |
-| Auto-install as a service | ✅ Working |
+| Cross-compilation (4 targets from one Linux host) | ✅ Complete |
+| Async structured logging (spdlog) | ✅ Complete |
+| Configuration loading (JSON with validation) | ✅ Complete |
+| Linux service lifecycle (systemd) | ✅ Complete & verified |
+| Windows service lifecycle (SCM) | ✅ Complete & verified |
+| Graceful shutdown (signals / SCM controls) | ✅ Complete |
+| Install / uninstall with full sequence | ✅ Complete |
+| Safe subprocess spawning (no shell) | ✅ Complete |
+| Platform abstraction layer | ✅ Complete |
 
-### What Does Not Exist Yet
+### Not Yet Implemented
 
-| Feature | Milestone |
-|---------|-----------|
+| Component | Milestone |
+|-----------|-----------|
 | Module system (plugin architecture) | 5 |
 | Event bus | 6 |
 | Filesystem monitoring | 7 |
@@ -76,30 +66,28 @@ A cross-platform Data Leak Prevention (DLP) endpoint agent written in modern C++
 | Policy engine | 9 |
 | SQLite storage | 10 |
 | User-mode enforcement | 11 |
-| IPC + tray helper | 12 |
-| Transport to core (HTTP + WSS) | 13 |
+| IPC + user helper (tray) | 12 |
+| Transport to core (HTTP + WebSocket) | 13 |
 | Kernel enforcement (minifilter / eBPF) | 14 |
-
-The current agent is an empty vessel: it starts, logs, reads config, and installs as a service. The next milestones fill it with DLP functionality.
 
 ---
 
 ## 3. Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                        main.cpp                          │
-│                  Thin entry point (5 lines)              │
-└──────────────────────────┬───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                         main.cpp                            │
+│                   Thin entry point (5 lines)                │
+└──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
-┌──────────────────────────────────────────────────────────┐
-│                     Application                          │
-│  - Owns Config                                           │
-│  - Owns Logger                                           │
-│  - Owns IService (platform-specific)                     │
-│  - Parses args, dispatches install/uninstall/run         │
-└──────────────────────────┬───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Application                            │
+│  - Owns Config                                              │
+│  - Owns Logger                                              │
+│  - Owns IService (platform-specific)                        │
+│  - Parses args, dispatches install/uninstall/run            │
+└──────────────────────────┬──────────────────────────────────┘
                            │
           ┌────────────────┼────────────────┐
           │                │                │
@@ -113,16 +101,19 @@ The current agent is an empty vessel: it starts, logs, reads config, and install
                               ▼                           ▼
                     ┌───────────────────┐      ┌───────────────────┐
                     │   LinuxService    │      │  WindowsService   │
-                    │   (systemd)       │      │  (SCM)            │
+                    │   systemd         │      │  SCM              │
+                    │   sd_notify       │      │  Control Handler  │
+                    │   SIGTERM/SIGINT  │      │  SERVICE_CONTROL  │
                     └───────────────────┘      └───────────────────┘
 ```
 
-**Key design principles:**
+### Design Principles
 
-1. **Interface in `core/`, implementation in `platform/<os>/`** — business logic never includes OS headers.
-2. **CMake selects one platform file per target** — no runtime dispatch, no `#ifdef` in application code.
-3. **`#ifdef HAVE_X` guards optional features** — same source file compiles for every target with different features enabled.
-4. **Fail-safe configuration** — missing or invalid config produces warnings, not crashes.
+1. **Interface in `core/`, implementation in `platform/<os>/`.** Business logic never includes OS headers.
+2. **CMake selects one platform file per target.** No runtime dispatch, no `#ifdef` in application code.
+3. **`#ifdef HAVE_X` guards optional features.** Same source file compiles for every target with different feature sets.
+4. **Fail-safe configuration.** Missing or invalid config produces warnings, not crashes.
+5. **RAII guarantees cleanup.** Destructors flush logging and release resources, even on error paths.
 
 ---
 
@@ -130,277 +121,107 @@ The current agent is an empty vessel: it starts, logs, reads config, and install
 
 ```
 axiomdlp-agent/
-├── CMakeLists.txt                     Build recipe
-├── CMakePresets.json                  Named build configurations (8 total)
+├── CMakeLists.txt                      Root build recipe
+├── CMakePresets.json                   8 named build configurations
 ├── .gitignore
 ├── LICENSE
 ├── README.md
 │
+├── .deps/                              Cached third-party sources
+│   ├── spdlog-src/
+│   └── nlohmann_json-src/
+│
 ├── cmake/
-│   └── toolchains/                    Cross-compile toolchain files
+│   └── toolchains/                     Cross-compile toolchain files
 │       ├── linux-x86_64.cmake
 │       ├── linux-i686.cmake
 │       ├── windows-x86_64.cmake
 │       └── windows-i686.cmake
 │
 ├── config/
-│   ├── agent.default.json             Default runtime config
-│   └── agent.schema.json              JSON Schema for editors and CI
+│   ├── agent.default.json              Runtime configuration
+│   └── agent.schema.json               JSON Schema for editors
 │
-├── docs/                              Architecture and design documents
+├── docs/                               Architecture documents
+│   ├── architecture.md
+│   ├── event_schema.md
+│   ├── ipc_protocol.md
+│   ├── modules.md
+│   └── policy_format.md
 │
 ├── packaging/
-│   ├── linux/systemd/                 Reference systemd unit file
-│   └── windows/                       Reference PowerShell install script
+│   ├── linux/systemd/                  Reference systemd unit
+│   └── windows/                        Reference PowerShell install
 │
 ├── scripts/
-│   └── build-all.sh                   Builds all four targets in one command
+│   └── build-all.sh                    Build all four targets
 │
 └── src/
-    ├── main.cpp                       Entry point
+    ├── main.cpp                        Entry point (5 lines)
     │
-    ├── core/                          Framework (no OS-specific code)
-    │   ├── application.{h,cpp}        Orchestrates everything
-    │   ├── config.{h,cpp}             JSON config loading + validation
-    │   ├── logger.{h,cpp}             Async logging wrapper around spdlog
-    │   ├── paths.h                    Platform path API
-    │   └── service.h                  IService interface
+    ├── core/                           Framework (no OS-specific code)
+    │   ├── application.{h,cpp}         Orchestration
+    │   ├── config.{h,cpp}              JSON config loading
+    │   ├── logger.{h,cpp}              Async logging wrapper
+    │   ├── paths.h                     Platform path API
+    │   └── service.h                   IService interface
     │
-    └── platform/                      OS-specific implementations
+    └── platform/                       OS-specific implementations
         ├── linux/
-        │   ├── paths_linux.cpp        /etc, /var/log, /var/lib
-        │   └── service_linux.cpp      systemd + sd_notify
+        │   ├── paths_linux.cpp         FHS paths
+        │   └── service_linux.cpp       systemd + sd_notify
         └── windows/
-            ├── paths_windows.cpp      C:\ProgramData\...
-            └── service_win.cpp        SCM + ServiceMain
+            ├── paths_windows.cpp       ProgramData paths
+            └── service_win.cpp         SCM + ServiceMain
 ```
 
 ---
 
 ## 5. Build System
 
-### 5.1 The Four Targets
+### 5.1 Four Targets
 
-From one Linux host, we build:
+From one Linux host, four binaries are produced:
 
 | Preset | Output | Purpose |
 |--------|--------|---------|
-| `linux-x86_64-{debug,release}` | `build/linux-x86_64-*/axiomdlp-agent` | Modern Linux servers |
+| `linux-x86_64-{debug,release}` | `build/linux-x86_64-*/axiomdlp-agent` | Modern Linux |
 | `linux-i686-{debug,release}` | `build/linux-i686-*/axiomdlp-agent` | Legacy 32-bit Linux |
 | `windows-x86_64-{debug,release}` | `build/windows-x86_64-*/axiomdlp-agent.exe` | Modern Windows |
 | `windows-i686-{debug,release}` | `build/windows-i686-*/axiomdlp-agent.exe` | Legacy 32-bit Windows |
 
 ### 5.2 Toolchain Files
 
-Each target has a toolchain file in `cmake/toolchains/`. A toolchain tells CMake which compilers to use and where libraries live.
+Each target has a toolchain file in `cmake/toolchains/`.
 
 **Linux toolchains** use the host's native `gcc` / `g++`. The 32-bit Linux toolchain adds `-m32` flags.
 
-**Windows toolchains** use MinGW-w64 cross-compilers (`x86_64-w64-mingw32-g++` and `i686-w64-mingw32-g++`). Key settings:
+**Windows toolchains** use MinGW-w64 cross-compilers with strict root path isolation:
 
 ```cmake
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)   # Host tools
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)    # MinGW libraries only
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)    # MinGW headers only
-set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)    # MinGW CMake packages only
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)    # MinGW packages only
 ```
 
-These four lines are what keep cross-compilation correct. They prevent Windows builds from accidentally pulling in Linux headers or libraries.
+These four lines prevent cross-compilation contamination — a Linux `.so` can never accidentally link into a Windows `.exe`.
 
-### 5.3 CMake Presets
+### 5.3 Dependency Caching
 
-`CMakePresets.json` defines eight configure presets and eight build presets. Instead of remembering long commands, you run:
-
-```bash
-cmake --preset linux-x86_64-release
-cmake --build --preset linux-x86_64-release
-```
-
-List all available presets:
-
-```bash
-cmake --list-presets
-```
-
-### 5.4 Dependency Caching
-
-Third-party sources are cached in `.deps/` so deletions of `build/` don't trigger re-downloads.
+Third-party sources are cached in `.deps/` to avoid re-downloading after `rm -rf build`.
 
 | Dependency | Source | Reason |
 |------------|--------|--------|
-| **spdlog** | FetchContent + `.deps/spdlog-src/` | Compiled library — must be built per target |
-| **nlohmann_json** | System (`apt`) for Linux; `.deps/nlohmann_json-src/` for Windows | Header-only, but cross-compile needs isolated headers |
+| **spdlog** | FetchContent with `.deps/spdlog-src/` cache | Compiled library — must be built per target |
+| **nlohmann_json** | System package (Linux) / `.deps/nlohmann_json-src/` (Windows) | Header-only, but cross-compile needs isolated headers |
 
-The `.deps/` directory is populated once. Every rebuild reuses it.
+### 5.4 Prerequisites
 
----
-
-## 6. Core Subsystems
-
-### 6.1 Logging (`src/core/logger.{h,cpp}`)
-
-Wraps **spdlog** with two sinks:
-
-- **Console sink** — colored output for terminals
-- **Rotating file sink** — 5 MiB per file, 3 backups (~20 MiB cap)
-
-Runs in **async mode**: the caller never blocks. A single background thread drains the queue and writes to both sinks.
-
-**Key settings:**
-
-| Setting | Value | Why |
-|---------|-------|-----|
-| Queue size | 8192 | Absorbs bursts without memory pressure |
-| Overflow policy | `overrun_oldest` | Never block the agent; drop old logs under load |
-| Pattern | `[time] [level] [thread] message` | Millisecond precision for concurrency debugging |
-| Flush policy | `warn` and above | Important events survive crashes |
-
-**Usage:**
-
-```cpp
-#include <spdlog/spdlog.h>
-SPDLOG_INFO("event: {}", value);
-SPDLOG_WARN("something odd");
-SPDLOG_ERROR("something failed");
-```
-
-### 6.2 Configuration (`src/core/config.{h,cpp}`)
-
-Reads a JSON config, validates values, applies defaults, returns a `Config` object. **Never throws, never crashes** — problems become warnings.
-
-**Current sections:**
-
-```
-config/agent.default.json:
-{
-  "logging": {
-    "dir":   "logs",
-    "file":  "agent.log",
-    "level": "info"
-  }
-}
-```
-
-**Design:**
-
-- Nested structs mirror JSON structure.
-- Every field has a built-in default.
-- Loaded warnings are collected and replayed after logging is initialized.
-
-See [Configuration Reference](#11-configuration-reference) for the full schema.
-
-### 6.3 Service Lifecycle (`src/core/service.h`, `platform/*/service_*.cpp`)
-
-`IService` is the platform-agnostic interface:
-
-```cpp
-class IService {
-    virtual int  run() = 0;
-    virtual void request_stop() = 0;
-};
-```
-
-**Linux implementation** (`service_linux.cpp`):
-
-- Installs signal handlers for `SIGTERM` / `SIGINT`
-- Ignores `SIGHUP`
-- Calls `sd_notify(READY=1)` when started (only if `HAVE_SYSTEMD`)
-- Main loop with `std::atomic<bool>` stop flag
-- `install_service()` writes a systemd unit file
-
-**Windows implementation** (`service_win.cpp`):
-
-- Connects to Service Control Manager via `StartServiceCtrlDispatcherA`
-- `service_main` callback registers a control handler
-- Reports status via `SetServiceStatus`
-- `install_service()` creates an SCM entry via `CreateServiceA`
-
-Both implementations share the same stop-flag pattern: a global `std::atomic<bool>` set by signal/SCM handler, checked by the main loop every 200 ms.
-
-### 6.4 Paths (`src/core/paths.h`, `platform/*/paths_*.cpp`)
-
-Five platform-specific functions:
-
-| Function | Linux | Windows |
-|----------|-------|---------|
-| `executable_path()` | `readlink("/proc/self/exe")` | `GetModuleFileNameA` |
-| `executable_dir()` | `path.parent_path()` | `path.parent_path()` |
-| `default_config_path()` | `/etc/axiomdlp/agent.json` | `C:\ProgramData\AxiomDLP\agent.json` |
-| `default_log_dir()` | `/var/log/axiomdlp` | `C:\ProgramData\AxiomDLP\logs` |
-| `default_data_dir()` | `/var/lib/axiomdlp` | `C:\ProgramData\AxiomDLP` |
-
-Follows the Filesystem Hierarchy Standard on Linux, and Windows conventions on Windows.
-
-### 6.5 Application (`src/core/application.{h,cpp}`)
-
-Owns the lifecycle. Reads args, loads config, initializes logging, then either:
-
-- **installs the service** (`--install`)
-- **uninstalls the service** (`--uninstall`)
-- **runs as a service** (default)
-
-Shutdown is automatic via destructor, ensuring logs are always flushed.
-
----
-
-## 7. Platform Abstraction
-
-The core principle that makes this project cross-platform:
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                     core/                                │
-│  No OS headers. No #ifdef _WIN32. Only interfaces.       │
-└──────────────────────────┬───────────────────────────────┘
-                           │
-              ┌────────────┴────────────┐
-              ▼                         ▼
-    ┌──────────────────┐      ┌──────────────────┐
-    │  platform/linux/ │      │ platform/windows/ │
-    │  Real Linux code │      │ Real Windows code │
-    └──────────────────┘      └──────────────────┘
-              ▲                         ▲
-              │                         │
-              └──── CMake picks one ────┘
-```
-
-**How it works:**
-
-1. `core/` declares what operations are needed (`IService`, `paths.h`).
-2. `platform/<os>/` provides implementations.
-3. CMake's `if(WIN32)` selects one set of platform files per target.
-4. The linker sees exactly one definition of each function.
-
-**Optional features** (like systemd's `sd_notify`) use a second layer of CMake detection:
-
-```cmake
-if(PkgConfig_FOUND)
-    pkg_check_modules(SYSTEMD QUIET libsystemd)
-    if(SYSTEMD_FOUND)
-        target_compile_definitions(axiomdlp-agent PRIVATE HAVE_SYSTEMD)
-    endif()
-endif()
-```
-
-The C++ code then guards the feature:
-
-```cpp
-#ifdef HAVE_SYSTEMD
-    sd_notify(0, "READY=1");
-#endif
-```
-
-**Result:** One source file compiles for every target, with the correct feature set for each.
-
----
-
-## 8. Building the Agent
-
-### 8.1 One-Time Setup
-
-Install the required toolchain:
+On Kali/Debian/Ubuntu:
 
 ```bash
+sudo dpkg --add-architecture i386
 sudo apt update
 sudo apt install -y \
     build-essential \
@@ -413,187 +234,72 @@ sudo apt install -y \
     libspdlog-dev nlohmann-json3-dev
 ```
 
-Enable the i386 architecture first (for 32-bit libsystemd):
+### 5.5 Building
+
+**All targets:**
 
 ```bash
-sudo dpkg --add-architecture i386
-sudo apt update
-```
-
-Populate the nlohmann_json source cache (one-time):
-
-```bash
-mkdir -p ~/axiomdlp-agent/.deps
-cd ~/axiomdlp-agent/.deps
-git clone --depth 1 --branch v3.11.3 https://github.com/nlohmann/json.git nlohmann_json-src
-```
-
-*Note: the `scripts/build-all.sh` script performs this automatically on first run.*
-
-### 8.2 Build All Targets
-
-```bash
-cd ~/axiomdlp-agent
 ./scripts/build-all.sh
 ```
 
-This builds all four targets and prints their formats. First run: ~2 minutes (includes dependency clone). Subsequent runs: ~1 minute.
+First run: ~2 minutes (includes one-time dependency clone). Subsequent runs: ~1 minute.
 
-### 8.3 Build a Single Target
+**Single target:**
 
 ```bash
-# Configure once
 cmake --preset linux-x86_64-release
-
-# Build
 cmake --build --preset linux-x86_64-release
-
-# Debug build instead
-cmake --preset linux-x86_64-debug
-cmake --build --preset linux-x86_64-debug
 ```
 
-### 8.4 Clean Rebuild
+**Clean rebuild:**
 
 ```bash
 rm -rf build
 ./scripts/build-all.sh
 ```
 
-The `.deps/` cache survives this — no re-downloads.
+The `.deps/` cache survives — no re-downloads.
 
 ---
 
-## 9. Running the Agent
+## 6. Dependencies
 
-### 9.1 Foreground Mode (Development)
+### Runtime
 
-Run from the project root so the default config path resolves:
+| Library | Purpose | How It's Used |
+|---------|---------|---------------|
+| **spdlog** | Async logging | FetchContent with `.deps/` cache |
+| **nlohmann/json** | JSON parsing | System on Linux; FetchContent on Windows |
+| **libsystemd** | `sd_notify` | Detected via pkg-config (Linux only) |
+| **fmt** | String formatting | Transitive dependency of spdlog |
 
-```bash
-cd ~/axiomdlp-agent
-./build/linux-x86_64-release/axiomdlp-agent --foreground
-```
+### Build-Time
 
-Expected output:
+| Tool | Purpose |
+|------|---------|
+| **CMake** ≥ 3.24 | Build system |
+| **Ninja** | Build generator |
+| **GCC 13+** | Linux compilation |
+| **MinGW-w64** | Windows cross-compilation |
+| **pkg-config** | Library detection |
 
-```
-[2026-09-19 12:00:00.000] [info] [t:12345] AxiomDLP Agent v0.1.0
-[2026-09-19 12:00:00.000] [info] [t:12345] Config loaded from: config/agent.default.json
-[2026-09-19 12:00:00.000] [info] [t:12345] axiomdlp-agent starting (Linux service mode)
-[2026-09-19 12:00:00.000] [info] [t:12345] sd_notify READY sent
-```
+### Windows Runtime
 
-Press `Ctrl+C` to stop. The agent shuts down gracefully:
-
-```
-[info] axiomdlp-agent received stop request
-[info] Service returned rc=0
-[info] Application shutting down
-```
-
-### 9.2 Log Files
-
-Logs are written to two places:
-
-- **Console** (colored) — during foreground runs
-- **File** — `logs/agent.log` (relative to working directory)
-
-The file rotates at 5 MiB and keeps 3 backups (`agent.1.log`, `agent.2.log`, `agent.3.log`).
+Windows binaries are **fully static** — no MSVC redistributable, no `libstdc++-6.dll`, no `libgcc_s_seh-1.dll`. The `.exe` runs on any Windows 7+ system with no installation.
 
 ---
 
-## 10. Installing as a Service
+## 7. Configuration
 
-### 10.1 Linux (systemd)
+### 7.1 File Location
 
-Install the service:
+The agent loads `config/agent.default.json` relative to its working directory.
 
-```bash
-sudo ./build/linux-x86_64-release/axiomdlp-agent --install
-```
+**Default locations (planned):**
+- Linux: `/etc/axiomdlp/agent.json`
+- Windows: `C:\ProgramData\AxiomDLP\agent.json`
 
-This writes `/etc/systemd/system/axiomdlp-agent.service`. Output tells you the next steps:
-
-```
-[info] installed unit file: /etc/systemd/system/axiomdlp-agent.service
-[info] next: systemctl daemon-reload && systemctl enable --now axiomdlp-agent
-```
-
-Run them:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now axiomdlp-agent
-sudo systemctl status axiomdlp-agent
-```
-
-Expected status:
-
-```
-● axiomdlp-agent.service - AxiomDLP Endpoint Agent
-     Loaded: loaded (/etc/systemd/system/axiomdlp-agent.service; enabled)
-     Active: active (running) since ...
-```
-
-**View logs:**
-
-```bash
-journalctl -u axiomdlp-agent -f
-```
-
-**Stop / start / disable:**
-
-```bash
-sudo systemctl stop axiomdlp-agent
-sudo systemctl start axiomdlp-agent
-sudo systemctl disable axiomdlp-agent
-```
-
-**Uninstall:**
-
-```bash
-sudo systemctl disable --now axiomdlp-agent
-sudo ./build/linux-x86_64-release/axiomdlp-agent --uninstall
-sudo systemctl daemon-reload
-```
-
-### 10.2 Windows (SCM)
-
-From an elevated (Administrator) Command Prompt:
-
-```cmd
-axiomdlp-agent.exe --install
-```
-
-This creates the service via `CreateService`. Then:
-
-```cmd
-sc start AxiomDLPAgent
-sc query AxiomDLPAgent
-```
-
-**Uninstall:**
-
-```cmd
-sc stop AxiomDLPAgent
-axiomdlp-agent.exe --uninstall
-```
-
-The Windows service implementation compiles and cross-builds correctly. Full runtime testing on a Windows machine is a pending milestone item.
-
----
-
-## 11. Configuration Reference
-
-### 11.1 File Location
-
-The agent loads `config/agent.default.json` relative to the current working directory. Default locations for production (implemented in later milestones) will be:
-
-- **Linux:** `/etc/axiomdlp/agent.json`
-- **Windows:** `C:\ProgramData\AxiomDLP\agent.json`
-
-### 11.2 Current Schema
+### 7.2 Current Schema
 
 ```json
 {
@@ -605,7 +311,7 @@ The agent loads `config/agent.default.json` relative to the current working dire
 }
 ```
 
-### 11.3 Field Reference
+### 7.3 Field Reference
 
 | Field | Type | Default | Allowed Values |
 |-------|------|---------|----------------|
@@ -613,60 +319,324 @@ The agent loads `config/agent.default.json` relative to the current working dire
 | `logging.file` | string | `"agent.log"` | Any filename |
 | `logging.level` | string | `"info"` | `trace`, `debug`, `info`, `warn`, `error`, `critical`, `off` |
 
-### 11.4 Behavior
+### 7.4 Behavior
 
-- **Missing file** → log warning, use defaults.
-- **Invalid JSON** → log warning, use defaults.
-- **Field wrong type** → log warning, use default for that field.
-- **`level` invalid** → log warning, use `"info"`.
-- **Missing field** → silently use default.
+| Scenario | Behavior |
+|----------|----------|
+| Missing file | Warning, use defaults |
+| Invalid JSON | Warning, use defaults |
+| Wrong field type | Warning, use default for that field |
+| Invalid level | Warning, use `"info"` |
+| Missing field | Silently use default |
 
-The agent **always starts**, regardless of config problems.
+**The agent always starts.** Config problems produce warnings, not failures.
 
-### 11.5 Extending the Config
+### 7.5 Schema File
 
-Adding a new section requires:
+`config/agent.schema.json` is a JSON Schema that describes the config format. It is used by:
 
-1. A struct in `src/core/config.h`
-2. A field in `Config`
-3. A block in `src/core/config.cpp`'s `load()`
-4. A section in `config/agent.default.json`
-5. An entry in `config/agent.schema.json`
+- **Editors** (VS Code, CLion) for autocomplete
+- **CI pipelines** for validation
+- **Documentation** as a single source of truth
 
-Existing config files remain valid — missing sections get defaults.
-
----
-
-## 12. Dependencies
-
-### 12.1 Runtime Dependencies
-
-| Library | Purpose | How It's Used |
-|---------|---------|---------------|
-| **spdlog** | Async structured logging | FetchContent with `.deps/spdlog-src/` cache |
-| **nlohmann/json** | JSON parsing | System `apt` on Linux; `.deps/nlohmann_json-src/` on Windows |
-| **libsystemd** | `sd_notify` | Detected via pkg-config (optional) |
-| **libfmt** | String formatting | Transitive dependency of spdlog |
-
-### 12.2 Build Dependencies
-
-| Tool | Purpose |
-|------|---------|
-| **CMake** ≥ 3.24 | Build system |
-| **Ninja** | Build generator |
-| **GCC 13+** or **Clang 17+** | Linux compilation |
-| **MinGW-w64** | Windows cross-compilation |
-| **pkg-config** | Library detection |
-
-### 12.3 Windows Runtime Requirements
-
-Windows binaries are **fully static** — no MSVC redistributable, no `libstdc++-6.dll`, no `libgcc_s_seh-1.dll`. The `.exe` runs on any Windows 7 or later system with no installation.
+It is **not** used at runtime — the C++ code validates independently.
 
 ---
 
-## 13. Development Workflow
+## 8. Running as a Service
 
-### 13.1 Typical Iteration
+### 8.1 Linux (systemd)
+
+**Install** (requires root):
+
+```bash
+sudo ./build/linux-x86_64-release/axiomdlp-agent --install
+```
+
+This performs the full sequence:
+
+1. Write `/etc/systemd/system/axiomdlp-agent.service`
+2. `systemctl daemon-reload`
+3. `systemctl enable --now axiomdlp-agent`
+
+**Expected output:**
+
+```
+[info] installed unit file: /etc/systemd/system/axiomdlp-agent.service
+[info] reloaded systemd configuration
+[info] enabled and started service axiomdlp-agent
+```
+
+The service is running immediately. No further commands needed.
+
+**Verify:**
+
+```bash
+sudo systemctl status axiomdlp-agent
+```
+
+Should show `Active: active (running)`.
+
+**View logs:**
+
+```bash
+sudo journalctl -u axiomdlp-agent -f
+```
+
+**Stop / start / restart:**
+
+```bash
+sudo systemctl stop axiomdlp-agent
+sudo systemctl start axiomdlp-agent
+sudo systemctl restart axiomdlp-agent
+```
+
+**Uninstall:**
+
+```bash
+sudo ./build/linux-x86_64-release/axiomdlp-agent --uninstall
+```
+
+Full sequence:
+
+1. `systemctl stop axiomdlp-agent`
+2. `systemctl disable axiomdlp-agent`
+3. Remove the unit file
+4. `systemctl daemon-reload`
+
+**Expected output:**
+
+```
+[info] stopping service axiomdlp-agent
+[info]   stop: ok
+[info] disabling service axiomdlp-agent
+[info]   disable: ok
+[info] removed unit file: /etc/systemd/system/axiomdlp-agent.service
+[info] reloaded systemd configuration
+[info] uninstalled service axiomdlp-agent
+```
+
+### 8.2 Windows (SCM)
+
+**Install** (requires Administrator Command Prompt):
+
+```cmd
+axiomdlp-agent.exe --install
+```
+
+This performs:
+
+1. `CreateServiceA` — register with SCM (auto-start)
+2. `StartServiceA` — start immediately
+
+**Expected output:**
+
+```
+[info] service AxiomDLPAgent installed
+[info] started service AxiomDLPAgent
+```
+
+**Verify:**
+
+```cmd
+sc query AxiomDLPAgent
+```
+
+Should show `STATE : 4 RUNNING`.
+
+Or open `services.msc` — the service appears as **AxiomDLPAgent** with Status **Running**.
+
+**Uninstall:**
+
+```cmd
+axiomdlp-agent.exe --uninstall
+```
+
+Full sequence:
+
+1. `ControlService(STOP)` + wait for stop
+2. `DeleteService`
+
+**Expected output:**
+
+```
+[info] stop requested for AxiomDLPAgent
+[info] service AxiomDLPAgent stopped
+[info] service AxiomDLPAgent uninstalled
+```
+
+### 8.3 Foreground Mode (Development)
+
+To run the agent in the current terminal instead of as a service:
+
+```bash
+./build/linux-x86_64-release/axiomdlp-agent --foreground
+```
+
+Or on Windows:
+
+```cmd
+axiomdlp-agent.exe --foreground
+```
+
+The agent runs identically, but logs to the terminal. Press `Ctrl+C` to stop.
+
+**Note:** On Windows, Ctrl+C handling is not yet implemented — use Task Manager to kill the process, or close the terminal.
+
+---
+
+## 9. Platform-Specific Details
+
+### 9.1 Linux — systemd
+
+| Aspect | Detail |
+|--------|--------|
+| Service manager | systemd |
+| Unit file | `/etc/systemd/system/axiomdlp-agent.service` |
+| Type | `notify` (waits for `sd_notify(READY=1)`) |
+| Stop signal | `SIGTERM` |
+| Stop handler | Custom signal handler sets atomic flag |
+| Ready signal | `sd_notify(0, "READY=1")` |
+| Restart policy | `Restart=on-failure`, `RestartSec=5` |
+| Logs | journald (`StandardOutput=journal`) |
+| Install directory | `/etc/systemd/system/` |
+| Default service name | `axiomdlp-agent` (lowercase-with-hyphens) |
+
+**Subprocess spawning:** Uses `fork` + `execvp` — no shell involved. Shell injection is impossible.
+
+### 9.2 Windows — SCM
+
+| Aspect | Detail |
+|--------|--------|
+| Service manager | Service Control Manager (SCM) |
+| Service entry | Windows Registry (managed by SCM) |
+| Service type | `SERVICE_WIN32_OWN_PROCESS` |
+| Startup type | `SERVICE_AUTO_START` |
+| Stop code | `SERVICE_CONTROL_STOP` |
+| Stop handler | Registered control handler function |
+| Ready report | `SetServiceStatus(SERVICE_RUNNING)` |
+| Recovery | None configured (default SCM behavior) |
+| Logs | File only (no `journald` equivalent) |
+| Default service name | `AxiomDLPAgent` (PascalCase) |
+| Account | LocalSystem (default) |
+| Session | Session 0 (isolated service session) |
+
+**Two-thread model:** Windows services use two threads:
+
+- **Main thread** — sits in `StartServiceCtrlDispatcher`, blocks until the service stops
+- **Service thread** — created by the SCM, runs `service_main` and the main loop
+
+**Subprocess spawning:** Uses Win32 API directly. No shell involved anywhere.
+
+---
+
+## 10. Verified Behavior
+
+Both platforms have been verified through live testing.
+
+### 10.1 Linux Verification
+
+| Test | Result |
+|------|--------|
+| Binary runs in foreground | ✅ Confirmed |
+| Binary installs as systemd service | ✅ Confirmed |
+| Service starts automatically after install | ✅ Confirmed |
+| Service runs in background | ✅ Confirmed (via `systemctl status`) |
+| `sd_notify(READY=1)` reaches systemd | ✅ Confirmed |
+| Logs go to journald | ✅ Confirmed |
+| `systemctl stop` triggers graceful shutdown | ✅ Confirmed |
+| Uninstall stops, disables, and deletes | ✅ Confirmed |
+| Idempotent reinstall | ✅ Confirmed |
+| No orphaned processes after uninstall | ✅ Confirmed |
+| 32-bit binary works | ✅ Confirmed |
+
+### 10.2 Windows Verification
+
+| Test | Result |
+|------|--------|
+| Binary runs on Windows 10 | ✅ Confirmed |
+| Foreground auto-fallback works | ✅ Confirmed |
+| `--foreground` flag works | ✅ Confirmed |
+| Install from Administrator | ✅ Confirmed |
+| Service runs under SCM | ✅ Confirmed (Session 0) |
+| Two-thread model active | ✅ Confirmed (log shows two thread IDs) |
+| Log says "Windows service mode" | ✅ Confirmed |
+| `--uninstall` stops and deletes | ✅ Confirmed |
+| Idempotent reinstall | ✅ Confirmed |
+| Static binary (no DLLs) | ✅ Confirmed |
+
+### 10.3 Sample Windows Service Log
+
+```
+[01:22:35.404] [t:2744] AxiomDLP Agent v0.1.0
+[01:22:35.404] [t:2744] Config loaded from: config/agent.default.json
+[01:22:35.404] [t:2744] Config: config file not found...
+[01:22:35.407] [t:3424] AxiomDLPAgent running (Windows service mode)   ← different thread!
+[01:22:45.088] [t:3424] AxiomDLPAgent stopping (Windows service mode)
+[01:22:45.090] [t:2744] Service returned rc=0
+[01:22:45.090] [t:2744] Application shutting down
+```
+
+The two different thread IDs (`2744` and `3424`) prove the SCM's two-thread service model is active. This is the definitive confirmation that the agent runs as a real Windows service.
+
+---
+
+## 11. Known Issues
+
+### 11.1 Config File Not Found When Running as Service
+
+**Symptom:**
+
+```
+[warning] Config: config file not found at 'config/agent.default.json'; using built-in defaults
+```
+
+**Cause:** The service's working directory is not the project root:
+
+- Linux: systemd starts services from `/`
+- Windows: the SCM starts services from `C:\Windows\System32`
+
+The relative path `config/agent.default.json` doesn't resolve in those directories.
+
+**Impact:** The agent uses built-in defaults. It works — but custom config isn't loaded.
+
+**Planned fix:** Add a config path search that tries multiple locations:
+
+1. `--config <path>` command-line argument
+2. `AXIOM_CONFIG_PATH` environment variable
+3. Working directory: `./config/agent.json`
+4. Executable directory: `<exe_dir>/config/agent.json`
+5. Platform default: `/etc/axiomdlp/agent.json` (Linux) or `C:\ProgramData\AxiomDLP\agent.json` (Windows)
+
+### 11.2 No Ctrl+C Handler in Windows Foreground Mode
+
+**Symptom:** Pressing Ctrl+C in a Windows Command Prompt doesn't stop the agent cleanly. The process must be killed via Task Manager.
+
+**Cause:** Windows doesn't use POSIX signals. It uses console control handlers, which aren't registered.
+
+**Impact:** Only affects foreground mode. The service mode (SCM-driven) stops cleanly via `SERVICE_CONTROL_STOP`.
+
+**Planned fix:** Add a `SetConsoleCtrlHandler` callback that sets the stop flag.
+
+### 11.3 systemd Notification During Stop (Linux)
+
+**Symptom (harmless):**
+
+```
+systemd[1]: Got notification message from PID XXXX, but reception is disabled
+```
+
+**Cause:** A `sd_notify(STOPPING=1)` call arrives after systemd has already stopped listening for notifications.
+
+**Impact:** Cosmetic log line only. Shutdown succeeds either way.
+
+**Planned fix:** Optional — remove the `STOPPING=1` call, or accept the harmless warning.
+
+---
+
+## 12. Development Workflow
+
+### 12.1 Typical Iteration
 
 ```bash
 # Edit code
@@ -675,13 +645,11 @@ $EDITOR src/core/logger.cpp
 # Build one target (fast)
 cmake --build --preset linux-x86_64-debug
 
-# Run
+# Run in foreground
 ./build/linux-x86_64-debug/axiomdlp-agent --foreground
-
-# Iterate...
 ```
 
-### 13.2 Full Cross-Platform Check
+### 12.2 Full Cross-Platform Check
 
 Before committing, verify all four targets build:
 
@@ -689,7 +657,7 @@ Before committing, verify all four targets build:
 ./scripts/build-all.sh
 ```
 
-### 13.3 Editor Setup (VS Code)
+### 12.3 Editor Setup (VS Code)
 
 Create `.vscode/c_cpp_properties.json`:
 
@@ -711,72 +679,109 @@ Create `.vscode/c_cpp_properties.json`:
 }
 ```
 
-Switch between configs from the status bar (bottom-right).
+Switch between configs from the VS Code status bar (bottom-right).
 
-### 13.4 Common Commands
+### 12.4 Common Commands
 
 | Task | Command |
 |------|---------|
 | Build all targets | `./scripts/build-all.sh` |
 | Build one target | `cmake --build --preset linux-x86_64-release` |
 | Run in foreground | `./build/linux-x86_64-release/axiomdlp-agent --foreground` |
-| Install as service | `sudo ./build/linux-x86_64-release/axiomdlp-agent --install` |
+| Install service | `sudo ./build/linux-x86_64-release/axiomdlp-agent --install` |
 | Uninstall | `sudo ./build/linux-x86_64-release/axiomdlp-agent --uninstall` |
-| View systemd logs | `journalctl -u axiomdlp-agent -f` |
-| View file logs | `tail -f logs/agent.log` |
+| View logs | `journalctl -u axiomdlp-agent -f` |
 | Clean build | `rm -rf build && ./scripts/build-all.sh` |
 
-### 13.5 Command-Line Arguments
+### 12.5 Command-Line Arguments
 
 | Argument | Effect |
 |----------|--------|
-| `--foreground` | Run without registering with systemd/SCM |
-| `--install` | Install the service (unit file / SCM entry) |
+| `--foreground` | Run without registering with the service manager |
+| `--install` | Install as a service (unit file / SCM entry) |
 | `--uninstall` | Remove the service |
 | `--config <path>` | Use a specific config file |
 
----
-
-## 14. Roadmap
-
-The foundation is complete. The following milestones add DLP functionality.
-
-### Completed
-
-- ✅ **Milestone 1** — Project skeleton
-- ✅ **Milestone 2** — Async logging with spdlog
-- ✅ **Milestone 3** — Configuration loading with JSON
-- ✅ **Milestone 4** — Cross-platform service lifecycle
-
-### Planned
-
-| # | Milestone | Delivers |
-|---|-----------|----------|
-| 5 | **Application class refactor** | Consolidate startup, prepare for modules |
-| 6 | **Module system** | Plugin architecture — every feature is a module |
-| 7 | **Event bus** | In-process pub/sub for decoupled modules |
-| 8 | **Filesystem module** | inotify (Linux) / ReadDirectoryChangesW (Windows) |
-| 9 | **Scanner** | Regex detection of PII patterns |
-| 10 | **Policy engine** | Event + scan → decision |
-| 11 | **Storage** | SQLite for events, policies, and offline queue |
-| 12 | **User-mode enforcement** | Block clipboard / file operations |
-| 13 | **IPC + tray helper** | User session UI |
-| 14 | **Transport** | HTTP + WebSocket to AxiomDLP Core |
-| 15 | **Windows testing** | Runtime verification on live Windows |
-| 16 | **Kernel enforcement** | Windows Minifilter / Linux eBPF LSM |
-
-### Design Guarantees
-
-Every future milestone will:
-
-- Follow the interface + platform implementation pattern
-- Use the same three-file structure (header, `.cpp`, CMake)
-- Compile for all four targets
-- Have no dependencies on optional system features
+Unknown arguments are logged to `stderr` but do not prevent startup (fail-safe).
 
 ---
 
-## 15. License
+## 13. Roadmap
+
+### Milestone 5 — Module System
+
+The plugin architecture. Every future DLP feature will be a module implementing a common interface:
+
+- `IModule` interface (name, version, initialize, start, stop, shutdown, health)
+- `ModuleManager` (drives lifecycle, reports aggregate health)
+- `ServiceContext` (shared dependencies passed to modules)
+- A dummy module to prove the pattern
+
+### Milestone 6 — Event Bus
+
+In-process publish/subscribe. Modules publish events; subscribers consume them. Decouples capture from scanning, deciding, and enforcing.
+
+### Milestone 7 — Filesystem Module
+
+First real DLP feature:
+
+- Linux: `inotify` / `fanotify`
+- Windows: `ReadDirectoryChangesW` / Minifilter
+
+### Milestone 8 — Scanner
+
+Content scanning:
+
+- Regex patterns for credit cards, SSNs, emails, phone numbers
+- Optional embedded ML for names, addresses
+
+### Milestone 9 — Policy Engine
+
+Rule evaluation:
+
+- Policy → Decision mapping
+- Priority-based matching
+- Action selection (block/alert/log)
+
+### Milestone 10 — Storage
+
+Local persistence:
+
+- SQLite for events, policies, and offline queue
+
+### Milestone 11 — User-Mode Enforcement
+
+Blocking operations:
+
+- Clipboard paste block
+- File write block
+- USB write block
+
+### Milestone 12 — IPC + User Helper
+
+Tray icon + notifications:
+
+- Linux: Unix domain sockets
+- Windows: Named pipes
+
+### Milestone 13 — Transport
+
+Connection to AxiomDLP Core:
+
+- HTTP + WebSocket
+- Enrollment, heartbeat, event upload
+- Policy sync
+
+### Milestone 14 — Kernel Enforcement
+
+Deeper blocking:
+
+- Windows: Minifilter driver
+- Linux: eBPF LSM / fanotify permission events
+
+---
+
+## 14. License
 
 Apache License 2.0 — see the `LICENSE` file for details.
 
@@ -786,19 +791,21 @@ Apache License 2.0 — see the `LICENSE` file for details.
 
 The AxiomDLP Endpoint Agent currently provides:
 
-- **Cross-platform build system** — four targets from one Linux host, no downloads after first run
-- **Async structured logging** — never blocks, rotates, survives crashes
-- **Fail-safe configuration** — JSON with validation, defaults, and warnings
-- **Service lifecycle** — systemd and Windows SCM integration with graceful shutdown
-- **Platform abstraction** — one interface, two implementations, no `#ifdef` in core code
+- **Cross-platform build system** — four targets from one Linux host
+- **Async structured logging** — spdlog with rotation, thread-safe, non-blocking
+- **Fail-safe configuration** — JSON loading with defaults and warnings
+- **Service lifecycle** — systemd (Linux) and SCM (Windows) with full install/uninstall
+- **Platform abstraction** — one interface, two implementations, zero `#ifdef` in core code
+- **Graceful shutdown** — signal-based (Linux), control-code based (Windows)
+- **Safe subprocess spawning** — `fork` + `execvp`, no shell, no injection
 
-The foundation is complete and production-quality. The next milestones add the DLP functionality that justifies the agent's existence.
+**Both platforms are verified working.** The foundation is complete and production-quality. The next milestone begins DLP functionality.
 
-**To get started:**
+**Quick start:**
 
 ```bash
 git clone <repo>
 cd axiomdlp-agent
 ./scripts/build-all.sh
-./build/linux-x86_64-release/axiomdlp-agent --foreground
+sudo ./build/linux-x86_64-release/axiomdlp-agent --install
 ```
