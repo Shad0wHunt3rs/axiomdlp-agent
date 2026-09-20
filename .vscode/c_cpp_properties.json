@@ -1,0 +1,47 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "Linux x86_64",
+      "compileCommands": "${workspaceFolder}/build/linux-x86_64-debug/compile_commands.json",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "linux-gcc-x64"
+    },
+    {
+      "name": "Linux x86_64 (release)",
+      "compileCommands": "${workspaceFolder}/build/linux-x86_64-release/compile_commands.json",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "linux-gcc-x64"
+    },
+    {
+      "name": "Linux i686",
+      "compileCommands": "${workspaceFolder}/build/linux-i686-release/compile_commands.json",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "linux-gcc-x86"
+    },
+    {
+      "name": "Windows x86_64",
+      "compileCommands": "${workspaceFolder}/build/windows-x86_64-debug/compile_commands.json",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "windows-gcc-x64"
+    },
+    {
+      "name": "Windows x86_64 (release)",
+      "compileCommands": "${workspaceFolder}/build/windows-x86_64-release/compile_commands.json",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "windows-gcc-x64"
+    },
+    {
+      "name": "Windows i686",
+      "compileCommands": "${workspaceFolder}/build/windows-i686-release/compile_commands.json",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "windows-gcc-x86"
+    }
+  ]
+}
