@@ -1,0 +1,10 @@
+CompileFlags:
+  CompilationDatabase: .
+  Add:
+    - -Wno-unknown-warning-option
+
+Diagnostics:
+  Suppress:
+    - invalid_consteval_call
+    - invalid-constexpr
+    - unknown-warning-option

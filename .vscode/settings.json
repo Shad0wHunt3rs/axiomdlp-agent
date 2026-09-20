@@ -4,10 +4,7 @@
     "--compile-commands-dir=${workspaceFolder}",
     "--background-index",
     "--header-insertion=never",
-    "--completion-style=detailed"
-  ],
-  "C_Cpp.intelliSenseEngine": "disabled",
-  "C_Cpp.autocomplete": "disabled",
-  "C_Cpp.errorSquiggles": "disabled",
-  "C_Cpp.hover": "disabled"
+    "--completion-style=detailed",
+    "--query-driver=/usr/bin/g++,/usr/bin/x86_64-w64-mingw32-g++,/usr/bin/i686-w64-mingw32-g++"
+  ]
 }

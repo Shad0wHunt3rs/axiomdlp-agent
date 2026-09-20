@@ -1,7 +1,6 @@
 // src/platform/linux/service_linux.cpp
 
 #include "core/service.h"
-#include "core/logger.h"
 
 #include <spdlog/spdlog.h>
 
