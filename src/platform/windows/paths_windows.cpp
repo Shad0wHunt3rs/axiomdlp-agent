@@ -4,8 +4,10 @@
 
 #include <windows.h>
 #include <shlobj.h>
+#include <objbase.h>   // CoTaskMemFree
 
 #include <filesystem>
+#include <string>
 
 namespace axiom::core::paths {
 
@@ -28,13 +30,43 @@ std::string executable_dir() {
 
 namespace {
 
-// Returns C:\ProgramData on most systems.
+// Convert a wide (UTF-16) string to UTF-8.
+// Returns an empty string on failure or if input is null.
+std::string wide_to_utf8(const wchar_t* wstr) {
+    if (wstr == nullptr) return {};
+
+    // -1 means "the string is null-terminated; find the length yourself"
+    const int len = WideCharToMultiByte(
+        CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+
+    // len includes the null terminator. Reserve len-1 chars.
+    std::string result(static_cast<size_t>(len - 1), '\0');
+
+    WideCharToMultiByte(
+        CP_UTF8, 0, wstr, -1, result.data(), len, nullptr, nullptr);
+
+    return result;
+}
+
+// Returns C:\ProgramData.
+// Uses the modern SHGetKnownFolderPath API (non-deprecated).
 std::string program_data() {
-    char buf[MAX_PATH] = {0};
-    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, buf))) {
-        return std::string(buf);
+    PWSTR path = nullptr;
+    const HRESULT hr = SHGetKnownFolderPath(
+        FOLDERID_ProgramData, 0, nullptr, &path);
+
+    if (FAILED(hr) || path == nullptr) {
+        return "C:\\ProgramData";
     }
-    return "C:\\ProgramData";
+
+    std::string result = wide_to_utf8(path);
+    CoTaskMemFree(path);
+
+    if (result.empty()) {
+        return "C:\\ProgramData";
+    }
+    return result;
 }
 
 } // namespace
