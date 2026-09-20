@@ -41,3 +41,6 @@ cmake_install.cmake
 
 # clangd cache
 .clangd.cache/
+
+# clangd cache (index files — never commit these)
+.cache/
