@@ -34,3 +34,5 @@ Thumbs.db
 *.log
 logs/
 
+compile_commands.json
+

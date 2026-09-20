@@ -2,46 +2,28 @@
   "version": 4,
   "configurations": [
     {
-      "name": "Linux x86_64",
-      "compileCommands": "${workspaceFolder}/build/linux-x86_64-debug/compile_commands.json",
-      "cStandard": "c17",
-      "cppStandard": "c++20",
-      "intelliSenseMode": "linux-gcc-x64"
-    },
-    {
-      "name": "Linux x86_64 (release)",
-      "compileCommands": "${workspaceFolder}/build/linux-x86_64-release/compile_commands.json",
-      "cStandard": "c17",
-      "cppStandard": "c++20",
-      "intelliSenseMode": "linux-gcc-x64"
-    },
-    {
-      "name": "Linux i686",
-      "compileCommands": "${workspaceFolder}/build/linux-i686-release/compile_commands.json",
-      "cStandard": "c17",
-      "cppStandard": "c++20",
-      "intelliSenseMode": "linux-gcc-x86"
-    },
-    {
-      "name": "Windows x86_64",
-      "compileCommands": "${workspaceFolder}/build/windows-x86_64-debug/compile_commands.json",
+      "name": "Default",
+      "compilerPath": "/usr/bin/x86_64-w64-mingw32-g++",
+      "compileCommands": "${workspaceFolder}/compile_commands.json",
+      "includePath": [
+        "${workspaceFolder}/src",
+        "/usr/x86_64-w64-mingw32/include",
+        "/usr/lib/gcc/x86_64-w64-mingw32/15-win32/include",
+        "/usr/lib/gcc/x86_64-w64-mingw32/15-win32/include/c++",
+        "/usr/lib/gcc/x86_64-w64-mingw32/15-win32/include/c++/x86_64-w64-mingw32",
+        "/usr/lib/gcc/x86_64-w64-mingw32/15-win32/include/c++/backward",
+        "/usr/lib/gcc/x86_64-w64-mingw32/15-win32/include-fixed"
+      ],
+      "defines": [
+        "_WIN32",
+        "WIN32",
+        "WIN32_LEAN_AND_MEAN",
+        "NOMINMAX",
+        "_WIN32_WINNT=0x0601"
+      ],
       "cStandard": "c17",
       "cppStandard": "c++20",
       "intelliSenseMode": "windows-gcc-x64"
-    },
-    {
-      "name": "Windows x86_64 (release)",
-      "compileCommands": "${workspaceFolder}/build/windows-x86_64-release/compile_commands.json",
-      "cStandard": "c17",
-      "cppStandard": "c++20",
-      "intelliSenseMode": "windows-gcc-x64"
-    },
-    {
-      "name": "Windows i686",
-      "compileCommands": "${workspaceFolder}/build/windows-i686-release/compile_commands.json",
-      "cStandard": "c17",
-      "cppStandard": "c++20",
-      "intelliSenseMode": "windows-gcc-x86"
     }
   ]
 }
