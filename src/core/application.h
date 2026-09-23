@@ -1,12 +1,14 @@
 // src/core/application.h
 //
-// Application owns config, logging, and the service lifecycle.
-// main() shrinks to: parse args -> create Application -> execute().
+// Application owns config, logging, the module manager, and the service
+// lifecycle.
 
 #pragma once
 
 #include "core/config.h"
+#include "core/module_manager.h"
 #include "core/service.h"
+#include "core/service_context.h"
 
 #include <memory>
 #include <string>
@@ -19,16 +21,14 @@ public:
         bool install     = false;
         bool uninstall   = false;
         bool foreground  = false;
-        std::string config_path;   // empty -> use default
+        std::string config_path;
     };
 
-    // Parse argv. Unknown args produce a warning on stderr but do not fail.
     static Options parse_args(int argc, char** argv);
 
     explicit Application(Options opts);
     ~Application();
 
-    // Perform the requested action. Returns an exit code.
     int execute();
 
 private:
@@ -37,7 +37,11 @@ private:
 
     Options opts_;
     Config  config_;
-    std::unique_ptr<IService> service_;
+
+    std::unique_ptr<ServiceContext> service_context_;
+    std::unique_ptr<ModuleManager>  module_manager_;
+    std::unique_ptr<IService>       service_;
+
     bool initialized_ = false;
 };
 

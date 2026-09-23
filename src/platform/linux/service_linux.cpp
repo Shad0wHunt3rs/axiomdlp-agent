@@ -1,6 +1,8 @@
 // src/platform/linux/service_linux.cpp
 
 #include "core/service.h"
+#include "core/module_manager.h"
+#include "core/service_context.h"
 
 #include <spdlog/spdlog.h>
 
@@ -52,7 +54,6 @@ bool is_safe_service_name(const std::string& name) {
 }
 
 // Run a program with an argument vector — no shell involved.
-// Returns true if the program exited with status 0.
 bool run_program(const std::string& program,
                  const std::vector<std::string>& args) {
     std::vector<char*> argv;
@@ -98,7 +99,16 @@ class LinuxService final : public IService {
 public:
     explicit LinuxService(std::string name) : name_(std::move(name)) {}
 
+    void set_module_manager(ModuleManager* mgr) override {
+        module_manager_ = mgr;
+    }
+
+    void set_service_context(ServiceContext* ctx) override {
+        service_context_ = ctx;
+    }
+
     int run() override {
+        // 1. Signal handlers.
         struct sigaction sa{};
         sa.sa_handler = on_signal;
         sigemptyset(&sa.sa_mask);
@@ -109,16 +119,29 @@ public:
 
         SPDLOG_INFO("{} starting (Linux service mode)", name_);
 
+        // 2. Start modules BEFORE signaling readiness.
+        if (module_manager_ && service_context_) {
+            module_manager_->start_all();
+        }
+
+        // 3. Tell systemd we are ready.
 #ifdef HAVE_SYSTEMD
         sd_notify(0, "READY=1");
         SPDLOG_INFO("sd_notify READY sent");
 #endif
 
+        // 4. Main loop.
         while (!g_stop.load(std::memory_order_relaxed)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
         SPDLOG_INFO("{} received stop request", name_);
+
+        // 5. Stop modules BEFORE signaling stopping.
+        if (module_manager_) {
+            module_manager_->stop_all();
+            module_manager_->shutdown_all();
+        }
 
 #ifdef HAVE_SYSTEMD
         sd_notify(0, "STOPPING=1");
@@ -133,6 +156,8 @@ public:
 
 private:
     std::string name_;
+    ModuleManager*  module_manager_  = nullptr;
+    ServiceContext* service_context_ = nullptr;
 };
 
 // ----------------------------------------------------------------
@@ -149,11 +174,6 @@ std::string default_service_name() {
 
 // ----------------------------------------------------------------
 // Install.
-//
-// Full sequence:
-//   1. Write the unit file.
-//   2. systemctl daemon-reload   (make systemd notice it)
-//   3. systemctl enable --now    (enable at boot + start right now)
 // ----------------------------------------------------------------
 
 int install_service(const std::string& binary_path,
@@ -166,7 +186,6 @@ int install_service(const std::string& binary_path,
     const std::string unit_path =
         "/etc/systemd/system/" + service_name + ".service";
 
-    // 1. Write the unit file.
     {
         std::ofstream f(unit_path);
         if (!f.is_open()) {
@@ -191,14 +210,12 @@ int install_service(const std::string& binary_path,
         SPDLOG_INFO("installed unit file: {}", unit_path);
     }
 
-    // 2. Reload systemd so it picks up the new unit.
     if (run_program("systemctl", {"daemon-reload"})) {
         SPDLOG_INFO("reloaded systemd configuration");
     } else {
         SPDLOG_WARN("systemctl daemon-reload failed");
     }
 
-    // 3. Enable at boot and start now.
     if (run_program("systemctl", {"enable", "--now", service_name})) {
         SPDLOG_INFO("enabled and started service {}", service_name);
     } else {

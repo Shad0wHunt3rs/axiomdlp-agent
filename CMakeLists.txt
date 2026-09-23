@@ -109,6 +109,8 @@ add_executable(axiomdlp-agent
     src/core/config.cpp
     src/core/logger.cpp
     src/core/module_manager.cpp
+    src/modules/module_base.cpp
+    src/modules/example/example_module.cpp
     ${AXIOM_PLATFORM_SOURCES}
 )
 

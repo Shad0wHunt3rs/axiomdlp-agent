@@ -1,11 +1,13 @@
 // src/platform/windows/service_win.cpp
 
 #include "core/service.h"
+#include "core/module_manager.h"
+#include "core/service_context.h"
 
 #include <spdlog/spdlog.h>
 
 #include <atomic>
-#include <chrono>   
+#include <chrono>
 #include <thread>
 
 #include <windows.h>
@@ -18,6 +20,9 @@ std::atomic<bool> g_stop{false};
 SERVICE_STATUS_HANDLE g_status_handle = nullptr;
 SERVICE_STATUS        g_status{};
 std::string           g_name;
+
+ModuleManager*  g_module_manager  = nullptr;
+ServiceContext* g_service_context = nullptr;
 
 void report(DWORD state, DWORD exit_code = 0, DWORD wait_hint = 0) {
     g_status.dwCurrentState  = state;
@@ -52,6 +57,12 @@ void WINAPI service_main(DWORD, LPSTR*) {
     g_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
 
     report(SERVICE_START_PENDING, 0, 3000);
+
+    // Start modules before reporting running.
+    if (g_module_manager && g_service_context) {
+        g_module_manager->start_all();
+    }
+
     report(SERVICE_RUNNING);
 
     SPDLOG_INFO("{} running (Windows service mode)", g_name);
@@ -61,6 +72,13 @@ void WINAPI service_main(DWORD, LPSTR*) {
     }
 
     SPDLOG_INFO("{} stopping (Windows service mode)", g_name);
+
+    // Stop modules before reporting stopped.
+    if (g_module_manager) {
+        g_module_manager->stop_all();
+        g_module_manager->shutdown_all();
+    }
+
     report(SERVICE_STOPPED);
 }
 
@@ -73,6 +91,14 @@ void WINAPI service_main(DWORD, LPSTR*) {
 class WindowsService final : public IService {
 public:
     explicit WindowsService(std::string name) : name_(std::move(name)) {}
+
+    void set_module_manager(ModuleManager* mgr) override {
+        g_module_manager = mgr;
+    }
+
+    void set_service_context(ServiceContext* ctx) override {
+        g_service_context = ctx;
+    }
 
     int run() override {
         g_name = name_;
@@ -101,10 +127,21 @@ public:
 
 private:
     int run_foreground() {
+        if (g_module_manager && g_service_context) {
+            g_module_manager->start_all();
+        }
+
         SPDLOG_INFO("{} running (Windows foreground mode)", name_);
+
         while (!g_stop.load(std::memory_order_relaxed)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
+
+        if (g_module_manager) {
+            g_module_manager->stop_all();
+            g_module_manager->shutdown_all();
+        }
+
         SPDLOG_INFO("{} stopping (foreground)", name_);
         return 0;
     }
@@ -126,10 +163,6 @@ std::string default_service_name() {
 
 // ----------------------------------------------------------------
 // Install.
-//
-// Full sequence:
-//   1. Create the service (auto-start).
-//   2. Start it now.
 // ----------------------------------------------------------------
 
 int install_service(const std::string& binary_path,
@@ -142,7 +175,6 @@ int install_service(const std::string& binary_path,
 
     const std::string quoted = "\"" + binary_path + "\"";
 
-    // 1. Create the service (auto-start at boot).
     SC_HANDLE svc = CreateServiceA(
         scm, service_name.c_str(), service_name.c_str(),
         SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
@@ -153,7 +185,6 @@ int install_service(const std::string& binary_path,
         const DWORD err = GetLastError();
         if (err == ERROR_SERVICE_EXISTS) {
             SPDLOG_WARN("service {} already installed", service_name);
-            // Try to open it and start it below.
             svc = OpenServiceA(scm, service_name.c_str(), SERVICE_START | SERVICE_QUERY_STATUS);
             if (!svc) {
                 CloseServiceHandle(scm);
@@ -168,7 +199,6 @@ int install_service(const std::string& binary_path,
         SPDLOG_INFO("service {} installed", service_name);
     }
 
-    // 2. Start the service now (if it isn't already running).
     SERVICE_STATUS status{};
     if (!QueryServiceStatus(svc, &status)) {
         SPDLOG_WARN("QueryServiceStatus failed: {}", GetLastError());
