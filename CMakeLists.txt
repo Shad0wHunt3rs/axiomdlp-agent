@@ -107,6 +107,8 @@ add_executable(axiomdlp-agent
     src/main.cpp
     src/core/application.cpp
     src/core/config.cpp
+    src/core/event.cpp              # ← NEW
+    src/core/event_bus.cpp          # ← NEW
     src/core/logger.cpp
     src/core/module_manager.cpp
     src/modules/module_base.cpp

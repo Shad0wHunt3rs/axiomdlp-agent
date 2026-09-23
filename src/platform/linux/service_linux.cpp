@@ -2,7 +2,6 @@
 
 #include "core/service.h"
 #include "core/module_manager.h"
-#include "core/service_context.h"
 
 #include <spdlog/spdlog.h>
 
@@ -103,10 +102,6 @@ public:
         module_manager_ = mgr;
     }
 
-    void set_service_context(ServiceContext* ctx) override {
-        service_context_ = ctx;
-    }
-
     int run() override {
         // 1. Signal handlers.
         struct sigaction sa{};
@@ -120,7 +115,7 @@ public:
         SPDLOG_INFO("{} starting (Linux service mode)", name_);
 
         // 2. Start modules BEFORE signaling readiness.
-        if (module_manager_ && service_context_) {
+        if (module_manager_) {
             module_manager_->start_all();
         }
 
@@ -156,8 +151,7 @@ public:
 
 private:
     std::string name_;
-    ModuleManager*  module_manager_  = nullptr;
-    ServiceContext* service_context_ = nullptr;
+    ModuleManager* module_manager_ = nullptr;
 };
 
 // ----------------------------------------------------------------

@@ -2,7 +2,6 @@
 
 #include "core/service.h"
 #include "core/module_manager.h"
-#include "core/service_context.h"
 
 #include <spdlog/spdlog.h>
 
@@ -21,8 +20,7 @@ SERVICE_STATUS_HANDLE g_status_handle = nullptr;
 SERVICE_STATUS        g_status{};
 std::string           g_name;
 
-ModuleManager*  g_module_manager  = nullptr;
-ServiceContext* g_service_context = nullptr;
+ModuleManager* g_module_manager = nullptr;
 
 void report(DWORD state, DWORD exit_code = 0, DWORD wait_hint = 0) {
     g_status.dwCurrentState  = state;
@@ -59,7 +57,7 @@ void WINAPI service_main(DWORD, LPSTR*) {
     report(SERVICE_START_PENDING, 0, 3000);
 
     // Start modules before reporting running.
-    if (g_module_manager && g_service_context) {
+    if (g_module_manager) {
         g_module_manager->start_all();
     }
 
@@ -96,10 +94,6 @@ public:
         g_module_manager = mgr;
     }
 
-    void set_service_context(ServiceContext* ctx) override {
-        g_service_context = ctx;
-    }
-
     int run() override {
         g_name = name_;
         g_stop.store(false, std::memory_order_relaxed);
@@ -127,7 +121,7 @@ public:
 
 private:
     int run_foreground() {
-        if (g_module_manager && g_service_context) {
+        if (g_module_manager) {
             g_module_manager->start_all();
         }
 

@@ -5,8 +5,9 @@
 // Linux:  implemented by LinuxService (systemd conventions)
 // Windows: implemented by WindowsService (Service Control Manager)
 //
-// The agent's actual work (modules, event bus, etc.) is started inside
-// run() and stopped before run() returns.
+// The service drives the module lifecycle. It does not need the
+// ServiceContext — that is for modules only. The service only needs
+// the ModuleManager.
 
 #pragma once
 
@@ -15,10 +16,9 @@
 
 namespace axiom::core {
 
-// Forward declarations — we only pass pointers, so full definitions
-// aren't needed in this header.
+// Forward declaration — we only pass a pointer, so the full definition
+// isn't needed in this header.
 class ModuleManager;
-struct ServiceContext;
 
 class IService {
 public:
@@ -31,9 +31,8 @@ public:
     // Ask the service to stop gracefully.
     virtual void request_stop() = 0;
 
-    // Wire in dependencies before run() is called.
+    // Wire in the module manager before run() is called.
     virtual void set_module_manager(ModuleManager* mgr) = 0;
-    virtual void set_service_context(ServiceContext* ctx) = 0;
 };
 
 // Platform-specific factory.

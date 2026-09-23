@@ -65,17 +65,20 @@ bool Application::init() {
         SPDLOG_WARN("Config: {}", w);
     }
 
-    // 3. Create the shared service context.
-    service_context_ = std::make_unique<ServiceContext>(config_);
+    // 3. Create the event bus.
+    event_bus_ = std::make_unique<EventBus>();
 
-    // 4. Create the module manager.
+    // 4. Create the shared service context (needs the bus).
+    service_context_ = std::make_unique<ServiceContext>(config_, *event_bus_);
+
+    // 5. Create the module manager.
     module_manager_ = std::make_unique<ModuleManager>();
 
-    // 5. Register modules.
+    // 6. Register modules.
     module_manager_->register_module(
         std::make_unique<ExampleModule>());
 
-    // 6. Initialize all modules with the shared context.
+    // 7. Initialize all modules with the shared context.
     if (!module_manager_->initialize_all(*service_context_)) {
         SPDLOG_WARN("Some modules failed to initialize");
     }
@@ -89,9 +92,6 @@ bool Application::init() {
 
 void Application::shutdown() {
     if (!initialized_) return;
-
-    // Modules are stopped by the service when it exits.
-    // Here we only tear down logging and clear ownership.
 
     SPDLOG_INFO("Application shutting down");
     Logger::shutdown();
@@ -118,7 +118,6 @@ int Application::execute() {
     // Normal run.
     service_ = make_service(default_service_name());
     service_->set_module_manager(module_manager_.get());
-    service_->set_service_context(service_context_.get());
     const int rc = service_->run();
 
     SPDLOG_INFO("Service returned rc={}", rc);
