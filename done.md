@@ -2,7 +2,7 @@
 
 A cross-platform Data Leak Prevention (DLP) endpoint agent written in modern C++20. Runs as a native background service on Linux and Windows. Builds four targets from a single Linux host.
 
-**Current status:** Foundation and plugin architecture complete. No DLP features yet — the agent is a working service that hosts modules but does no monitoring, scanning, or enforcement.
+**Status:** Foundation complete. The agent is a working service with logging, config, module system, and event bus. No DLP features yet.
 
 ---
 
@@ -18,10 +18,11 @@ A cross-platform Data Leak Prevention (DLP) endpoint agent written in modern C++
 8. [Running as a Service](#8-running-as-a-service)
 9. [Platform Abstraction](#9-platform-abstraction)
 10. [Module System](#10-module-system)
-11. [Development Workflow](#11-development-workflow)
-12. [Roadmap](#12-roadmap)
-13. [Known Limitations](#13-known-limitations)
-14. [License](#14-license)
+11. [Event Bus](#11-event-bus)
+12. [Development Workflow](#12-development-workflow)
+13. [Roadmap](#13-roadmap)
+14. [Known Limitations](#14-known-limitations)
+15. [License](#15-license)
 
 ---
 
@@ -40,12 +41,11 @@ A cross-platform Data Leak Prevention (DLP) endpoint agent written in modern C++
 
 - **Cross-platform** — Linux and Windows from one codebase
 - **Modular** — every feature is a plugin; new ones add without touching the core
+- **Event-driven** — modules communicate through an in-process pub/sub bus
 - **Offline-first** — local policy cache and event queue (future)
 - **Kernel-ready** — enforcement abstraction allows user-mode → kernel-mode upgrades (future)
 - **Fail-safe** — bad config, missing libraries, or unavailable features never crash the agent
 - **Observable** — structured async logging, health reporting, config-driven behavior
-
-**Status:** Foundations complete. The agent runs as a service, reads config, logs, and hosts modules. Real DLP work begins in Milestone 6.
 
 ---
 
@@ -66,23 +66,25 @@ A cross-platform Data Leak Prevention (DLP) endpoint agent written in modern C++
 | Graceful shutdown via signals / SCM controls | ✅ Verified |
 | One-command install / uninstall | ✅ Working |
 | Module system (plugin architecture) | ✅ Working |
+| Event bus (pub/sub between modules) | ✅ Working |
 | Cross-platform VS Code IntelliSense via clangd | ✅ Working |
 
 ### What Does Not Exist Yet
 
 | Feature | Milestone |
 |---------|-----------|
-| Event bus (pub/sub between modules) | 6 |
 | Filesystem monitoring | 7 |
-| Local regex scanner | 8 |
-| Policy engine | 9 |
-| SQLite storage | 10 |
-| User-mode enforcement | 11 |
-| IPC + tray helper | 12 |
-| Transport to core (HTTP + WebSocket) | 13 |
-| Kernel enforcement (minifilter / eBPF) | 14 |
+| USB device detection | 8 |
+| Clipboard monitoring | 9 |
+| Local regex scanner | 10 |
+| Policy engine | 11 |
+| SQLite storage | 12 |
+| User-mode enforcement | 13 |
+| IPC + tray helper | 14 |
+| Transport to core (HTTP + WebSocket) | 15 |
+| Kernel enforcement (minifilter / eBPF) | 16 |
 
-The current agent is a **working vessel with no cargo**. It starts, logs, reads config, hosts modules, and stops cleanly. The next milestones fill it with DLP functionality.
+The current agent is a **working vessel with no cargo**. It starts, logs, reads config, hosts modules, routes events, and stops cleanly.
 
 ---
 
@@ -99,7 +101,8 @@ The current agent is a **working vessel with no cargo**. It starts, logs, reads 
 │                      Application                             │
 │  - Loads Config                                              │
 │  - Initializes Logger                                        │
-│  - Creates ServiceContext                                    │
+│  - Creates EventBus                                          │
+│  - Creates ServiceContext (config + event bus)               │
 │  - Creates ModuleManager                                     │
 │  - Registers modules                                         │
 │  - Dispatches install / uninstall / run                      │
@@ -131,7 +134,14 @@ The current agent is a **working vessel with no cargo**. It starts, logs, reads 
     │  ExampleModule   │      │  (future modules)│
     │  (proof of       │      │  Filesystem, USB,│
     │   concept)       │      │  Scanner, ...    │
-    └──────────────────┘      └──────────────────┘
+    └────────┬─────────┘      └──────────────────┘
+             │
+             │  publishes / subscribes
+             ▼
+    ┌──────────────────┐
+    │    EventBus      │
+    │  (pub/sub router)│
+    └──────────────────┘
 ```
 
 **Key design principles:**
@@ -139,8 +149,9 @@ The current agent is a **working vessel with no cargo**. It starts, logs, reads 
 1. **Interface in `core/`, implementation in `platform/<os>/`** — business logic never includes OS headers.
 2. **CMake selects one platform file per target** — no runtime dispatch, no `#ifdef` in application code.
 3. **Modules are the extension point** — every future DLP feature is a module.
-4. **Fail-safe** — missing config, failed modules, unavailable features never crash the agent.
-5. **RAII** — destructors flush logging and release resources, even on error paths.
+4. **Modules communicate through the event bus** — never directly.
+5. **Fail-safe** — missing config, failed modules, unavailable features never crash the agent.
+6. **RAII** — destructors flush logging and release resources, even on error paths.
 
 ---
 
@@ -190,6 +201,8 @@ axiomdlp-agent/
     │   ├── config.{h,cpp}             JSON config loading + validation
     │   ├── logger.{h,cpp}             Async logging wrapper
     │   ├── module_manager.{h,cpp}     Module lifecycle orchestrator
+    │   ├── event.{h,cpp}              Event struct + factory
+    │   ├── event_bus.{h,cpp}          Publish/subscribe system
     │   ├── health.h                   Health status types
     │   ├── service_context.h          Shared dependencies container
     │   ├── paths.h                    Platform path API
@@ -271,6 +284,12 @@ sudo apt install -y \
     libspdlog-dev nlohmann-json3-dev
 ```
 
+For editor support (recommended):
+
+```bash
+sudo apt install clangd
+```
+
 ### 5.5 Building All Targets
 
 ```bash
@@ -286,6 +305,16 @@ First run: ~2 minutes. Subsequent runs: ~1 minute.
 cmake --preset linux-x86_64-debug
 cmake --build --preset linux-x86_64-debug
 ```
+
+### 5.7 Regenerating the clangd Database
+
+After any CMake change or adding new source files:
+
+```bash
+./scripts/merge-compile-commands.sh
+```
+
+Then in VS Code: `Ctrl+Shift+P` → **clangd: Restart language server**.
 
 ---
 
@@ -309,7 +338,7 @@ cmake --build --preset linux-x86_64-debug
 | **GCC 13+** | Linux compilation |
 | **MinGW-w64** | Windows cross-compilation |
 | **pkg-config** | Library detection |
-| **clangd** | Editor IntelliSense (optional but recommended) |
+| **clangd** | Editor IntelliSense |
 
 ### Windows Runtime Requirements
 
@@ -359,10 +388,6 @@ The agent loads `config/agent.default.json` relative to its working directory.
 
 **The agent always starts.** Config problems produce warnings, not failures.
 
-### 7.5 Schema File
-
-`config/agent.schema.json` is a JSON Schema used by editors for autocomplete and by CI for validation.
-
 ---
 
 ## 8. Running as a Service
@@ -380,34 +405,16 @@ Full sequence:
 2. `systemctl daemon-reload`
 3. `systemctl enable --now axiomdlp-agent`
 
-**Expected output:**
-
-```
-[info] installed unit file: /etc/systemd/system/axiomdlp-agent.service
-[info] reloaded systemd configuration
-[info] enabled and started service axiomdlp-agent
-```
-
 **Verify:**
 
 ```bash
 sudo systemctl status axiomdlp-agent
 ```
 
-Should show `Active: active (running)`.
-
 **View logs:**
 
 ```bash
 sudo journalctl -u axiomdlp-agent -f
-```
-
-**Stop / start / restart:**
-
-```bash
-sudo systemctl stop axiomdlp-agent
-sudo systemctl start axiomdlp-agent
-sudo systemctl restart axiomdlp-agent
 ```
 
 **Uninstall:**
@@ -416,23 +423,13 @@ sudo systemctl restart axiomdlp-agent
 sudo ./build/linux-x86_64-release/axiomdlp-agent --uninstall
 ```
 
-Full sequence:
-1. `systemctl stop axiomdlp-agent`
-2. `systemctl disable axiomdlp-agent`
-3. Remove the unit file
-4. `systemctl daemon-reload`
-
 ### 8.2 Windows (SCM)
 
-**Install** (requires Administrator Command Prompt):
+**Install** (Administrator Command Prompt):
 
 ```cmd
 axiomdlp-agent.exe --install
 ```
-
-Full sequence:
-1. `CreateServiceA` — register with SCM (auto-start)
-2. `StartServiceA` — start immediately
 
 **Verify:**
 
@@ -440,33 +437,19 @@ Full sequence:
 sc query AxiomDLPAgent
 ```
 
-Should show `STATE : 4 RUNNING`.
-
 **Uninstall:**
 
 ```cmd
 axiomdlp-agent.exe --uninstall
 ```
 
-Full sequence:
-1. `ControlService(STOP)` and wait for stop
-2. `DeleteService`
-
 ### 8.3 Foreground Mode (Development)
-
-Run in a terminal without registering as a service:
 
 ```bash
 ./build/linux-x86_64-release/axiomdlp-agent --foreground
 ```
 
-Or on Windows:
-
-```cmd
-axiomdlp-agent.exe --foreground
-```
-
-Press `Ctrl+C` to stop. On Windows, Ctrl+C is not yet implemented — use Task Manager or close the terminal.
+Press `Ctrl+C` to stop. Windows: use Task Manager (Ctrl+C handler pending).
 
 ### 8.4 Automatic Mode Detection
 
@@ -474,16 +457,14 @@ The agent automatically detects how it was started:
 
 | Platform | Terminal | Service |
 |----------|----------|---------|
-| **Linux** | Same code path — signals work | Same code path — signals from systemd |
+| **Linux** | Same code path | Same code path |
 | **Windows** | `StartServiceCtrlDispatcherA` fails → foreground fallback | SCM drives the service lifecycle |
 
-**Neither platform requires the `--foreground` flag** — it's parsed but behavior is automatic.
+**Neither platform requires the `--foreground` flag.**
 
 ---
 
 ## 9. Platform Abstraction
-
-The core principle that makes the project cross-platform:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -495,10 +476,8 @@ The core principle that makes the project cross-platform:
               ▼                         ▼
     ┌──────────────────┐      ┌──────────────────┐
     │  platform/linux/ │      │ platform/windows/ │
-    │  Real Linux code │      │ Real Windows code │
     └──────────────────┘      └──────────────────┘
               ▲                         ▲
-              │                         │
               └──── CMake picks one ────┘
 ```
 
@@ -507,13 +486,13 @@ The core principle that makes the project cross-platform:
 | Interface | Purpose |
 |-----------|---------|
 | `service.h` | `IService` — service lifecycle |
-| `paths.h` | Path helpers — executable location, config, log, data directories |
+| `paths.h` | Path helpers |
 
 ### 9.2 Implementations in `platform/<os>/`
 
 | File | Purpose |
 |------|---------|
-| `platform/linux/service_linux.cpp` | systemd + signal handling + `sd_notify` |
+| `platform/linux/service_linux.cpp` | systemd + signals + `sd_notify` |
 | `platform/linux/paths_linux.cpp` | `/proc/self/exe`, `/etc`, `/var/log`, `/var/lib` |
 | `platform/windows/service_win.cpp` | SCM + `ServiceMain` + control handler |
 | `platform/windows/paths_windows.cpp` | `GetModuleFileNameA`, `SHGetKnownFolderPath` |
@@ -539,30 +518,19 @@ Then in C++:
 #endif
 ```
 
-Same source file compiles for every target with the correct feature set.
-
 ---
 
 ## 10. Module System
 
-The plugin architecture that every future DLP feature will use.
+The plugin architecture that every future DLP feature uses.
 
-### 10.1 What Is a Module
-
-A **module** is a self-contained feature. Every module:
-
-- Owns its own threads and state
-- Has a uniform interface
-- Is managed by the `ModuleManager`
-- Never calls other modules directly
-
-### 10.2 The Interface — `IModule`
+### 10.1 The Interface — `IModule`
 
 Seven methods every module implements:
 
 | Method | Purpose |
 |--------|---------|
-| `name()` | Module identifier (e.g., `"filesystem"`) |
+| `name()` | Module identifier |
 | `version()` | Semantic version string |
 | `initialize(ctx)` | One-time setup with shared context |
 | `start()` | Begin work |
@@ -570,51 +538,42 @@ Seven methods every module implements:
 | `shutdown()` | Release resources |
 | `health()` | Report current status |
 
-### 10.3 The Manager — `ModuleManager`
-
-Responsibilities:
+### 10.2 The Manager — `ModuleManager`
 
 | Method | When called |
 |--------|-------------|
 | `register_module()` | At startup, by the Application |
 | `initialize_all(ctx)` | Once, after all modules registered |
-| `start_all()` | Inside `Service::run()`, before signaling ready |
-| `stop_all()` | Inside `Service::run()`, on shutdown (reverse order) |
-| `shutdown_all()` | After all stopped (reverse order) |
+| `start_all()` | Inside `Service::run()`, before readiness |
+| `stop_all()` | Inside `Service::run()`, on shutdown (reverse) |
+| `shutdown_all()` | After all stopped (reverse) |
 | `health()` | On demand |
 
-**Fail-safe:** If one module fails to initialize or start, the others still run. The agent never goes down because of one broken module.
+**Fail-safe:** One module failing doesn't stop the others.
 
-**Ordering:** Stop and shutdown happen in **reverse registration order** — last registered stops first. This ensures dependent modules stop before their dependencies.
+**Ordering:** Stop and shutdown happen in reverse registration order.
 
-### 10.4 The Base Class — `ModuleBase`
+### 10.3 The Base Class — `ModuleBase`
 
-A convenience base class that provides default implementations for the trivial methods. Modules inherit from `ModuleBase` and override only what they need.
+Provides default implementations. Modules override only what they need:
 
 ```cpp
 class ExampleModule : public ModuleBase {
     std::string name() const override { return "example"; }
     bool start() override { /* ... */ return true; }
-    void stop() override { /* ... */ }
 };
 ```
 
-**Six of the seven methods come from the base class.** Only `name()` must be overridden.
+### 10.4 The Shared Context — `ServiceContext`
 
-### 10.5 The Shared Context — `ServiceContext`
+Holds references to all subsystems that modules need:
 
-Holds references to all subsystems that modules might need. Currently just `config`. Future milestones add:
+- `config` — the loaded configuration
+- `event_bus` — the pub/sub system
 
-- Event bus
-- Storage
-- Policy engine
-- Transport
+Future milestones add: storage, policy engine, transport.
 
-Modules receive the entire context. Adding a new subsystem doesn't change any module's signature.
-
-### 10.6 Health Reporting
-
-Every module reports a `HealthStatus`:
+### 10.5 Health Reporting
 
 | Level | Meaning |
 |-------|---------|
@@ -625,66 +584,136 @@ Every module reports a `HealthStatus`:
 
 The manager aggregates all module health into one summary.
 
-### 10.7 Adding a New Module
+### 10.6 Adding a New Module
 
-The three-step process:
-
-1. **Create the module class** — inherit from `ModuleBase`, override `name()` and any lifecycle methods.
-2. **Register it** — one line in `Application::init()`.
-3. **Compile** — done. The service loop never changes.
+Three steps:
+1. Create the class — inherit from `ModuleBase`
+2. Register it — one line in `Application::init()`
+3. Compile — done. The service loop never changes.
 
 ---
 
-## 11. Development Workflow
+## 11. Event Bus
 
-### 11.1 Typical Iteration
+The pub/sub system that lets modules communicate without knowing each other.
+
+### 11.1 The Problem It Solves
+
+Modules need to talk, but they can't call each other directly:
+- Filesystem produces events; Scanner needs to consume them
+- Scanner produces results; Policy needs to evaluate them
+- Policy produces decisions; Enforcer needs to act
+
+If modules call each other directly, every change ripples through the codebase.
+
+### 11.2 The Solution
+
+**Publish/subscribe.** Publishers broadcast events. Subscribers listen for events they care about. Neither knows the other.
+
+### 11.3 The Event
+
+```cpp
+struct Event {
+    std::string id;              // unique
+    std::string type;            // "file_access", "decision", ...
+    std::chrono::system_clock::time_point timestamp;
+    std::string user_id;
+    std::string process_name;
+    int pid = 0;
+    std::map<std::string, std::string> metadata;
+    std::optional<std::string> content;
+};
+```
+
+### 11.4 The API
+
+```cpp
+// Subscribe to a specific event type
+SubscriptionId id = bus.subscribe("file_access", handler);
+
+// Subscribe to every event
+SubscriptionId id = bus.subscribe_all(handler);
+
+// Publish an event
+bus.publish(event);
+
+// Stop receiving events
+bus.unsubscribe(id);
+```
+
+### 11.5 Standard Event Types
+
+Defined in `event_types::`:
+- `kFileAccess`, `kFileWrite`, `kFileDelete`
+- `kUsbInsert`, `kUsbRemove`
+- `kClipboardCopy`
+- `kPrintJob`
+- `kProcessSpawn`
+- `kScanResult`, `kDecision`
+
+### 11.6 Thread Safety
+
+- Subscriber list is protected by `std::mutex`
+- Publish copies matching handlers under the lock, then releases
+- Handlers run outside the lock — no deadlocks
+- Subscriber exceptions are caught per-handler — one bad subscriber doesn't break others
+
+### 11.7 Example Flow
+
+```
+FilesystemModule detects a file read
+    │
+    │  publishes: "file_access"
+    ▼
+[EventBus]
+    │
+    ├──► ScannerModule scans content, publishes "scan_result"
+    ├──► StorageModule logs it to the database
+    └──► TelemetryModule increments a counter
+```
+
+**Filesystem doesn't know about Scanner, Storage, or Telemetry.** It just publishes.
+
+---
+
+## 12. Development Workflow
+
+### 12.1 Typical Iteration
 
 ```bash
 # Edit code
 $EDITOR src/core/logger.cpp
 
-# Build one target (fast)
+# Build one target
 cmake --build --preset linux-x86_64-debug
 
 # Run in foreground
 ./build/linux-x86_64-debug/axiomdlp-agent --foreground
 ```
 
-### 11.2 Full Cross-Platform Check
+### 12.2 Full Cross-Platform Check
 
 ```bash
 ./scripts/build-all.sh
 ```
 
-### 11.3 Editor Setup (VS Code + clangd)
+### 12.3 Editor Setup (VS Code + clangd)
 
-The project uses **clangd** for IntelliSense. This is required because the Microsoft C/C++ extension cannot handle cross-compilation (it uses one compiler for the whole workspace).
+The project uses **clangd** for IntelliSense. The Microsoft C/C++ extension cannot handle cross-compilation (one compiler per workspace).
 
 **Setup:**
+1. `sudo apt install clangd`
+2. Install the `llvm-vs-code-extensions.vscode-clangd` extension
+3. Disable the Microsoft C/C++ extension
+4. Restart clangd after CMake changes
 
-1. Install clangd:
-   ```bash
-   sudo apt install clangd
-   ```
+**The project ships:**
+- `.clangd` — points clangd at the merged compile database
+- `.vscode/settings.json` — configures clangd with `--query-driver`
 
-2. Install the clangd extension in VS Code (`llvm-vs-code-extensions.vscode-clangd`).
+**Result:** Both Linux and Windows files get correct IntelliSense simultaneously.
 
-3. Disable the Microsoft C/C++ extension (workspace-level).
-
-4. The project ships:
-   - `.clangd` — points clangd at the merged compile database
-   - `.vscode/settings.json` — configures clangd with `--query-driver`
-
-5. Regenerate the merged compile database after each build:
-   ```bash
-   ./scripts/merge-compile-commands.sh
-   ```
-
-6. Restart clangd in VS Code: `Ctrl+Shift+P` → **clangd: Restart language server**.
-
-**Result:** Both Linux files (`readlink`, `<unistd.h>`) and Windows files (`<windows.h>`, `SHGetKnownFolderPath`) get correct IntelliSense simultaneously. No switching, no config changes.
-
-### 11.4 Common Commands
+### 12.4 Common Commands
 
 | Task | Command |
 |------|---------|
@@ -693,12 +722,11 @@ The project uses **clangd** for IntelliSense. This is required because the Micro
 | Run in foreground | `./build/linux-x86_64-release/axiomdlp-agent --foreground` |
 | Install service | `sudo ./build/linux-x86_64-release/axiomdlp-agent --install` |
 | Uninstall | `sudo ./build/linux-x86_64-release/axiomdlp-agent --uninstall` |
-| View logs (systemd) | `journalctl -u axiomdlp-agent -f` |
-| View logs (file) | `tail -f logs/agent.log` |
-| Merge compile DBs | `./scripts/merge-compile-commands.sh` |
+| View logs | `journalctl -u axiomdlp-agent -f` or `tail -f logs/agent.log` |
+| Regenerate clangd DB | `./scripts/merge-compile-commands.sh` |
 | Clean build | `rm -rf build && ./scripts/build-all.sh` |
 
-### 11.5 Command-Line Arguments
+### 12.5 Command-Line Arguments
 
 | Argument | Effect |
 |----------|--------|
@@ -707,11 +735,9 @@ The project uses **clangd** for IntelliSense. This is required because the Micro
 | `--uninstall` | Remove the service |
 | `--config <path>` | Use a specific config file |
 
-Unknown arguments are logged to `stderr` but do not prevent startup.
-
 ---
 
-## 12. Roadmap
+## 13. Roadmap
 
 ### Completed
 
@@ -719,58 +745,50 @@ Unknown arguments are logged to `stderr` but do not prevent startup.
 - ✅ **Milestone 2** — Async logging with spdlog
 - ✅ **Milestone 3** — Configuration loading
 - ✅ **Milestone 4** — Cross-platform service lifecycle
-- ✅ **Milestone 5** — Module system
+- ✅ **Milestone 5** — Module system (plugin architecture)
+- ✅ **Milestone 6** — Event bus (pub/sub)
 
 ### Planned
 
 | # | Milestone | Delivers |
 |---|-----------|----------|
-| 6 | **Event Bus** | Pub/sub between modules |
-| 7 | **Filesystem Module** | First real event source |
-| 8 | **Scanner** | Regex detection of PII patterns |
-| 9 | **Policy Engine** | Event + scan → decision |
-| 10 | **Storage** | SQLite for events, policies, offline queue |
-| 11 | **User-Mode Enforcement** | Block clipboard / file operations |
-| 12 | **IPC + Tray Helper** | User session UI |
-| 13 | **Transport** | HTTP + WebSocket to AxiomDLP Core |
-| 14 | **Kernel Enforcement** | Windows Minifilter / Linux eBPF LSM |
-| 15 | **Packaging** | Signed MSI, .deb, .rpm |
+| 7 | **Filesystem Module** | First real event source (inotify / ReadDirectoryChangesW) |
+| 8 | **USB Module** | USB device detection |
+| 9 | **Clipboard Module** | Clipboard monitoring |
+| 10 | **Scanner** | Regex detection of PII patterns |
+| 11 | **Policy Engine** | Event + scan → decision |
+| 12 | **Storage** | SQLite for events, policies, offline queue |
+| 13 | **User-Mode Enforcement** | Block clipboard / file operations |
+| 14 | **IPC + Tray Helper** | User session UI |
+| 15 | **Transport** | HTTP + WebSocket to AxiomDLP Core |
+| 16 | **Kernel Enforcement** | Windows Minifilter / Linux eBPF LSM |
+| 17 | **Packaging** | Signed MSI, .deb, .rpm |
 
 ---
 
-## 13. Known Limitations
+## 14. Known Limitations
 
-### 13.1 Config File Not Found When Running as Service
+### 14.1 Config File Not Found When Running as Service
 
-**Symptom:**
-
-```
-[warning] Config: config file not found at 'config/agent.default.json'
-```
-
-**Cause:** The service's working directory is `/` (Linux) or `C:\Windows\System32` (Windows). The relative path doesn't resolve.
+The service's working directory is `/` (Linux) or `C:\Windows\System32` (Windows). The relative path doesn't resolve.
 
 **Impact:** The agent uses built-in defaults. Logging works, service works, but custom config isn't loaded.
 
-**Planned fix:** Config path search (Milestone 6 or later).
+**Planned fix:** Config path search.
 
-### 13.2 No Ctrl+C Handler in Windows Foreground Mode
+### 14.2 No Ctrl+C Handler in Windows Foreground Mode
 
-Pressing Ctrl+C in a Windows Command Prompt doesn't stop the agent cleanly. You must close the terminal window or use Task Manager.
+Pressing Ctrl+C in Windows doesn't stop the agent cleanly. Use Task Manager or close the terminal.
 
-**Cause:** Windows doesn't use POSIX signals. It uses console control handlers, which aren't registered.
+**Planned fix:** Add `SetConsoleCtrlHandler`.
 
-**Impact:** Only affects foreground mode. Service mode stops cleanly via `SERVICE_CONTROL_STOP`.
+### 14.3 ServiceContext Is Minimal
 
-**Planned fix:** Add `SetConsoleCtrlHandler` (later milestone).
-
-### 13.3 service_context Only Has Config
-
-The `ServiceContext` currently contains only the config. The event bus, storage, policy engine, and transport will be added in later milestones. Until then, modules can only access config.
+Currently only holds `config` and `event_bus`. Storage, policy engine, and transport will be added in later milestones.
 
 ---
 
-## 14. License
+## 15. License
 
 Apache License 2.0 — see the `LICENSE` file for details.
 
@@ -786,9 +804,8 @@ The AxiomDLP Endpoint Agent currently provides:
 - **Service lifecycle** — systemd (Linux) and SCM (Windows) with one-command install/uninstall
 - **Platform abstraction** — interfaces in `core/`, implementations in `platform/<os>/`
 - **Module system** — plugin architecture where every future feature is a module
-- **Module lifecycle** — driven by the service, not the Application
-- **Health reporting** — every module reports status; the manager aggregates
-- **Cross-platform IntelliSense** — clangd with merged compile database
+- **Event bus** — publish/subscribe between modules with thread-safe delivery
+- **Cross-platform IntelliSense** — clangd with a merged compile database
 
 **The foundation is complete and production-quality.** The next milestones add the DLP functionality.
 
@@ -799,4 +816,4 @@ git clone <repo>
 cd axiomdlp-agent
 ./scripts/build-all.sh
 ./build/linux-x86_64-release/axiomdlp-agent --foreground
-```y
+```
