@@ -32,6 +32,9 @@ struct LoggingConfig {
 struct FilesystemModuleConfig {
     bool                     enabled = false;
     std::vector<std::string> watch_paths;
+    std::vector<std::string> exclude_paths;
+    int                      debounce_ms = 300;
+    int                      max_file_size_mb = 100;
 };
 
 // ----------------------------------------------------------------

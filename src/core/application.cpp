@@ -11,6 +11,7 @@
 #include <spdlog/spdlog.h>
 
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 
 namespace axiom::core {
@@ -33,9 +34,7 @@ Application::Options Application::parse_args(int argc, char** argv) {
             std::cerr << "unknown argument: " << a << "\n";
         }
     }
-    if (o.config_path.empty()) {
-        o.config_path = "config/agent.default.json";
-    }
+    // config_path is resolved later, once we know the platform default.
     return o;
 }
 
@@ -50,12 +49,46 @@ Application::~Application() {
 }
 
 // ----------------------------------------------------------------
+// Config path resolution
+// ----------------------------------------------------------------
+
+namespace {
+
+// Choose the config file to load:
+//   1. explicit --config <path> if provided
+//   2. ./config/agent.default.json if it exists (dev workflow)
+//   3. the platform default (/etc/axiomdlp/agent.json, ...)
+//
+// Step 3 fixes the "config not found when running as a service" bug:
+// systemd runs the process with CWD=/, so the dev-relative path never
+// resolves.
+std::string resolve_config_path(const std::string& explicit_path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    if (!explicit_path.empty()) {
+        return explicit_path;
+    }
+
+    const std::string dev_path = "config/agent.default.json";
+    if (fs::exists(dev_path, ec)) {
+        return dev_path;
+    }
+
+    return paths::default_config_path();
+}
+
+} // namespace
+
+// ----------------------------------------------------------------
 // Initialization
 // ----------------------------------------------------------------
 
 bool Application::init() {
-    // 1. Load config.
-    config_ = Config::load(opts_.config_path);
+    // 1. Resolve and load config.
+    const std::string config_path = resolve_config_path(opts_.config_path);
+    config_ = Config::load(config_path);
+    opts_.config_path = config_path;   // remember for logging
 
     // 2. Initialize logging.
     Logger::init(config_.logging.dir, config_.logging.file, config_.logging.level);
@@ -90,8 +123,13 @@ bool Application::init() {
         std::make_unique<EventLoggerModule>());
 
     // 7. Initialize all modules with the shared context.
+    //
+    //    Fail-safe by design: one module failing to initialize does
+    //    not stop the agent. The ModuleManager logs which modules
+    //    failed; we simply note the summary here. This returns true
+    //    intentionally - a partial agent is better than no agent.
     if (!module_manager_->initialize_all(*module_context_)) {
-        SPDLOG_WARN("Some modules failed to initialize");
+        SPDLOG_ERROR("Some modules failed to initialize; continuing anyway");
     }
 
     return true;
@@ -114,21 +152,35 @@ void Application::shutdown() {
 // ----------------------------------------------------------------
 
 int Application::execute() {
+    // Install / uninstall do not need config, modules, or the event
+    // bus. Handle them before full init so a one-shot command doesn't
+    // create log directories or start the module system.
+    if (opts_.install || opts_.uninstall) {
+        // Minimal logger so the messages are still visible.
+        Logger::init("logs", "install.log", "info");
+        initialized_ = true;
+
+        int rc = 0;
+        if (opts_.install) {
+            SPDLOG_INFO("Installing service...");
+            rc = install_service(paths::executable_path(), default_service_name());
+        } else {
+            SPDLOG_INFO("Uninstalling service...");
+            rc = uninstall_service(default_service_name());
+        }
+
+        Logger::shutdown();
+        initialized_ = false;
+        return rc;
+    }
+
     if (!init()) {
         return 1;
     }
 
-    // Install / uninstall take priority over running.
-    if (opts_.install) {
-        return install_service(paths::executable_path(), default_service_name());
-    }
-    if (opts_.uninstall) {
-        return uninstall_service(default_service_name());
-    }
-
     // Normal run.
     service_ = make_service(default_service_name());
-    service_->set_module_manager(module_manager_.get());    
+    service_->set_module_manager(module_manager_.get());
     const int rc = service_->run();
 
     SPDLOG_INFO("Service returned rc={}", rc);

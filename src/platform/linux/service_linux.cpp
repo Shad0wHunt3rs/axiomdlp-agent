@@ -10,6 +10,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>   // getenv
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -41,6 +42,10 @@ extern "C" void on_signal(int /*sig*/) {
 
 bool is_safe_service_name(const std::string& name) {
     if (name.empty()) return false;
+    // Reject path traversal outright.
+    if (name.find("..") != std::string::npos) return false;
+    // No leading or trailing dot.
+    if (name.front() == '.' || name.back() == '.') return false;
     for (char c : name) {
         const bool ok =
             (c >= 'a' && c <= 'z') ||
@@ -52,7 +57,24 @@ bool is_safe_service_name(const std::string& name) {
     return true;
 }
 
-// Run a program with an argument vector — no shell involved.
+// Probe well-known systemctl locations first, then fall back to $PATH.
+// execvp searches $PATH, which is unreliable in minimal containers
+// and under systemd's hardened default environment.
+std::string find_systemctl() {
+    const char* candidates[] = {
+        "/usr/bin/systemctl",
+        "/bin/systemctl",
+        "/usr/local/bin/systemctl",
+    };
+    for (const char* p : candidates) {
+        if (::access(p, X_OK) == 0) {
+            return p;
+        }
+    }
+    return "systemctl";   // rely on $PATH as a last resort
+}
+
+// Run a program with an argument vector - no shell involved.
 bool run_program(const std::string& program,
                  const std::vector<std::string>& args) {
     std::vector<char*> argv;
@@ -112,17 +134,31 @@ public:
         ::sigaction(SIGINT,  &sa, nullptr);
         std::signal(SIGHUP, SIG_IGN);
 
-        SPDLOG_INFO("{} starting (Linux service mode)", name_);
+        // Detect how we were launched. INVOCATION_ID is set by systemd
+        // for every unit it manages, so it's a more reliable signal than
+        // NOTIFY_SOCKET (which is only set for Type=notify units).
+        const bool under_systemd = (::getenv("INVOCATION_ID") != nullptr);
+
+        SPDLOG_INFO("{} starting ({})",
+                    name_,
+                    under_systemd ? "systemd service mode"
+                                  : "foreground mode");
 
         // 2. Start modules BEFORE signaling readiness.
         if (module_manager_) {
             module_manager_->start_all();
         }
 
-        // 3. Tell systemd we are ready.
+        // 3. Tell systemd we are ready, but only if systemd is actually
+        //    listening. Otherwise sd_notify is a no-op and the log line
+        //    would be misleading.
 #ifdef HAVE_SYSTEMD
-        sd_notify(0, "READY=1");
-        SPDLOG_INFO("sd_notify READY sent");
+        if (under_systemd) {
+            sd_notify(0, "READY=1");
+            SPDLOG_INFO("sd_notify READY sent");
+        } else {
+            SPDLOG_DEBUG("not running under systemd; skipping sd_notify");
+        }
 #endif
 
         // 4. Main loop.
@@ -139,7 +175,9 @@ public:
         }
 
 #ifdef HAVE_SYSTEMD
-        sd_notify(0, "STOPPING=1");
+        if (under_systemd) {
+            sd_notify(0, "STOPPING=1");
+        }
 #endif
 
         return 0;
@@ -204,18 +242,21 @@ int install_service(const std::string& binary_path,
         SPDLOG_INFO("installed unit file: {}", unit_path);
     }
 
-    if (run_program("systemctl", {"daemon-reload"})) {
+    const std::string systemctl = find_systemctl();
+    SPDLOG_INFO("using systemctl at: {}", systemctl);
+
+    if (run_program(systemctl, {"daemon-reload"})) {
         SPDLOG_INFO("reloaded systemd configuration");
     } else {
         SPDLOG_WARN("systemctl daemon-reload failed");
     }
 
-    if (run_program("systemctl", {"enable", "--now", service_name})) {
+    if (run_program(systemctl, {"enable", "--now", service_name})) {
         SPDLOG_INFO("enabled and started service {}", service_name);
     } else {
         SPDLOG_WARN("systemctl enable --now failed for {}; "
-                    "run manually: systemctl enable --now {}",
-                    service_name, service_name);
+                    "run manually: {} enable --now {}",
+                    service_name, systemctl, service_name);
     }
 
     return 0;
@@ -231,15 +272,17 @@ int uninstall_service(const std::string& service_name) {
         return 1;
     }
 
+    const std::string systemctl = find_systemctl();
+
     SPDLOG_INFO("stopping service {}", service_name);
-    if (run_program("systemctl", {"stop", service_name})) {
+    if (run_program(systemctl, {"stop", service_name})) {
         SPDLOG_INFO("  stop: ok");
     } else {
         SPDLOG_INFO("  stop: failed or service was not running");
     }
 
     SPDLOG_INFO("disabling service {}", service_name);
-    if (run_program("systemctl", {"disable", service_name})) {
+    if (run_program(systemctl, {"disable", service_name})) {
         SPDLOG_INFO("  disable: ok");
     } else {
         SPDLOG_INFO("  disable: failed or service was not enabled");
@@ -260,7 +303,7 @@ int uninstall_service(const std::string& service_name) {
         SPDLOG_INFO("removed unit file: {}", unit_path);
     }
 
-    if (run_program("systemctl", {"daemon-reload"})) {
+    if (run_program(systemctl, {"daemon-reload"})) {
         SPDLOG_INFO("reloaded systemd configuration");
     } else {
         SPDLOG_WARN("systemctl daemon-reload failed");

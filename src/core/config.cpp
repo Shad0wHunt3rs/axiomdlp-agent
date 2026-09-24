@@ -40,6 +40,20 @@ void read_bool(const json& obj,
     out = obj[key].get<bool>();
 }
 
+// Apply an integer field from JSON if present and valid.
+void read_int(const json& obj,
+              const char* key,
+              int& out,
+              std::vector<std::string>& warnings,
+              const std::string& section) {
+    if (!obj.contains(key)) return;
+    if (!obj[key].is_number_integer()) {
+        warnings.push_back(section + "." + key + " must be an integer; using default");
+        return;
+    }
+    out = obj[key].get<int>();
+}
+
 // Apply an array-of-strings field from JSON if present and valid.
 void read_string_array(const json& obj,
                        const char* key,
@@ -130,6 +144,29 @@ Config Config::load(const std::string& path) {
                     read_string_array(fs, "watch_paths",
                                       cfg.modules.filesystem.watch_paths,
                                       cfg.load_warnings, "modules.filesystem");
+                    read_string_array(fs, "exclude_paths",
+                                      cfg.modules.filesystem.exclude_paths,
+                                      cfg.load_warnings, "modules.filesystem");
+                    read_int(fs, "debounce_ms",
+                             cfg.modules.filesystem.debounce_ms,
+                             cfg.load_warnings, "modules.filesystem");
+                    read_int(fs, "max_file_size_mb",
+                             cfg.modules.filesystem.max_file_size_mb,
+                             cfg.load_warnings, "modules.filesystem");
+
+                    // Sanity clamps: a negative debounce would fire events
+                    // immediately and defeat the purpose; a negative size
+                    // limit is meaningless.
+                    if (cfg.modules.filesystem.debounce_ms < 0) {
+                        cfg.load_warnings.push_back(
+                            "modules.filesystem.debounce_ms must be >= 0; using 300");
+                        cfg.modules.filesystem.debounce_ms = 300;
+                    }
+                    if (cfg.modules.filesystem.max_file_size_mb < 0) {
+                        cfg.load_warnings.push_back(
+                            "modules.filesystem.max_file_size_mb must be >= 0; using 100");
+                        cfg.modules.filesystem.max_file_size_mb = 100;
+                    }
                 } else {
                     cfg.load_warnings.push_back(
                         "'modules.filesystem' must be an object; using defaults");

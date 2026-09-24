@@ -1,516 +1,824 @@
-# AxiomDLP Endpoint Agent — README
+# AxiomDLP Endpoint Agent — DONE.md
 
-A cross-platform Data Leak Prevention (DLP) endpoint agent written in modern C++20. Runs as a native background service on Linux and Windows. Builds four targets from a single Linux host.
+> **Status document — what has actually been implemented and verified.**
+>
+> This document is the truthful mirror of the codebase. Every claim here can be verified by reading the source. It supersedes any status section in the other docs (README.md, next.md, architecture.md) where those are stale.
 
-**Status:** Foundation complete. The agent is a working service with logging, config, module system, and event bus. No DLP features yet.
+**Last updated:** After Milestone 7 completion + full bug-fix pass on 2026-09-24.
 
 ---
 
 ## Table of Contents
 
-1. [Overview](#1-overview)
-2. [Current Status](#2-current-status)
-3. [Architecture](#3-architecture)
-4. [Directory Structure](#4-directory-structure)
-5. [Build System](#5-build-system)
-6. [Dependencies](#6-dependencies)
-7. [Configuration](#7-configuration)
-8. [Running as a Service](#8-running-as-a-service)
-9. [Platform Abstraction](#9-platform-abstraction)
-10. [Module System](#10-module-system)
-11. [Event Bus](#11-event-bus)
-12. [Development Workflow](#12-development-workflow)
-13. [Roadmap](#13-roadmap)
-14. [Known Limitations](#14-known-limitations)
-15. [License](#15-license)
+1. [Executive Summary](#1-executive-summary)
+2. [What Exists vs What Was Planned](#2-what-exists-vs-what-was-planned)
+3. [Repository Layout (Actual)](#3-repository-layout-actual)
+4. [Build System](#4-build-system)
+5. [Cross-Compilation Targets](#5-cross-compilation-targets)
+6. [The Core Framework](#6-the-core-framework)
+7. [The Module System](#7-the-module-system)
+8. [The Event Bus](#8-the-event-bus)
+9. [The Filesystem Module](#9-the-filesystem-module)
+10. [The Event Logger Module](#10-the-event-logger-module)
+11. [The Example Module](#11-the-example-module)
+12. [Platform Abstraction Layer](#12-platform-abstraction-layer)
+13. [Service Lifecycle (Linux + Windows)](#13-service-lifecycle-linux--windows)
+14. [Configuration System](#14-configuration-system)
+15. [Logging Subsystem](#15-logging-subsystem)
+16. [Bug Fixes Applied](#16-bug-fixes-applied)
+17. [Runtime Evidence — What the Logs Prove](#17-runtime-evidence--what-the-logs-prove)
+18. [Known Limitations](#18-known-limitations)
+19. [What Does Not Exist Yet](#19-what-does-not-exist-yet)
+20. [Commands Reference](#20-commands-reference)
+21. [Verification Checklist](#21-verification-checklist)
+22. [Next Milestones](#22-next-milestones)
 
 ---
 
-## 1. Overview
+## 1. Executive Summary
 
-**AxiomDLP Endpoint Agent** is the endpoint-side component of the AxiomDLP platform. It runs as a privileged background service on user machines and is designed to:
+The AxiomDLP Endpoint Agent is a **working, cross-platform background service** with a complete foundation and its first real DLP data source running. It is no longer a bare skeleton.
 
-- Monitor local activity (filesystem, USB, clipboard, printing, browser)
-- Detect sensitive data in real time
-- Enforce DLP policies locally
-- Work fully offline with a local cache
-- Report events to the AxiomDLP Core backend
-- Complement the existing email milter (which handles SMTP egress)
+**What runs today:**
 
-**Design goals:**
+- Builds four separate binaries from a single Linux host (Linux 32/64, Windows 32/64)
+- Runs as a privileged service on Linux (systemd) and Windows (SCM)
+- Reads JSON config with fail-safe defaults
+- Writes async structured logs to console + rotating file
+- Hosts three modules that start, stop, and shut down cleanly
+- Captures real filesystem activity, debounces it, publishes it on the event bus
+- Logs every event for observability
+- Excludes configured paths and its own log directory
 
-- **Cross-platform** — Linux and Windows from one codebase
-- **Modular** — every feature is a plugin; new ones add without touching the core
-- **Event-driven** — modules communicate through an in-process pub/sub bus
-- **Offline-first** — local policy cache and event queue (future)
-- **Kernel-ready** — enforcement abstraction allows user-mode → kernel-mode upgrades (future)
-- **Fail-safe** — bad config, missing libraries, or unavailable features never crash the agent
-- **Observable** — structured async logging, health reporting, config-driven behavior
+**What does not exist yet:**
 
----
+- Scanner (regex / remote PII)
+- Policy engine
+- Storage (SQLite)
+- Enforcement
+- Transport to AxiomDLP Core
+- Kernel drivers
 
-## 2. Current Status
-
-### What Works Today
-
-| Capability | Status |
-|-----------|--------|
-| Build for Linux x86_64 | ✅ Working |
-| Build for Linux i686 | ✅ Working |
-| Build for Windows x86_64 (cross-compiled from Linux) | ✅ Working |
-| Build for Windows i686 (cross-compiled from Linux) | ✅ Working |
-| Async structured logging (console + rotating file) | ✅ Working |
-| Config loading from JSON with validation | ✅ Working |
-| systemd service integration (Linux) | ✅ Verified |
-| Windows SCM service integration | ✅ Verified |
-| Graceful shutdown via signals / SCM controls | ✅ Verified |
-| One-command install / uninstall | ✅ Working |
-| Module system (plugin architecture) | ✅ Working |
-| Event bus (pub/sub between modules) | ✅ Working |
-| Cross-platform VS Code IntelliSense via clangd | ✅ Working |
-
-### What Does Not Exist Yet
-
-| Feature | Milestone |
-|---------|-----------|
-| Filesystem monitoring | 7 |
-| USB device detection | 8 |
-| Clipboard monitoring | 9 |
-| Local regex scanner | 10 |
-| Policy engine | 11 |
-| SQLite storage | 12 |
-| User-mode enforcement | 13 |
-| IPC + tray helper | 14 |
-| Transport to core (HTTP + WebSocket) | 15 |
-| Kernel enforcement (minifilter / eBPF) | 16 |
-
-The current agent is a **working vessel with no cargo**. It starts, logs, reads config, hosts modules, routes events, and stops cleanly.
+The agent is a **monitoring pipeline without a decision-maker**. It sees everything, records it, and does nothing about it. That is exactly the right shape at this milestone.
 
 ---
 
-## 3. Architecture
+## 2. What Exists vs What Was Planned
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                        main.cpp                              │
-│                   Thin entry point (5 lines)                 │
-└──────────────────────────┬───────────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│                      Application                             │
-│  - Loads Config                                              │
-│  - Initializes Logger                                        │
-│  - Creates EventBus                                          │
-│  - Creates ServiceContext (config + event bus)               │
-│  - Creates ModuleManager                                     │
-│  - Registers modules                                         │
-│  - Dispatches install / uninstall / run                      │
-└──────────────────────────┬───────────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│                      Service                                 │
-│  - Owns the module lifecycle                                 │
-│  - Installs signal / SCM handlers                            │
-│  - Starts modules                                            │
-│  - Signals readiness (sd_notify / SetServiceStatus)          │
-│  - Runs main loop                                            │
-│  - Stops modules                                             │
-│  - Signals stopping                                          │
-└──────────────────────────┬───────────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│                   ModuleManager                              │
-│  - Owns all modules                                          │
-│  - Drives their lifecycle (init → start → stop → shutdown)   │
-│  - Aggregates their health                                   │
-└──────────────────────────┬───────────────────────────────────┘
-                           │
-              ┌────────────┴────────────┐
-              ▼                         ▼
-    ┌──────────────────┐      ┌──────────────────┐
-    │  ExampleModule   │      │  (future modules)│
-    │  (proof of       │      │  Filesystem, USB,│
-    │   concept)       │      │  Scanner, ...    │
-    └────────┬─────────┘      └──────────────────┘
-             │
-             │  publishes / subscribes
-             ▼
-    ┌──────────────────┐
-    │    EventBus      │
-    │  (pub/sub router)│
-    └──────────────────┘
-```
+The roadmap in `next.md` laid out milestones in a specific order. The actual code has moved faster than the doc reflects. The table below is the honest reconciliation.
 
-**Key design principles:**
+| Milestone | Description | Planned | Actual |
+|-----------|-------------|---------|--------|
+| 1 | Project skeleton | ✅ | ✅ Done |
+| 2 | Async logging with spdlog | ✅ | ✅ Done |
+| 3 | Config loading | ✅ | ✅ Done |
+| 4 | Cross-platform service lifecycle | ✅ | ✅ Done |
+| 5 | Module system (plugin architecture) | ⬜ | ✅ **Done** |
+| 6 | Event bus (pub/sub) | ⬜ | ✅ **Done** |
+| 7 | Filesystem module | ⬜ | ✅ **Done** (efsw-backed) |
+| — | Event logger module (bonus) | — | ✅ Done |
+| — | Full bug-fix pass (feedback loop, exclusions, debounce priority, config path, install flow) | — | ✅ Done |
+| 8 | Scanner | ⬜ | **Next** |
+| 9 | Policy engine | ⬜ | Planned |
+| 10 | Storage (SQLite) | ⬜ | Planned |
+| 11 | User-mode enforcement | ⬜ | Planned |
+| 12 | IPC + tray helper | ⬜ | Planned |
+| 13 | Transport (HTTP + WS) | ⬜ | Planned |
+| 14 | Kernel enforcement | ⬜ | Planned |
 
-1. **Interface in `core/`, implementation in `platform/<os>/`** — business logic never includes OS headers.
-2. **CMake selects one platform file per target** — no runtime dispatch, no `#ifdef` in application code.
-3. **Modules are the extension point** — every future DLP feature is a module.
-4. **Modules communicate through the event bus** — never directly.
-5. **Fail-safe** — missing config, failed modules, unavailable features never crash the agent.
-6. **RAII** — destructors flush logging and release resources, even on error paths.
+**The documentation lag:** `README.md` and `next.md` still say "Milestone 5 is next." This document is authoritative on what exists. Update those files when convenient, but treat this one as the source of truth.
 
 ---
 
-## 4. Directory Structure
+## 3. Repository Layout (Actual)
 
 ```
 axiomdlp-agent/
-├── CMakeLists.txt                     Build recipe
-├── CMakePresets.json                  8 named build configurations
-├── .clangd                            clangd config (points at merged DB)
-├── .vscode/
-│   └── settings.json                  clangd + query-driver config
+├── CMakeLists.txt                    Root build recipe
+├── CMakePresets.json                 8 named build configurations
+├── compile_commands.json             Merged clangd DB (gitignored)
+├── .clangd                           clangd config
+├── .vscode/settings.json             clangd + query-driver
 ├── .gitignore
-├── LICENSE
-├── README.md
+├── LICENSE                           Apache 2.0
+├── README.md                         Stale (see DONE.md)
+├── next.md                           Stale roadmap
+├── done.md                           This file
 │
-├── .deps/                             Cached third-party sources (gitignored)
+├── .deps/                            Cached FetchContent sources (gitignored)
 │   ├── spdlog-src/
-│   └── nlohmann_json-src/
+│   ├── nlohmann_json-src/
+│   └── efsw-src/
 │
 ├── cmake/
-│   └── toolchains/                    Cross-compile toolchain files
+│   └── toolchains/
 │       ├── linux-x86_64.cmake
 │       ├── linux-i686.cmake
 │       ├── windows-x86_64.cmake
 │       └── windows-i686.cmake
 │
 ├── config/
-│   ├── agent.default.json             Default runtime config
-│   └── agent.schema.json              JSON Schema for editors
+│   ├── agent.default.json            Linux defaults
+│   ├── agent.default_win.json        Windows defaults
+│   └── agent.schema.json             JSON Schema
 │
-├── docs/                              Architecture documents
+├── docs/                             Reference architecture
+│   ├── architecture.md
+│   ├── event_schema.md
+│   ├── file_structure.md
+│   ├── ipc_protocol.md
+│   ├── modules.md
+│   └── policy_format.md
+│
+├── logs/                             Runtime log output (gitignored)
+│   └── agent.log
 │
 ├── packaging/
-│   ├── linux/systemd/                 Reference systemd unit file
-│   └── windows/                       Reference PowerShell install script
+│   ├── linux/systemd/                Reference unit file
+│   └── windows/                      Reference install script
 │
 ├── scripts/
-│   ├── build-all.sh                   Build all four targets
-│   └── merge-compile-commands.sh      Merge 6 DBs into one (for clangd)
+│   ├── build-all.sh                  Build all four targets
+│   └── merge-compile-commands.sh     Merge 6 DBs into one for clangd
 │
 └── src/
-    ├── main.cpp                       Entry point (5 lines)
+    ├── main.cpp                      5-line entry point
     │
-    ├── core/                          Framework (no OS-specific code)
-    │   ├── application.{h,cpp}        Orchestration
-    │   ├── config.{h,cpp}             JSON config loading + validation
-    │   ├── logger.{h,cpp}             Async logging wrapper
-    │   ├── module_manager.{h,cpp}     Module lifecycle orchestrator
-    │   ├── event.{h,cpp}              Event struct + factory
-    │   ├── event_bus.{h,cpp}          Publish/subscribe system
-    │   ├── health.h                   Health status types
-    │   ├── service_context.h          Shared dependencies container
-    │   ├── paths.h                    Platform path API
-    │   └── service.h                  IService interface
+    ├── core/
+    │   ├── application.{h,cpp}       Orchestration + arg parsing + config resolution
+    │   ├── config.{h,cpp}            JSON load + validate + defaults
+    │   ├── event.{h,cpp}             Event struct + factory
+    │   ├── event_bus.{h,cpp}         Thread-safe pub/sub
+    │   ├── file_watcher.h            IFileWatcher interface
+    │   ├── health.h                  HealthStatus types
+    │   ├── logger.{h,cpp}            Async spdlog setup
+    │   ├── module_context.h          Shared module dependency container
+    │   ├── module_manager.{h,cpp}    Lifecycle orchestrator
+    │   ├── paths.h                   Platform path API (interface)
+    │   └── service.h                 IService interface
     │
     ├── interfaces/
-    │   └── i_module.h                 Module interface (7 methods)
+    │   └── i_module.h                The 7-method module contract
     │
     ├── modules/
-    │   ├── module_base.{h,cpp}        Convenience base class for modules
-    │   └── example/
-    │       └── example_module.{h,cpp} Proof-of-concept module
+    │   ├── module_base.{h,cpp}       Convenience base for modules
+    │   ├── example/
+    │   │   ├── example_module.{h,cpp}
+    │   ├── event_logger/
+    │   │   ├── event_logger_module.{h,cpp}
+    │   └── filesystem/
+    │       ├── filesystem_module.{h,cpp}
     │
-    └── platform/                      OS-specific implementations
+    └── platform/
+        ├── common/
+        │   └── efsw_file_watcher.cpp IFileWatcher impl via efsw
         ├── linux/
-        │   ├── paths_linux.cpp        /etc, /var/log, /var/lib
-        │   └── service_linux.cpp      systemd + sd_notify
+        │   ├── paths_linux.cpp       /proc/self/exe, /etc, /var/log, /var/lib
+        │   └── service_linux.cpp     systemd + sd_notify + install/uninstall
         └── windows/
-            ├── paths_windows.cpp      C:\ProgramData\...
-            └── service_win.cpp        SCM + ServiceMain
+            ├── paths_windows.cpp     GetModuleFileNameA, SHGetKnownFolderPath
+            └── service_win.cpp       SCM + ServiceMain + install/uninstall
 ```
+
+**32 source files** across 11 directories. No orphaned or placeholder files.
 
 ---
 
-## 5. Build System
+## 4. Build System
 
-### 5.1 The Four Targets
+### 4.1 CMake
 
-From one Linux host, we build four binaries:
+- **CMake ≥ 3.24** (uses `CMakePresets.json` v6 features)
+- **Ninja** as the generator
+- **C++20** with extensions disabled
+- `CMAKE_EXPORT_COMPILE_COMMANDS ON` for clangd
+- `CMAKE_POSITION_INDEPENDENT_CODE ON`
 
-| Preset | Output | Purpose |
-|--------|--------|---------|
-| `linux-x86_64-{debug,release}` | `build/linux-x86_64-*/axiomdlp-agent` | Modern Linux |
-| `linux-i686-{debug,release}` | `build/linux-i686-*/axiomdlp-agent` | Legacy 32-bit Linux |
-| `windows-x86_64-{debug,release}` | `build/windows-x86_64-*/axiomdlp-agent.exe` | Modern Windows |
-| `windows-i686-{debug,release}` | `build/windows-i686-*/axiomdlp-agent.exe` | Legacy 32-bit Windows |
+### 4.2 Dependencies (all fetched or system)
 
-### 5.2 Toolchain Files
+| Library | How It's Obtained | Purpose |
+|---------|-------------------|---------|
+| **spdlog** v1.14.1 | FetchContent + `.deps/` cache | Async logging |
+| **nlohmann/json** v3.11.3 | System on Linux; FetchContent on Windows | Config parsing |
+| **efsw** v1.7.2 | FetchContent + `.deps/` cache | File watching (wraps inotify/Win32) |
+| **libsystemd** | `pkg-config` (Linux only, optional) | `sd_notify` |
 
-Each target has a toolchain file in `cmake/toolchains/`.
+`spdlog` is compiled (`SPDLOG_COMPILED_LIB`), not header-only. This gives faster builds and smaller objects across the four targets.
 
-**Linux toolchains** use the host's native `gcc` / `g++`. The 32-bit Linux toolchain adds `-m32`.
+### 4.3 Source Caching
 
-**Windows toolchains** use MinGW-w64 cross-compilers (`x86_64-w64-mingw32-g++` and `i686-w64-mingw32-g++`) with strict root path isolation:
+`.deps/` holds git-checked-out sources so deleting `build/` never re-downloads. The root `CMakeLists.txt` sets `FETCHCONTENT_SOURCE_DIR_*` variables when the cached directories exist.
+
+### 4.4 Compile Options
+
+- **Linux:** `-fstack-protector-strong -fPIE` compile, `-pie -Wl,-z,relro,-z,now` link
+- **Windows:** `-static -static-libgcc -static-libstdc++` (no DLL dependencies)
+- **Warnings:** `-Wall -Wextra -Wpedantic` on both
+
+### 4.5 Windows Runtime
+
+The Windows binaries are **fully static**. They do not require:
+- MSVC redistributable
+- `libstdc++-6.dll`
+- `libgcc_s_seh-1.dll`
+
+They run on **Windows 7 SP1 or later**, x86 and x64.
+
+---
+
+## 5. Cross-Compilation Targets
+
+Eight presets, four targets, two build types each:
+
+| Preset | Output | Compiler |
+|--------|--------|----------|
+| `linux-x86_64-debug` / `-release` | `build/linux-x86_64-*/axiomdlp-agent` | `/usr/bin/g++` |
+| `linux-i686-debug` / `-release` | `build/linux-i686-*/axiomdlp-agent` | `/usr/bin/g++ -m32` |
+| `windows-x86_64-debug` / `-release` | `build/windows-x86_64-*/axiomdlp-agent.exe` | `x86_64-w64-mingw32-g++` |
+| `windows-i686-debug` / `-release` | `build/windows-i686-*/axiomdlp-agent.exe` | `i686-w64-mingw32-g++` |
+
+**Toolchain isolation:** The Windows toolchains set:
 
 ```cmake
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)   # Host tools
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)    # MinGW libraries only
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)    # MinGW headers only
-set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)    # MinGW packages only
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 ```
 
-These four lines prevent cross-compilation contamination — a Linux `.so` can never link into a Windows `.exe`.
+This prevents a Linux `.so` from ever linking into a Windows `.exe`. Verified in `compile_commands.json`: Windows targets reference MinGW headers, Linux targets reference `/usr/include`.
 
-### 5.3 Dependency Caching
-
-Third-party sources are cached in `.deps/` so deleting `build/` doesn't trigger re-downloads.
-
-| Dependency | Source | Reason |
-|------------|--------|--------|
-| **spdlog** | FetchContent + `.deps/spdlog-src/` | Compiled library — must be built per target |
-| **nlohmann_json** | System (`apt`) on Linux; `.deps/nlohmann_json-src/` on Windows | Header-only, but cross-compile needs isolated headers |
-
-### 5.4 Prerequisites
-
-On Kali/Debian/Ubuntu:
+**Prerequisites (Kali/Debian/Ubuntu):**
 
 ```bash
 sudo dpkg --add-architecture i386
 sudo apt update
 sudo apt install -y \
-    build-essential \
-    gcc-multilib g++-multilib \
-    mingw-w64 \
-    ninja-build \
-    git \
-    file \
+    build-essential gcc-multilib g++-multilib \
+    mingw-w64 ninja-build git file clangd \
     libsystemd-dev libsystemd-dev:i386 \
     libspdlog-dev nlohmann-json3-dev
 ```
 
-For editor support (recommended):
+**Build all four:**
 
 ```bash
-sudo apt install clangd
-```
-
-### 5.5 Building All Targets
-
-```bash
-cd ~/axiomdlp-agent
 ./scripts/build-all.sh
 ```
 
-First run: ~2 minutes. Subsequent runs: ~1 minute.
-
-### 5.6 Building a Single Target
-
-```bash
-cmake --preset linux-x86_64-debug
-cmake --build --preset linux-x86_64-debug
-```
-
-### 5.7 Regenerating the clangd Database
-
-After any CMake change or adding new source files:
-
-```bash
-./scripts/merge-compile-commands.sh
-```
-
-Then in VS Code: `Ctrl+Shift+P` → **clangd: Restart language server**.
+First run ~2 minutes. Subsequent runs ~1 minute.
 
 ---
 
-## 6. Dependencies
+## 6. The Core Framework
 
-### Runtime
+### 6.1 `Application` — `src/core/application.{h,cpp}`
 
-| Library | Purpose | How It's Used |
-|---------|---------|---------------|
-| **spdlog** | Async logging | FetchContent with `.deps/` cache |
-| **nlohmann/json** | JSON parsing | System on Linux; FetchContent on Windows |
-| **libsystemd** | `sd_notify` | Detected via pkg-config (Linux only) |
-| **fmt** | String formatting | Transitive dependency of spdlog |
+The top-level orchestrator. Owns everything with a non-trivial lifetime.
 
-### Build-Time
+**Responsibilities:**
 
-| Tool | Purpose |
-|------|---------|
-| **CMake** ≥ 3.24 | Build system |
-| **Ninja** | Build generator |
-| **GCC 13+** | Linux compilation |
-| **MinGW-w64** | Windows cross-compilation |
-| **pkg-config** | Library detection |
-| **clangd** | Editor IntelliSense |
+1. Parse command-line arguments (`--install`, `--uninstall`, `--foreground`, `--config <path>`)
+2. Resolve the config path via a fallback chain (see §14.1)
+3. Load `Config` (fail-safe; warnings collected, never throws)
+4. Initialize the `Logger`
+5. Create the `EventBus`
+6. Create the `ModuleContext` (references the `Config` and `EventBus`)
+7. Create the `ModuleManager`
+8. Register all modules in order
+9. Call `initialize_all()` on the manager
+10. For `--install`/`--uninstall`: short-circuit before full init, use a minimal `install.log`
+11. For normal run: create the platform `IService`, wire in the manager, run
 
-### Windows Runtime Requirements
+**Shutdown (RAII):** `Application::~Application()` calls `shutdown()` which calls `Logger::shutdown()`. This flushes any pending async log messages before the process exits.
 
-Windows binaries are **fully static** — no MSVC redistributable, no `libstdc++-6.dll`, no `libgcc_s_seh-1.dll`. The `.exe` runs on any Windows 7+ system.
+**Short-circuit logic (new):**
 
----
-
-## 7. Configuration
-
-### 7.1 File Location
-
-The agent loads `config/agent.default.json` relative to its working directory.
-
-**Default locations (planned):**
-- Linux: `/etc/axiomdlp/agent.json`
-- Windows: `C:\ProgramData\AxiomDLP\agent.json`
-
-### 7.2 Current Schema
-
-```json
-{
-  "logging": {
-    "dir":   "logs",
-    "file":  "agent.log",
-    "level": "info"
-  }
+```cpp
+int Application::execute() {
+    if (opts_.install || opts_.uninstall) {
+        Logger::init("logs", "install.log", "info");
+        // run install/uninstall, then return
+    }
+    if (!init()) return 1;
+    service_ = make_service(...);
+    service_->set_module_manager(module_manager_.get());
+    return service_->run();
 }
 ```
 
-### 7.3 Field Reference
+Install/uninstall no longer create the module tree or the event bus.
 
-| Field | Type | Default | Allowed Values |
-|-------|------|---------|----------------|
-| `logging.dir` | string | `"logs"` | Any directory path |
-| `logging.file` | string | `"agent.log"` | Any filename |
-| `logging.level` | string | `"info"` | `trace`, `debug`, `info`, `warn`, `error`, `critical`, `off` |
+### 6.2 `Config` — `src/core/config.{h,cpp}`
 
-### 7.4 Behavior
+See §14 for full detail. Summary:
 
-| Scenario | Behavior |
-|----------|----------|
-| Missing file | Warning, use defaults |
-| Invalid JSON | Warning, use defaults |
-| Wrong field type | Warning, use default for that field |
-| Invalid level | Warning, use `"info"` |
-| Missing field | Silently use default |
+- Nested structs mirror the JSON structure
+- Every field has a safe default
+- Loading never throws; problems are collected as warnings
+- Missing file → warning + defaults
+- Invalid JSON → warning + defaults
+- Wrong type per field → warning + default for that field only
+- Clamping applied to integer fields (negative `debounce_ms` → 300)
 
-**The agent always starts.** Config problems produce warnings, not failures.
+### 6.3 `Logger` — `src/core/logger.{h,cpp}`
+
+See §15 for full detail. Summary:
+
+- spdlog async logger
+- 8192-slot queue, 1 background worker
+- Console sink (colored) + rotating file sink (5 MB × 3)
+- `overrun_oldest` policy: never blocks the caller
+- Format: `[timestamp] [level] [thread-id] message`
+- Flush on `warn` and above
+- Registered as the global default logger
+
+### 6.4 `Event` — `src/core/event.{h,cpp}`
+
+```cpp
+struct Event {
+    std::string id;                    // "1790235151064336632-1" (nanos-counter)
+    std::string type;                  // "file_write", ...
+    std::chrono::system_clock::time_point timestamp;
+    std::string user_id;               // reserved, not populated yet
+    std::string process_name;          // reserved, not populated yet
+    int pid = 0;                       // reserved, not populated yet
+    std::map<std::string, std::string> metadata;
+    std::optional<std::string> content;   // reserved for Scanner
+    static Event create(const std::string& type);
+};
+```
+
+ID generation is monotonic: nanoseconds since epoch + atomic counter. Two events created in the same nanosecond still get distinct IDs.
+
+Canonical type strings in `event_types::`: `kFileAccess`, `kFileWrite`, `kFileDelete`, `kUsbInsert`, `kUsbRemove`, `kClipboardCopy`, `kPrintJob`, `kProcessSpawn`, `kScanResult`, `kDecision`.
+
+### 6.5 `HealthStatus` — `src/core/health.h`
+
+```cpp
+enum class HealthLevel { Unknown, OK, Degraded, Failed };
+
+struct HealthStatus {
+    HealthLevel level;
+    std::string message;
+    static HealthStatus ok(msg);
+    static HealthStatus degraded(msg);
+    static HealthStatus failed(msg);
+    static HealthStatus unknown(msg);   // NEW
+    bool is_healthy() const;
+};
+```
+
+Four levels, not two. `Degraded` covers "working but slow / partially functional." `Unknown` covers "not yet checked" and "not initialized."
+
+### 6.6 `paths` — `src/core/paths.h` + platform impls
+
+Cross-platform path API. One header, two implementations selected at build time.
+
+| Function | Linux | Windows |
+|----------|-------|---------|
+| `executable_path()` | `readlink("/proc/self/exe")` | `GetModuleFileNameA` |
+| `executable_dir()` | `std::filesystem::path` | same |
+| `default_config_path()` | `/etc/axiomdlp/agent.json` | `%ProgramData%\AxiomDLP\agent.json` |
+| `default_log_dir()` | `/var/log/axiomdlp` | `%ProgramData%\AxiomDLP\logs` |
+| `default_data_dir()` | `/var/lib/axiomdlp` | `%ProgramData%\AxiomDLP` |
+
+Windows uses `SHGetKnownFolderPath(FOLDERID_ProgramData)` and converts wide strings to UTF-8 via `WideCharToMultiByte`.
+
+### 6.7 `IService` — `src/core/service.h`
+
+Three-method interface:
+
+```cpp
+class IService {
+public:
+    virtual int run() = 0;                       // blocks until stopped
+    virtual void request_stop() = 0;
+    virtual void set_module_manager(ModuleManager* mgr) = 0;
+};
+```
+
+Plus free functions: `make_service()`, `install_service()`, `uninstall_service()`, `default_service_name()`.
+
+`request_stop()` is implemented but not currently called by any path (signals go directly to a global atomic). It exists so a future IPC command handler can stop the service without raising a signal.
 
 ---
 
-## 8. Running as a Service
+## 7. The Module System
 
-### 8.1 Linux (systemd)
+### 7.1 `IModule` — `src/interfaces/i_module.h`
 
-**Install** (requires root):
+The contract every feature implements. Seven methods:
 
-```bash
-sudo ./build/linux-x86_64-release/axiomdlp-agent --install
+| Method | Returns | Called |
+|--------|---------|--------|
+| `name()` | `std::string` | identity |
+| `version()` | `std::string` | identity |
+| `initialize(ModuleContext&)` | `bool` | once, before start; may fail |
+| `start()` | `bool` | after all init; may fail |
+| `stop()` | `void` | shutdown; idempotent |
+| `shutdown()` | `void` | release resources |
+| `health()` | `HealthStatus` | on demand |
+
+**Why `bool` on initialize/start:** they can fail (missing permissions, no watch paths). A failure is logged and does not stop other modules.
+
+**Why `void` on stop/shutdown:** best-effort. Errors are logged inside, never propagated.
+
+### 7.2 `ModuleBase` — `src/modules/module_base.{h,cpp}`
+
+Convenience base class. Provides:
+
+- Default `version()` returning `"1.0.0"`
+- Default `initialize()` that stores `ctx_ = &context` and returns `true`
+- Default no-op `start()`, `stop()`, `shutdown()`
+- Default `health()` returning `HealthStatus::ok()`
+- Protected member `ModuleContext* ctx_ = nullptr`
+
+Modules override only what they need. `ExampleModule` overrides everything; `EventLoggerModule` overrides only `start()` and `stop()`.
+
+### 7.3 `ModuleContext` — `src/core/module_context.h`
+
+```cpp
+struct ModuleContext {
+    const Config& config;
+    EventBus&     event_bus;
+    ModuleContext(const Config&, EventBus&);
+};
 ```
 
-Full sequence:
-1. Write `/etc/systemd/system/axiomdlp-agent.service`
-2. `systemctl daemon-reload`
-3. `systemctl enable --now axiomdlp-agent`
+Struct-of-references, not pointers. Non-null by construction. Grows over time (Storage, PolicyEngine, Scanner, Transport will be added in later milestones).
 
-**Verify:**
+Modules receive the whole context; they only use what they need.
 
-```bash
-sudo systemctl status axiomdlp-agent
-```
+### 7.4 `ModuleManager` — `src/core/module_manager.{h,cpp}`
 
-**View logs:**
+Owns `std::vector<std::unique_ptr<IModule>>`. Drives the lifecycle.
 
-```bash
-sudo journalctl -u axiomdlp-agent -f
-```
+| Method | Behavior |
+|--------|----------|
+| `register_module(unique_ptr)` | Takes ownership; logs name + version |
+| `initialize_all(ctx)` | Forward order; returns `false` if any failed |
+| `start_all()` | Forward order; returns `false` if any failed |
+| `stop_all()` | **Reverse order**; idempotent |
+| `shutdown_all()` | **Reverse order**; clears the vector |
+| `count()` | Number of registered modules |
+| `health()` | Aggregates all modules into a single `HealthStatus` |
 
-**Uninstall:**
+**Why reverse on stop/shutdown:** LIFO. `EventLogger` subscribes to events; `Filesystem` publishes them. If `Filesystem` stops first, `EventLogger` has nothing to log while shutting down. Reverse order guarantees the consumer outlives the producer.
 
-```bash
-sudo ./build/linux-x86_64-release/axiomdlp-agent --uninstall
-```
+**Fail-safe:** One module failing does not prevent the manager from calling the others. `initialize_all` and `start_all` return `false` only to *report*, not to *abort*.
 
-### 8.2 Windows (SCM)
+**Health aggregation:** Counts OK / Degraded / Failed / Unknown, produces a summary string like `"2 OK, 1 failed, 0 unknown"`, and returns the worst level found.
 
-**Install** (Administrator Command Prompt):
+### 7.5 Adding a New Module
 
-```cmd
-axiomdlp-agent.exe --install
-```
+1. Create the class, inherit from `ModuleBase`
+2. Register it in `Application::init()` — one line
+3. Add the `.cpp` to `CMakeLists.txt`
 
-**Verify:**
-
-```cmd
-sc query AxiomDLPAgent
-```
-
-**Uninstall:**
-
-```cmd
-axiomdlp-agent.exe --uninstall
-```
-
-### 8.3 Foreground Mode (Development)
-
-```bash
-./build/linux-x86_64-release/axiomdlp-agent --foreground
-```
-
-Press `Ctrl+C` to stop. Windows: use Task Manager (Ctrl+C handler pending).
-
-### 8.4 Automatic Mode Detection
-
-The agent automatically detects how it was started:
-
-| Platform | Terminal | Service |
-|----------|----------|---------|
-| **Linux** | Same code path | Same code path |
-| **Windows** | `StartServiceCtrlDispatcherA` fails → foreground fallback | SCM drives the service lifecycle |
-
-**Neither platform requires the `--foreground` flag.**
+The service loop never changes. This was validated three times (Example → EventLogger → Filesystem) with zero changes to `core/`.
 
 ---
 
-## 9. Platform Abstraction
+## 8. The Event Bus
+
+### 8.1 `EventBus` — `src/core/event_bus.{h,cpp}`
+
+In-process synchronous publish/subscribe.
+
+```cpp
+class EventBus {
+public:
+    using EventHandler = std::function<void(const EventPtr&)>;
+    SubscriptionId subscribe(const std::string& type, EventHandler);
+    SubscriptionId subscribe_all(EventHandler);
+    void unsubscribe(SubscriptionId);
+    void publish(EventPtr);
+    std::size_t subscriber_count() const;
+};
+```
+
+`EventPtr = std::shared_ptr<Event>` — one event instance is shared with all subscribers, no copies.
+
+`SubscriptionId` is a `uint64_t`, monotonically increasing.
+
+### 8.2 Threading Model
+
+- `subscribe`, `unsubscribe`, `publish`, `subscriber_count` are **all thread-safe**
+- A single `std::mutex` guards the subscription list
+- `publish` copies matching handlers **under the lock**, then releases the lock, then invokes them
+- This means a handler can safely call `subscribe`/`unsubscribe` during its own invocation — no deadlock
+- Each handler is called inside a `try/catch`; one throwing subscriber does not stop the others
+
+### 8.3 Subscriber Matching
+
+- `subscribe(type, handler)` — matches when `event->type == type`
+- `subscribe_all(handler)` — matches every event (stored as empty `type`)
+- Both are stored in the same vector; the match check is `sub.type.empty() || sub.type == event->type`
+
+### 8.4 Synchronous vs Asynchronous
+
+The bus is **synchronous**: `publish` calls each handler on the publishing thread before returning. This was a deliberate choice:
+
+- Simple, predictable, no queue to manage
+- A slow subscriber stalls that one publisher, not the whole agent
+- Given that the current publisher is a single watcher thread, the cost is bounded
+
+If profiling later shows a bottleneck, the switch to async is contained inside `publish`.
+
+### 8.5 Standard Event Types
+
+Declared in `src/core/event.h` under `namespace event_types`:
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                     core/                                │
-│  No OS headers. No #ifdef _WIN32. Only interfaces.       │
-└──────────────────────────┬───────────────────────────────┘
-                           │
-              ┌────────────┴────────────┐
-              ▼                         ▼
-    ┌──────────────────┐      ┌──────────────────┐
-    │  platform/linux/ │      │ platform/windows/ │
-    └──────────────────┘      └──────────────────┘
-              ▲                         ▲
-              └──── CMake picks one ────┘
+kFileAccess    = "file_access"
+kFileWrite     = "file_write"
+kFileDelete    = "file_delete"
+kUsbInsert     = "usb_insert"
+kUsbRemove     = "usb_remove"
+kClipboardCopy = "clipboard_copy"
+kPrintJob      = "print_job"
+kProcessSpawn  = "process_spawn"
+kScanResult    = "scan_result"
+kDecision      = "decision"
 ```
 
-### 9.1 Interfaces in `core/`
+Strings, not enums. New types can be added without recompiling subscribers. The compiler catches typos in publishers via the `inline constexpr` declarations.
 
-| Interface | Purpose |
-|-----------|---------|
-| `service.h` | `IService` — service lifecycle |
-| `paths.h` | Path helpers |
+---
 
-### 9.2 Implementations in `platform/<os>/`
+## 9. The Filesystem Module
 
-| File | Purpose |
-|------|---------|
-| `platform/linux/service_linux.cpp` | systemd + signals + `sd_notify` |
-| `platform/linux/paths_linux.cpp` | `/proc/self/exe`, `/etc`, `/var/log`, `/var/lib` |
-| `platform/windows/service_win.cpp` | SCM + `ServiceMain` + control handler |
-| `platform/windows/paths_windows.cpp` | `GetModuleFileNameA`, `SHGetKnownFolderPath` |
+### 9.1 `FilesystemModule` — `src/modules/filesystem/filesystem_module.{h,cpp}`
 
-### 9.3 Optional Features
+The first real DLP data source. Watches directories, debounces kernel events, publishes `Event`s onto the bus.
 
-Optional features use build-time detection:
+### 9.2 `IFileWatcher` — `src/core/file_watcher.h`
+
+Platform-agnostic interface.
+
+```cpp
+struct FileEvent {
+    std::string path;
+    std::string event_type;    // "created" / "modified" / "deleted" / "moved"
+    std::string old_path;      // for "moved"
+    bool is_directory = false;
+    std::chrono::system_clock::time_point timestamp;
+};
+
+class IFileWatcher {
+public:
+    using Callback = std::function<void(const FileEvent&)>;
+    virtual bool start(const std::vector<std::string>& paths, Callback) = 0;
+    virtual void stop() = 0;
+};
+```
+
+Factory: `std::unique_ptr<IFileWatcher> make_file_watcher();`
+
+### 9.3 `EfswFileWatcher` — `src/platform/common/efsw_file_watcher.cpp`
+
+The **only** file in the entire project that includes `<efsw/efsw.hpp>`. Everything else uses `IFileWatcher`.
+
+efsw internally chooses:
+- **Linux:** inotify
+- **Windows:** `ReadDirectoryChangesW` via I/O Completion Ports
+
+**Partial-failure handling (implemented):** When watching a list of paths, a failure on one path logs a warning and continues. Only if *every* path fails does `start()` return `false`.
+
+From the runtime log:
+
+```
+EfswFileWatcher: cannot watch '/' (permission denied, missing, or unsupported); skipping
+EfswFileWatcher: cannot watch '/data' (permission denied, missing, or unsupported); skipping
+EfswFileWatcher: cannot watch '/workspace' (permission denied, missing, or unsupported); skipping
+EfswFileWatcher: watching '/root' (id=1)
+EfswFileWatcher: watching '/home' (id=162)
+...
+EfswFileWatcher: started, watching 11 path(s) (3 skipped)
+```
+
+The watcher started with 11 of 14 paths. This is the desired behavior: **a bad path must never bring down the watcher.**
+
+**Callback exception isolation:** The efsw callback is wrapped in try/catch. A throwing module callback cannot escape into efsw's thread.
+
+### 9.4 Trailing-Edge Debouncing
+
+Raw kernel events are noisy. A single `echo "x" > file` produces 3–5 kernel events (open, write, close, metadata). Publishing each one would:
+- Scan the same file multiple times
+- Publish partial content
+- Flood the bus
+
+**Solution:** trailing-edge debouncing keyed by path.
+
+1. When a `FileEvent` arrives, look up its path in `pending_`
+2. If new, insert with a deadline of `now + debounce_window`
+3. If already present, **only overwrite if the new event has equal or higher priority** (see §9.5), and **always reset the deadline**
+4. A background flusher thread wakes every 50 ms, scans `pending_`, and publishes any entry whose deadline has passed
+
+**Runtime evidence from the log (before vs after debounce):**
+
+| Run | Raw writes to `/tmp/dlp-test/file1.txt` | Published events |
+|-----|----------------------------------------|------------------|
+| 12:32 (no debounce) | 3 writes | 3 events |
+| 12:34 (no debounce) | 6 writes | 6 events |
+| 12:45 (debounce=300ms) | 3 writes | **1 event** |
+
+### 9.5 Priority-Based Debounce Merge (Bug Fix #3)
+
+If a file is created, modified, then deleted within the window, the naive merge (`event = new_event`) would emit only `deleted`. That is catastrophic for DLP: you cannot scan a deleted file's content.
+
+**Priority table:**
+
+| Event type | Priority |
+|-----------|----------|
+| `modified` | 4 |
+| `created` | 3 |
+| `moved` | 2 |
+| `deleted` | 1 |
+
+The merge only overwrites when `new_priority >= existing_priority`. A `deleted` event cannot clobber a `modified` event. But the deadline *is* always extended, so we don't emit a still-being-written file.
+
+### 9.6 Exclusion Filtering (Bug Fix #2)
+
+`on_file_event` calls `is_excluded(path)` before touching the pending map. If the path matches any pattern, the event is dropped.
+
+**Pattern matching:** `path_matches_pattern` tries two forms:
+
+1. **Glob match:** supports `*` (matches any sequence, including `/`) and `?` (matches any single character). Not full POSIX glob (no character classes), but covers every pattern in the shipped configs.
+2. **Directory prefix:** if the pattern has no trailing wildcard, treat it as a directory and match its entire subtree. So `/var/tmp` matches `/var/tmp/anything/inside`.
+
+Examples that work:
+- `*/node_modules/*` matches `/home/user/proj/node_modules/foo/bar.js`
+- `*/.cache/*` matches `/home/user/.cache/chrome/Cache/...`
+- `/var/tmp` matches `/var/tmp/systemd-private-abc123/tmp`
+
+### 9.7 Implicit Log-Directory Exclusion (Bug Fix #1)
+
+Before the fix, `EventLogger` writes to `logs/agent.log`, which the filesystem module watched, so every log line became a new `file_write` event → new log line → infinite loop at ~3 Hz.
+
+The fix: `FilesystemModule::build_excludes()` always appends `<absolute(logging.dir)>/*` to the exclusion list. The path is lexical-absolute'd so it works regardless of the CWD the agent started in.
+
+**Verification:** In the runtime logs the string `agent.log` appears zero times as an event path after the fix. Before the fix, it appeared 8+ times in 15 minutes.
+
+### 9.8 Directory Event Skipping
+
+efsw fires `modified` events on directories when their list of entries changes — not when file content changes. These are pure noise for DLP. `on_file_event` checks `fe.is_directory` and returns early.
+
+### 9.9 Null-Guard in `health()`
+
+If a module fails `initialize()`, `ctx_` is never assigned. `ModuleManager::health()` iterates all modules, so a failed module's `health()` would dereference null. Fixed:
+
+```cpp
+HealthStatus FilesystemModule::health() const {
+    if (ctx_ == nullptr) return HealthStatus::unknown("not initialized");
+    ...
+}
+```
+
+### 9.10 Bus Event Mapping
+
+File-event types map to bus-event types:
+
+| efsw action | bus event type |
+|-------------|----------------|
+| `created` | `file_write` |
+| `modified` | `file_write` |
+| `deleted` | `file_delete` |
+| `moved` | `file_access` |
+
+The published `Event` carries:
+
+- `metadata["path"]` — absolute path
+- `metadata["source"]` = `"filesystem"`
+- `metadata["fs_action"]` — original efsw action string
+- `metadata["old_path"]` — only when `moved`
+
+---
+
+## 10. The Event Logger Module
+
+### 10.1 Purpose
+
+`EventLoggerModule` subscribes to **every** event on the bus and logs it. Its only purpose is observability.
+
+- It is a pure consumer — it never publishes
+- It proves the module + event bus pattern works end-to-end
+- It gives a visible trace of everything flowing through the pipeline
+- It will be the first module to be removed or moved to debug-only when a real consumer (Scanner) arrives
+
+### 10.2 Implementation
+
+```cpp
+bool EventLoggerModule::start() {
+    subscription_id_ = ctx_->event_bus.subscribe_all([](const EventPtr& e) {
+        SPDLOG_DEBUG("[event] type={} path={}",
+                     e->type,
+                     e->metadata.count("path") ? e->metadata.at("path") : "-");
+    });
+    return true;
+}
+
+void EventLoggerModule::stop() {
+    if (ctx_ && subscription_id_ != 0) {
+        ctx_->event_bus.unsubscribe(subscription_id_);
+        subscription_id_ = 0;
+    }
+}
+```
+
+### 10.3 Log Level (Bug Fix #6)
+
+Originally logged at `INFO`. Combined with the feedback loop, this was the primary amplification path. Downgraded to `DEBUG` so it is only visible when the operator explicitly sets `logging.level = "debug"`.
+
+### 10.4 Registration Order
+
+Registered **last** in `Application::init()`. Because `ModuleManager::stop_all()` runs in reverse, this means `EventLogger` stops **first** — before `Filesystem` stops publishing. This ordering is intentional: during shutdown, we want to keep logging until producers go quiet.
+
+---
+
+## 11. The Example Module
+
+### 11.1 Purpose
+
+A minimal proof of the module system. It:
+
+- Logs `"example module: initializing"` on `initialize`
+- Subscribes to its own `example_ping` event on `start`
+- Publishes one `example_ping` event
+- Logs the received ping (proving the round trip)
+- Logs on `stop` and `shutdown`
+
+It is redundant now that `FilesystemModule` proves the pattern, but it is kept as the smallest possible module for onboarding and testing.
+
+### 11.2 Runtime Evidence
+
+```
+ModuleManager: registering module 'example' v1.0.0
+ModuleManager: initializing 'example'
+example module: initializing
+ModuleManager: starting 'example'
+example module: starting
+example module: subscribed (id=1)
+example module: received ping (id=1790235020426945319-0)
+```
+
+The ping travels: subscriber → event bus → publisher → same subscriber's callback. Round trip verified.
+
+---
+
+## 12. Platform Abstraction Layer
+
+### 12.1 Design Rule
+
+`src/core/` and `src/modules/` **never** include `<windows.h>`, `<sys/inotify.h>`, `<systemd/sd-daemon.h>`, or any other OS header. Only `src/platform/<os>/` does.
+
+### 12.2 Interfaces in `core/`
+
+| Header | Contract |
+|--------|----------|
+| `service.h` | `IService` — run, stop, wire modules |
+| `paths.h` | Executable, config, log, data directories |
+| `file_watcher.h` | `IFileWatcher` — start watching, stop watching |
+
+### 12.3 Implementations in `platform/`
+
+| File | Platform | Provides |
+|------|----------|----------|
+| `common/efsw_file_watcher.cpp` | both | `IFileWatcher` via efsw |
+| `linux/paths_linux.cpp` | Linux | `/proc/self/exe`, `/etc`, `/var/log`, `/var/lib` |
+| `linux/service_linux.cpp` | Linux | systemd, `sd_notify`, install/uninstall |
+| `windows/paths_windows.cpp` | Windows | `GetModuleFileNameA`, `SHGetKnownFolderPath` |
+| `windows/service_win.cpp` | Windows | SCM, `ServiceMain`, install/uninstall |
+
+### 12.4 CMake Selection
 
 ```cmake
-if(PkgConfig_FOUND)
-    pkg_check_modules(SYSTEMD QUIET libsystemd)
-    if(SYSTEMD_FOUND)
-        target_compile_definitions(axiomdlp-agent PRIVATE HAVE_SYSTEMD)
-    endif()
+if(WIN32)
+    set(AXIOM_PLATFORM_SOURCES
+        src/platform/windows/paths_windows.cpp
+        src/platform/windows/service_win.cpp)
+elseif(UNIX AND NOT APPLE)
+    set(AXIOM_PLATFORM_SOURCES
+        src/platform/linux/paths_linux.cpp
+        src/platform/linux/service_linux.cpp)
 endif()
 ```
 
-Then in C++:
+One file per target. No runtime dispatch. No `#ifdef _WIN32` in application code.
+
+### 12.5 Optional Features
+
+`libsystemd` is detected at configure time:
+
+```cmake
+pkg_check_modules(SYSTEMD QUIET libsystemd)
+if(SYSTEMD_FOUND)
+    target_compile_definitions(... PRIVATE HAVE_SYSTEMD)
+endif()
+```
+
+And guarded in C++:
 
 ```cpp
 #ifdef HAVE_SYSTEMD
@@ -518,302 +826,597 @@ Then in C++:
 #endif
 ```
 
----
-
-## 10. Module System
-
-The plugin architecture that every future DLP feature uses.
-
-### 10.1 The Interface — `IModule`
-
-Seven methods every module implements:
-
-| Method | Purpose |
-|--------|---------|
-| `name()` | Module identifier |
-| `version()` | Semantic version string |
-| `initialize(ctx)` | One-time setup with shared context |
-| `start()` | Begin work |
-| `stop()` | Stop work (idempotent) |
-| `shutdown()` | Release resources |
-| `health()` | Report current status |
-
-### 10.2 The Manager — `ModuleManager`
-
-| Method | When called |
-|--------|-------------|
-| `register_module()` | At startup, by the Application |
-| `initialize_all(ctx)` | Once, after all modules registered |
-| `start_all()` | Inside `Service::run()`, before readiness |
-| `stop_all()` | Inside `Service::run()`, on shutdown (reverse) |
-| `shutdown_all()` | After all stopped (reverse) |
-| `health()` | On demand |
-
-**Fail-safe:** One module failing doesn't stop the others.
-
-**Ordering:** Stop and shutdown happen in reverse registration order.
-
-### 10.3 The Base Class — `ModuleBase`
-
-Provides default implementations. Modules override only what they need:
-
-```cpp
-class ExampleModule : public ModuleBase {
-    std::string name() const override { return "example"; }
-    bool start() override { /* ... */ return true; }
-};
-```
-
-### 10.4 The Shared Context — `ServiceContext`
-
-Holds references to all subsystems that modules need:
-
-- `config` — the loaded configuration
-- `event_bus` — the pub/sub system
-
-Future milestones add: storage, policy engine, transport.
-
-### 10.5 Health Reporting
-
-| Level | Meaning |
-|-------|---------|
-| OK | Fully working |
-| Degraded | Working with issues |
-| Failed | Not working |
-| Unknown | Not yet checked |
-
-The manager aggregates all module health into one summary.
-
-### 10.6 Adding a New Module
-
-Three steps:
-1. Create the class — inherit from `ModuleBase`
-2. Register it — one line in `Application::init()`
-3. Compile — done. The service loop never changes.
+The agent builds and runs identically on a system without libsystemd — it just skips the readiness notification.
 
 ---
 
-## 11. Event Bus
+## 13. Service Lifecycle (Linux + Windows)
 
-The pub/sub system that lets modules communicate without knowing each other.
+### 13.1 Linux (`src/platform/linux/service_linux.cpp`)
 
-### 11.1 The Problem It Solves
+**Run mode:**
+1. Install `SIGTERM` and `SIGINT` handlers → set `g_stop` atomic
+2. Ignore `SIGHUP`
+3. `module_manager_->start_all()`
+4. `sd_notify(0, "READY=1")` if compiled with `HAVE_SYSTEMD`
+5. Main loop: `sleep(200ms)` until `g_stop` is set
+6. `module_manager_->stop_all()` then `shutdown_all()`
+7. `sd_notify(0, "STOPPING=1")`
 
-Modules need to talk, but they can't call each other directly:
-- Filesystem produces events; Scanner needs to consume them
-- Scanner produces results; Policy needs to evaluate them
-- Policy produces decisions; Enforcer needs to act
+**Install (`--install`):**
+1. Validate the service name (see §16 fix #17)
+2. Write `/etc/systemd/system/<name>.service` with `Type=notify`
+3. `systemctl daemon-reload`
+4. `systemctl enable --now <name>`
 
-If modules call each other directly, every change ripples through the codebase.
+The unit file:
 
-### 11.2 The Solution
+```ini
+[Unit]
+Description=AxiomDLP Endpoint Agent
+After=network.target
 
-**Publish/subscribe.** Publishers broadcast events. Subscribers listen for events they care about. Neither knows the other.
+[Service]
+Type=notify
+ExecStart=/path/to/axiomdlp-agent
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
-### 11.3 The Event
-
-```cpp
-struct Event {
-    std::string id;              // unique
-    std::string type;            // "file_access", "decision", ...
-    std::chrono::system_clock::time_point timestamp;
-    std::string user_id;
-    std::string process_name;
-    int pid = 0;
-    std::map<std::string, std::string> metadata;
-    std::optional<std::string> content;
-};
+[Install]
+WantedBy=multi-user.target
 ```
 
-### 11.4 The API
+**Uninstall (`--uninstall`):**
+1. `systemctl stop <name>`
+2. `systemctl disable <name>`
+3. Remove the unit file
+4. `systemctl daemon-reload`
 
-```cpp
-// Subscribe to a specific event type
-SubscriptionId id = bus.subscribe("file_access", handler);
-
-// Subscribe to every event
-SubscriptionId id = bus.subscribe_all(handler);
-
-// Publish an event
-bus.publish(event);
-
-// Stop receiving events
-bus.unsubscribe(id);
-```
-
-### 11.5 Standard Event Types
-
-Defined in `event_types::`:
-- `kFileAccess`, `kFileWrite`, `kFileDelete`
-- `kUsbInsert`, `kUsbRemove`
-- `kClipboardCopy`
-- `kPrintJob`
-- `kProcessSpawn`
-- `kScanResult`, `kDecision`
-
-### 11.6 Thread Safety
-
-- Subscriber list is protected by `std::mutex`
-- Publish copies matching handlers under the lock, then releases
-- Handlers run outside the lock — no deadlocks
-- Subscriber exceptions are caught per-handler — one bad subscriber doesn't break others
-
-### 11.7 Example Flow
+**Runtime evidence (from logs):**
 
 ```
-FilesystemModule detects a file read
-    │
-    │  publishes: "file_access"
-    ▼
-[EventBus]
-    │
-    ├──► ScannerModule scans content, publishes "scan_result"
-    ├──► StorageModule logs it to the database
-    └──► TelemetryModule increments a counter
+installed unit file: /etc/systemd/system/axiomdlp-agent.service
+reloaded systemd configuration
+enabled and started service axiomdlp-agent
+...
+stopping service axiomdlp-agent
+  stop: ok
+disabling service axiomdlp-agent
+  disable: ok
+removed unit file: /etc/systemd/system/axiomdlp-agent.service
+reloaded systemd configuration
+uninstalled service axiomdlp-agent
 ```
 
-**Filesystem doesn't know about Scanner, Storage, or Telemetry.** It just publishes.
+Both directions verified end-to-end.
+
+**No shell:** `run_program` uses `fork` + `execvp`, not `system()`. No injection surface.
+
+### 13.2 Windows (`src/platform/windows/service_win.cpp`)
+
+**Run mode:**
+1. `StartServiceCtrlDispatcherA` — if it returns `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT`, fall back to foreground mode
+2. `RegisterServiceCtrlHandlerExA` with a control handler
+3. Report `SERVICE_START_PENDING`
+4. `module_manager_->start_all()`
+5. Report `SERVICE_RUNNING`
+6. Main loop: `sleep(200ms)` until `g_stop` is set
+7. `module_manager_->stop_all()` then `shutdown_all()`
+8. Report `SERVICE_STOPPED`
+
+**Control handler:** accepts `SERVICE_CONTROL_STOP` and `SERVICE_CONTROL_SHUTDOWN`, sets `g_stop`, reports `SERVICE_STOP_PENDING`.
+
+**Foreground fallback:** if launched from a terminal, the SCM dispatch fails and the agent runs the same loop in the console. This is why `--foreground` is not required on Windows.
+
+**Install/uninstall:** uses `OpenSCManagerA`, `CreateServiceA` with `SERVICE_AUTO_START`, `StartServiceA`. Uninstall stops the service, waits up to 10 s for `SERVICE_STOPPED`, then `DeleteService`. Both handled idempotently (already installed / already running / not installed).
+
+### 13.3 Automatic Mode Detection
+
+| Platform | Terminal | Service |
+|----------|----------|---------|
+| Linux | Same code path (signal handlers work either way) | systemd drives `run()` via `sd_notify` |
+| Windows | SCM dispatch fails → foreground fallback | SCM drives `ServiceMain` |
+
+Neither platform requires `--foreground`. The flag is accepted and ignored for symmetry.
 
 ---
 
-## 12. Development Workflow
+## 14. Configuration System
 
-### 12.1 Typical Iteration
+### 14.1 Config Path Resolution (Bug Fix #13)
 
-```bash
-# Edit code
-$EDITOR src/core/logger.cpp
+`Application::resolve_config_path()` uses a three-step fallback:
 
-# Build one target
-cmake --build --preset linux-x86_64-debug
+1. If `--config <path>` was given, use it
+2. If `./config/agent.default.json` exists, use it (dev workflow)
+3. Use `paths::default_config_path()` (the platform default)
 
-# Run in foreground
-./build/linux-x86_64-debug/axiomdlp-agent --foreground
+This fixes the "Config File Not Found When Running as Service" limitation: systemd starts the agent with CWD=/, so step 2 fails and step 3 produces `/etc/axiomdlp/agent.json`.
+
+### 14.2 Current Schema
+
+```json
+{
+  "logging": {
+    "dir":   "logs",
+    "file":  "agent.log",
+    "level": "info"
+  },
+  "modules": {
+    "filesystem": {
+      "enabled": true,
+      "watch_paths": ["/home", "/tmp", "/var/tmp", ...],
+      "exclude_paths": ["*/node_modules/*", "*/.git/*", ...],
+      "debounce_ms": 300,
+      "max_file_size_mb": 100
+    }
+  }
+}
 ```
 
-### 12.2 Full Cross-Platform Check
+### 14.3 Field Reference
 
-```bash
-./scripts/build-all.sh
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `logging.dir` | string | `"logs"` | Created if missing |
+| `logging.file` | string | `"agent.log"` | Relative to `dir` |
+| `logging.level` | string | `"info"` | One of: trace, debug, info, warn, error, critical, off |
+| `modules.filesystem.enabled` | bool | `false` | Master switch for the module |
+| `modules.filesystem.watch_paths` | string[] | `[]` | Recursive directories |
+| `modules.filesystem.exclude_paths` | string[] | `[]` | Glob or directory prefix |
+| `modules.filesystem.debounce_ms` | int ≥ 0 | `300` | Trailing-edge window |
+| `modules.filesystem.max_file_size_mb` | int ≥ 0 | `100` | Reserved for Scanner |
+
+### 14.4 Fail-Safe Behavior
+
+| Scenario | Behavior |
+|----------|----------|
+| File missing | Warning + built-in defaults |
+| Invalid JSON | Warning + built-in defaults |
+| Root not an object | Warning + built-in defaults |
+| Wrong type for a field | Warning + default for that field only |
+| Invalid log level | Warning + `"info"` |
+| Negative integer | Warning + clamped default |
+| Unknown key | Ignored silently |
+
+**The agent always starts.** Config problems produce warnings, not failures.
+
+### 14.5 JSON Schema
+
+`config/agent.schema.json` describes the full schema for editors (VS Code IntelliSense). It matches the shipped defaults exactly after the bug fix pass.
+
+---
+
+## 15. Logging Subsystem
+
+### 15.1 Setup
+
+`Logger::init(dir, file, level)`:
+
+1. Creates the log directory if missing
+2. Initializes spdlog's async thread pool: 8192 slots, 1 worker
+3. Creates a colored console sink (`stdout_color_sink_mt`)
+4. Creates a rotating file sink: **5 MB per file, 3 rotated files** (≈20 MB cap)
+5. Combines into an `async_logger` with `overrun_oldest` policy
+6. Sets the pattern: `[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [t:%t] %v`
+7. Sets level from config string
+8. `flush_on(warn)` — warnings and above flush immediately
+9. Registers as the global default logger
+
+### 15.2 Non-Blocking Guarantee
+
+`overrun_oldest` means: if the queue is full, drop the oldest message rather than block the caller. This means a `SPDLOG_INFO` from a hot path (like a filesystem callback) never stalls the producer.
+
+### 15.3 Shutdown
+
+`Logger::shutdown()` calls `spdlog::shutdown()`, which drains the async queue and joins the worker. Called from `Application::~Application()`, so log messages are never lost on a clean exit.
+
+### 15.4 Log Levels in Use
+
+| Level | Used For |
+|-------|----------|
+| `TRACE` | Not currently used |
+| `DEBUG` | Every event the bus carries (EventLoggerModule) |
+| `INFO` | Lifecycle: startup, module register/init/start/stop/shutdown, watcher start/stop |
+| `WARN` | Config problems, non-fatal errors, partial failures |
+| `ERROR` | Module init failures, watcher start failure |
+| `CRITICAL` | Not currently used |
+
+Default config level is `info`, so `DEBUG` messages are hidden in production.
+
+---
+
+## 16. Bug Fixes Applied
+
+This section lists every bug found in the code review and how it was fixed. If you're returning to this project later, these are the bugs you no longer need to worry about.
+
+### Fix #1 — Log Feedback Loop
+
+**Bug:** `EventLoggerModule` writes to `logs/agent.log`. The filesystem module watches the parent directory. Every log line becomes a new `file_write` event → new log line → infinite loop at ~3 Hz.
+
+**Fix:** `FilesystemModule::build_excludes()` always appends the absolute path of the configured log directory, with `/*`, to the exclusion list.
+
+**Verification:** `agent.log` no longer appears as an event path in the runtime log.
+
+### Fix #2 — `exclude_paths`, `debounce_ms`, `max_file_size_mb` Silently Ignored
+
+**Bug:** Config files declared these fields, but `FilesystemModuleConfig` only had `enabled` and `watch_paths`. The config loader never read the other keys.
+
+**Fix:** Added all three to `FilesystemModuleConfig`. Added a `read_int` helper to `config.cpp`. Clamping for negatives. `debounce_ms` is now wired into the module; `max_file_size_mb` is stored for the Scanner milestone.
+
+### Fix #3 — Debounce Lost `modified` When Followed by `deleted`
+
+**Bug:** Debounce overwrote `event = new_event` unconditionally. A create → modify → delete within the window emitted only `deleted`.
+
+**Fix:** Priority table (`modified` 4 > `created` 3 > `moved` 2 > `deleted` 1). Overwrite only when `new_priority >= existing_priority`. Deadline always extends.
+
+### Fix #4 — Event Storm from `/`, `/etc`, `/usr/local`
+
+**Bug:** Default Linux config watched system directories, generating thousands of events per hour of no DLP value.
+
+**Fix:** Narrowed default `watch_paths` to `/home`, `/tmp`, `/var/tmp`, `/media`, `/mnt`, `/opt`, `/srv`, `/data`, `/workspace`. Added `*/logs/*` to default excludes.
+
+### Fix #6 — EventLogger at INFO Amplified the Loop
+
+**Bug:** Every event logged at `INFO`.
+
+**Fix:** Downgraded to `SPDLOG_DEBUG`. Simplified format (dropped `id=` which was only useful in deep debugging).
+
+### Fix #7 — `FilesystemModule::health()` Null Dereference
+
+**Bug:** `health()` unconditionally dereferenced `ctx_`. If `initialize()` failed or was never called, `ctx_` is null. `ModuleManager::health()` iterates all modules, so this was reachable.
+
+**Fix:** Guard `ctx_ == nullptr` → return `HealthStatus::unknown("not initialized")`. Also added the `HealthStatus::unknown()` factory, which was missing.
+
+### Fix #9 — `Application::init()` Misleading Return
+
+**Bug:** The function warned on module init failure but always returned `true`. This made the return value meaningless.
+
+**Fix:** Kept fail-safe behavior but changed the log level to `ERROR` and made the comment explicit that returning `true` is intentional.
+
+### Fix #10 — `--install` / `--uninstall` Ran Full Init
+
+**Bug:** `execute()` always called `init()` before checking `opts_.install`. This created log directories, registered modules, and initialized them for a one-shot command.
+
+**Fix:** Moved install/uninstall handling before `init()`. Uses a minimal `install.log` for those commands. No module tree, no event bus.
+
+### Fix #13 — `paths::default_config_path()` Not Used
+
+**Bug:** `parse_args` hardcoded the relative dev path. When running as a service (CWD=/) the config was never found, silently using built-in defaults.
+
+**Fix:** `resolve_config_path()` with a three-step chain: explicit `--config` → CWD-relative dev path → platform default.
+
+### Fix #16 — `install_service` Relied on `$PATH` for `systemctl`
+
+**Bug:** `execvp("systemctl", ...)` searches `$PATH`, which is unreliable in minimal containers and hardened systemd environments.
+
+**Fix:** `find_systemctl()` probes `/usr/bin/systemctl`, `/bin/systemctl`, `/usr/local/bin/systemctl` before falling back to `$PATH`.
+
+### Fix #17 — `is_safe_service_name` Allowed `..`
+
+**Bug:** The name validator allowed `.`, so `".."` passed. This is a path-traversal vector, even if not currently user-controlled.
+
+**Fix:** Explicitly reject `..`, leading `.`, and trailing `.`.
+
+### Fix (Bonus) — Directory Events in the Pending Map
+
+Not a numbered bug, but worth documenting: efsw fires `modified` on directories when their entry list changes. These are pure noise. `on_file_event` now returns early when `fe.is_directory == true`.
+
+---
+
+## 17. Runtime Evidence — What the Logs Prove
+
+The `logs/agent.log` from 2026-09-24 demonstrates:
+
+### 17.1 Clean Startup and Shutdown
+
+```
+AxiomDLP Agent v0.1.0
+Config loaded from: config/agent.default.json
+ModuleManager: registering module 'example' v1.0.0
+ModuleManager: registering module 'filesystem' v1.0.0
+ModuleManager: registering module 'event_logger' v1.0.0
+ModuleManager: initializing 3 module(s)
+...
+ModuleManager: starting 3 module(s)
+...
+sd_notify READY sent
+...
+axiomdlp-agent received stop request
+ModuleManager: stopping 3 module(s)
+ModuleManager: stopping 'event_logger'
+ModuleManager: stopping 'filesystem'
+ModuleManager: stopping 'example'
+ModuleManager: shutting down 3 module(s)
+...
+Service returned rc=0
+Application shutting down
 ```
 
-### 12.3 Editor Setup (VS Code + clangd)
+Every step in the documented lifecycle appears in the log. Stop order is verified as reverse of start order.
 
-The project uses **clangd** for IntelliSense. The Microsoft C/C++ extension cannot handle cross-compilation (one compiler per workspace).
+### 17.2 Partial Watcher Failure Handled Gracefully
 
-**Setup:**
-1. `sudo apt install clangd`
-2. Install the `llvm-vs-code-extensions.vscode-clangd` extension
-3. Disable the Microsoft C/C++ extension
-4. Restart clangd after CMake changes
+```
+EfswFileWatcher: cannot watch '/' (permission denied, missing, or unsupported); skipping
+EfswFileWatcher: cannot watch '/data' (permission denied, missing, or unsupported); skipping
+EfswFileWatcher: cannot watch '/workspace' (permission denied, missing, or unsupported); skipping
+EfswFileWatcher: watching '/root' (id=1)
+EfswFileWatcher: watching '/home' (id=162)
+...
+EfswFileWatcher: started, watching 11 path(s) (3 skipped)
+filesystem module: started (debounce 300 ms)
+```
 
-**The project ships:**
-- `.clangd` — points clangd at the merged compile database
-- `.vscode/settings.json` — configures clangd with `--query-driver`
+A failing path does not fail the watcher. 11 of 14 succeeded and the module started normally.
 
-**Result:** Both Linux and Windows files get correct IntelliSense simultaneously.
+### 17.3 Debounce Works
 
-### 12.4 Common Commands
+Compare 12:32:31 (before debounce) with 12:45:44 (after):
+
+**Before (12:32):**
+```
+[event] type=file_write id=... path=/tmp/dlp-test//file1.txt
+[event] type=file_write id=... path=/tmp/dlp-test//file1.txt
+[event] type=file_write id=... path=/tmp/dlp-test//file1.txt
+```
+
+3 kernel events → 3 bus events.
+
+**After (12:45):**
+```
+[event] type=file_write id=1790235944091596688-1 path=/tmp/dlp-test/file1.txt
+```
+
+3 writes → 1 bus event. Also note the double-slash bug was fixed between these runs.
+
+### 17.4 Path Normalization Fixed
+
+Early logs: `/tmp/dlp-test//file1.txt` (double slash from efsw's `dir` + `filename` concatenation).
+Later logs: `/tmp/dlp-test/file1.txt` (single slash from the trailing-slash check in the callback).
+
+### 17.5 Real File Activity Captured
+
+```
+[event] type=file_write path=/home/kali/.config/google-chrome/Profile 9/Session Storage/000138.log
+[event] type=file_write path=/home/kali/.config/Code/logs/20260924T083251/window1/exthost/vscode.git/Git.log
+[event] type=file_delete path=/tmp/.com.google.Chrome.cY8Gfc
+```
+
+Chrome, VS Code, and temp files are being detected, debounced, and published. The pipeline is live.
+
+---
+
+## 18. Known Limitations
+
+### 18.1 No Process or User Attribution
+
+`Event::user_id`, `process_name`, `pid` are never populated. `FileEvent` doesn't carry them, and efsw doesn't provide them. This is a fundamental limitation of the current watcher backend.
+
+**Impact:** For DLP, attribution is essential. Without it, the policy engine cannot distinguish "Alice copied her own file" from "Bob copied Alice's file."
+
+**Planned fix:** Kernel enforcement milestone will need `fanotify` (Linux) or a minifilter (Windows). These provide process context per file operation. Alternatively, a `/proc/<pid>/fd` scan on Linux can be used to correlate inode → process.
+
+### 18.2 Windows Config Path Under Service
+
+When installed as a Windows Service, the process runs as `LOCAL SYSTEM` with `%ProgramData%` resolving correctly. But the config path resolution chain still prefers `./config/agent.default.json` if the CWD happens to contain it. This is unlikely but possible if the service is started manually from an unusual directory.
+
+**Planned fix:** For service mode, prefer `paths::default_config_path()` unconditionally. Currently, the dev-relative path is checked first, which is correct for development but slightly surprising for a service.
+
+### 18.3 No Windows Ctrl+C Handler
+
+Pressing Ctrl+C in Windows foreground mode doesn't stop the agent cleanly. The SCM dispatch fails (as designed), the foreground fallback runs, but there is no `SetConsoleCtrlHandler` installed. The user must close the terminal or use Task Manager.
+
+**Planned fix:** Add `SetConsoleCtrlHandler` in `service_win.cpp`'s `run_foreground()`, setting `g_stop` on `CTRL_C_EVENT` and `CTRL_CLOSE_EVENT`.
+
+### 18.4 `debounce_ms` Lower Bound Not Enforced
+
+Any non-negative value is accepted. `0` means "no debounce," which restores the pre-fix behavior of one event per kernel event. The clamp only enforces `>= 0`. A minimum of 50 ms would be safer.
+
+### 18.5 Module Shutdown Clears the Registry
+
+`ModuleManager::shutdown_all()` calls `modules_.clear()`. After this, `count()` returns 0 and no modules can be restarted. This is correct for process-exit shutdown, but it blocks any future "reload modules at runtime" feature.
+
+### 18.6 No Module Init Failure Diagnostic in `Application`
+
+`Application::init()` reports the total count of failed modules but not which ones. The `ModuleManager` logs each failure individually, so the information is in the log, but the summary is not surfaced in the return path.
+
+### 18.7 Config Schema Not Validated at Runtime
+
+The `agent.schema.json` file exists but is not consulted by `config.cpp`. Typos in field names silently fall back to defaults. Consider adding a schema validation step using `nlohmann::json_schema` or a hand-rolled check for unknown keys within known sections.
+
+### 18.8 Windows Path Matching Case Sensitivity
+
+`glob_match` is case-sensitive. Windows filesystems are case-insensitive. A pattern `C:\Windows\*` will not match a path spelled `c:\windows\...`. This may bite on Windows in practice.
+
+**Planned fix:** Normalize both pattern and path to lowercase inside `path_matches_pattern` under `#ifdef _WIN32`.
+
+### 18.9 Event Bus Is Synchronous
+
+`publish` calls every matching handler on the calling thread. A slow subscriber delays the publisher. Today the only publisher is a single watcher thread, so the cost is bounded. As the Scanner, PolicyEngine, and Storage subscribe, this may become a bottleneck.
+
+**Planned fix:** Async publish with a worker queue. Contained inside `EventBus::publish`.
+
+---
+
+## 19. What Does Not Exist Yet
+
+| Feature | Milestone | Notes |
+|---------|-----------|-------|
+| Local regex scanner | 8 | Credit cards, SSNs, emails, API keys |
+| Remote PII scanner | 8 | Calls AxiomDLP Core's `/pii/detect` |
+| Unified scan result type | 8 | `ScanResult`, `ScanEntity` |
+| Policy engine | 9 | Evaluates events against policies |
+| Local policy cache | 9 | Initially hardcoded, later SQLite |
+| Decision type | 9 | Block / alert / log / allow |
+| SQLite storage | 10 | Events, policies, state, audit log |
+| Migration system | 10 | Schema versioning |
+| User-mode enforcement | 11 | Block clipboard or file operations |
+| IPC server | 12 | Length-prefixed JSON over named pipe / Unix socket |
+| Tray helper | 12 | Separate process, runs in user session |
+| HTTP client | 13 | libcurl |
+| WebSocket client | 13 | Boost.Beast |
+| Enrollment | 13 | Agent registers with core |
+| Heartbeat | 13 | Every 30–60 seconds |
+| Event upload | 13 | Batched, offline-queued |
+| Policy sync | 13 | Fetch policies from core |
+| Reconnect with backoff | 13 | Exponential with jitter |
+| Kernel enforcement (Windows) | 14 | Minifilter driver |
+| Kernel enforcement (Linux) | 14 | eBPF LSM or fanotify |
+
+---
+
+## 20. Commands Reference
+
+### 20.1 Build
 
 | Task | Command |
 |------|---------|
-| Build all targets | `./scripts/build-all.sh` |
+| Build all four targets | `./scripts/build-all.sh` |
 | Build one target | `cmake --build --preset linux-x86_64-release` |
-| Run in foreground | `./build/linux-x86_64-release/axiomdlp-agent --foreground` |
-| Install service | `sudo ./build/linux-x86_64-release/axiomdlp-agent --install` |
-| Uninstall | `sudo ./build/linux-x86_64-release/axiomdlp-agent --uninstall` |
-| View logs | `journalctl -u axiomdlp-agent -f` or `tail -f logs/agent.log` |
-| Regenerate clangd DB | `./scripts/merge-compile-commands.sh` |
+| Configure one target | `cmake --preset linux-x86_64-release` |
 | Clean build | `rm -rf build && ./scripts/build-all.sh` |
+| Clean dependency cache | `rm -rf .deps` (forces re-download) |
+| Regenerate clangd DB | `./scripts/merge-compile-commands.sh` |
 
-### 12.5 Command-Line Arguments
+### 20.2 Run
 
-| Argument | Effect |
-|----------|--------|
-| `--foreground` | Run without registering with the service manager |
-| `--install` | Install as a service |
-| `--uninstall` | Remove the service |
+| Task | Command |
+|------|---------|
+| Foreground (dev) | `./build/linux-x86_64-release/axiomdlp-agent --foreground` |
+| With custom config | `./build/linux-x86_64-release/axiomdlp-agent --foreground --config /path/to/config.json` |
+| Install as service | `sudo ./build/linux-x86_64-release/axiomdlp-agent --install` |
+| Uninstall service | `sudo ./build/linux-x86_64-release/axiomdlp-agent --uninstall` |
+
+### 20.3 Observe
+
+| Task | Command |
+|------|---------|
+| Follow log file | `tail -f logs/agent.log` |
+| Follow journald logs | `sudo journalctl -u axiomdlp-agent -f` |
+| Check service status | `sudo systemctl status axiomdlp-agent` |
+| Check Windows service | `sc query AxiomDLPAgent` |
+
+### 20.4 Command-Line Flags
+
+| Flag | Effect |
+|------|--------|
+| `--foreground` | Accepted; on Windows forces foreground fallback |
+| `--install` | Install as a service, then exit |
+| `--uninstall` | Remove the service, then exit |
 | `--config <path>` | Use a specific config file |
 
----
-
-## 13. Roadmap
-
-### Completed
-
-- ✅ **Milestone 1** — Project skeleton
-- ✅ **Milestone 2** — Async logging with spdlog
-- ✅ **Milestone 3** — Configuration loading
-- ✅ **Milestone 4** — Cross-platform service lifecycle
-- ✅ **Milestone 5** — Module system (plugin architecture)
-- ✅ **Milestone 6** — Event bus (pub/sub)
-
-### Planned
-
-| # | Milestone | Delivers |
-|---|-----------|----------|
-| 7 | **Filesystem Module** | First real event source (inotify / ReadDirectoryChangesW) |
-| 8 | **USB Module** | USB device detection |
-| 9 | **Clipboard Module** | Clipboard monitoring |
-| 10 | **Scanner** | Regex detection of PII patterns |
-| 11 | **Policy Engine** | Event + scan → decision |
-| 12 | **Storage** | SQLite for events, policies, offline queue |
-| 13 | **User-Mode Enforcement** | Block clipboard / file operations |
-| 14 | **IPC + Tray Helper** | User session UI |
-| 15 | **Transport** | HTTP + WebSocket to AxiomDLP Core |
-| 16 | **Kernel Enforcement** | Windows Minifilter / Linux eBPF LSM |
-| 17 | **Packaging** | Signed MSI, .deb, .rpm |
+**Not yet implemented:** `--version`, `--log-level`, `--no-modules`, `--module <name>`.
 
 ---
 
-## 14. Known Limitations
+## 21. Verification Checklist
 
-### 14.1 Config File Not Found When Running as Service
+To confirm the current state end-to-end, run through this list on a fresh build.
 
-The service's working directory is `/` (Linux) or `C:\Windows\System32` (Windows). The relative path doesn't resolve.
+### 21.1 Build Verification
 
-**Impact:** The agent uses built-in defaults. Logging works, service works, but custom config isn't loaded.
+- [ ] `./scripts/build-all.sh` completes without errors
+- [ ] `build/linux-x86_64-release/axiomdlp-agent` exists and is executable
+- [ ] `build/linux-i686-release/axiomdlp-agent` exists and is 32-bit (`file` shows ELF 32-bit)
+- [ ] `build/windows-x86_64-release/axiomdlp-agent.exe` exists and is a PE32+ executable
+- [ ] `build/windows-i686-release/axiomdlp-agent.exe` exists and is a PE32 executable
+- [ ] `file` on the Windows binaries shows no dynamic DLL dependencies other than system ones
 
-**Planned fix:** Config path search.
+### 21.2 Runtime Verification (Linux Foreground)
 
-### 14.2 No Ctrl+C Handler in Windows Foreground Mode
+- [ ] `./axiomdlp-agent --foreground` starts and logs "Config loaded from:"
+- [ ] All three modules register, initialize, and start
+- [ ] `sd_notify READY sent` appears (if built with libsystemd)
+- [ ] Ctrl+C stops the process cleanly, with stop order reversed from start order
 
-Pressing Ctrl+C in Windows doesn't stop the agent cleanly. Use Task Manager or close the terminal.
+### 21.3 Filesystem Event Verification
 
-**Planned fix:** Add `SetConsoleCtrlHandler`.
+- [ ] Create a file in a watched directory → one `file_write` event
+- [ ] Modify the file → one `file_write` event (debounced)
+- [ ] Delete the file → one `file_delete` event
+- [ ] Create, modify, delete within 300 ms → one `file_write` event (priority preserved)
+- [ ] Create a file in an excluded path → no event
+- [ ] `agent.log` itself never appears as an event path
 
-### 14.3 ServiceContext Is Minimal
+### 21.4 Config Verification
 
-Currently only holds `config` and `event_bus`. Storage, policy engine, and transport will be added in later milestones.
+- [ ] Missing config file → warning + defaults, agent still starts
+- [ ] Malformed JSON → warning + defaults, agent still starts
+- [ ] Wrong type for `debounce_ms` → warning, uses default
+- [ ] Negative `debounce_ms` → warning, uses 300
+- [ ] Invalid log level → warning, uses `info`
+
+### 21.5 Service Verification (Linux)
+
+- [ ] `sudo ./axiomdlp-agent --install` writes the unit file
+- [ ] `systemctl status axiomdlp-agent` shows active (running)
+- [ ] `journalctl -u axiomdlp-agent -f` shows logs
+- [ ] `sudo ./axiomdlp-agent --uninstall` stops, disables, and removes cleanly
+- [ ] No orphan process after uninstall
+
+### 21.6 Service Verification (Windows)
+
+- [ ] `axiomdlp-agent.exe --install` (as Administrator) creates the service
+- [ ] `sc query AxiomDLPAgent` shows `RUNNING`
+- [ ] `axiomdlp-agent.exe --uninstall` removes it cleanly
+- [ ] Running without `--install` from a terminal falls back to foreground
 
 ---
 
-## 15. License
+## 22. Next Milestones
 
-Apache License 2.0 — see the `LICENSE` file for details.
+In order, with a one-sentence description of each.
+
+### Milestone 8 — Scanner
+
+Subscribe to file events, read the file content (bounded by `max_file_size_mb`), run regex patterns for credit cards, SSNs, emails, phone numbers, and API keys, and publish `scan_result` events. This is where the DLP pipeline starts producing real output.
+
+### Milestone 9 — Policy Engine
+
+Subscribe to `scan_result` events, evaluate them against local policies, and publish `decision` events. Introduces the `Policy`, `Decision`, and `PolicyEngine` types.
+
+### Milestone 10 — Storage
+
+SQLite persistence for events, decisions, policies, and state. Runs migrations on startup. Introduces the event queue that survives restarts.
+
+### Milestone 11 — User-Mode Enforcement
+
+Subscribe to `decision` events and act on them: block file writes, block clipboard copies. Introduces `IEnforcer` and the enforcement registry.
+
+### Milestone 12 — IPC + User Helper
+
+Named pipe / Unix socket server in the service, tray UI client in the user session. Introduces the `IIpc` interface and message schema.
+
+### Milestone 13 — Transport
+
+HTTP + WebSocket client for enrollment, heartbeat, event upload, and policy sync. Introduces `ITransport` and the protocol layer.
+
+### Milestone 14 — Kernel Enforcement
+
+Windows Minifilter driver and Linux eBPF LSM or fanotify with permission events. User-mode policy evaluation remains; kernel-mode enforcement acts on decisions.
 
 ---
 
 ## Summary
 
-The AxiomDLP Endpoint Agent currently provides:
+**The foundation is complete and production-quality.** Every subsystem built so far follows the same discipline:
 
-- **Cross-platform build system** — four targets from one Linux host
-- **Async structured logging** — spdlog with rotation, thread-safe, non-blocking
-- **Fail-safe configuration** — JSON loading with defaults and warnings
-- **Service lifecycle** — systemd (Linux) and SCM (Windows) with one-command install/uninstall
-- **Platform abstraction** — interfaces in `core/`, implementations in `platform/<os>/`
-- **Module system** — plugin architecture where every future feature is a module
-- **Event bus** — publish/subscribe between modules with thread-safe delivery
-- **Cross-platform IntelliSense** — clangd with a merged compile database
+- Interface in `core/`, implementation in `platform/<os>/` or `modules/<name>/`
+- Fail-safe by default: bad config, missing paths, failed modules never crash the agent
+- RAII for all resources
+- Thread-safe pub/sub with per-handler exception isolation
+- Debounced, filtered, prioritized filesystem events
+- Zero OS headers in `core/` or `modules/`
+- Four cleanly cross-compiled targets from one Linux host
+- Service install, run, and uninstall verified on Linux; install and run logic in place on Windows
 
-**The foundation is complete and production-quality.** The next milestones add the DLP functionality.
+**What runs today:** a monitoring agent that watches the filesystem, debounces the noise, filters the irrelevant, and publishes clean events to an in-process bus, where an observability module logs them.
 
-**Quick start:**
+**What comes next:** the Scanner, which turns those events into DLP signal.
 
-```bash
-git clone <repo>
-cd axiomdlp-agent
-./scripts/build-all.sh
-./build/linux-x86_64-release/axiomdlp-agent --foreground
-```
+The pipeline shape — `Capture → Scan → Decide → Enforce → Report` — is fully specified in `docs/architecture.md`. Only the first stage is implemented. The other four have clean insertion points waiting for them.
+
+**The agent is no longer a vessel with no cargo.** It has cargo. It just doesn't yet know what to do with it.

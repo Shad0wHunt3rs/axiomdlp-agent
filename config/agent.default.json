@@ -8,8 +8,6 @@
     "filesystem": {
       "enabled": true,
       "watch_paths": [
-        "/",
-        "/root",
         "/home",
         "/tmp",
         "/var/tmp",
@@ -18,10 +16,7 @@
         "/opt",
         "/srv",
         "/data",
-        "/workspace",
-        "/etc",
-        "/usr/local",
-        "/run/user"
+        "/workspace"
       ],
       "exclude_paths": [
         "*/node_modules/*",
@@ -37,6 +32,7 @@
         "*/.m2/*",
         "*/.npm/*",
         "*/.cargo/*",
+        "*/logs/*",
         "/var/lib/docker/*",
         "/var/lib/containers/*",
         "/var/lib/libvirt/*",

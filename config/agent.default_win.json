@@ -8,12 +8,10 @@
     "filesystem": {
       "enabled": true,
       "watch_paths": [
-        "C:\\",
+        "C:\\Users",
         "D:\\",
         "E:\\",
-        "F:\\",
-        "G:\\",
-        "H:\\"
+        "F:\\"
       ],
       "exclude_paths": [
         "C:\\Windows\\*",

@@ -34,6 +34,9 @@ struct HealthStatus {
     static HealthStatus failed(const std::string& msg) {
         return {HealthLevel::Failed, msg};
     }
+    static HealthStatus unknown(const std::string& msg = "") {
+        return {HealthLevel::Unknown, msg};
+    }
 
     // Helper: is this status considered healthy?
     bool is_healthy() const {
