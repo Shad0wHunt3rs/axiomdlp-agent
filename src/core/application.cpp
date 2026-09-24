@@ -4,7 +4,6 @@
 #include "core/logger.h"
 #include "core/paths.h"
 
-#include "modules/example/example_module.h"
 #include "modules/event_logger/event_logger_module.h"
 #include "modules/filesystem/filesystem_module.h"
 
@@ -113,9 +112,6 @@ bool Application::init() {
     //    Registration order = start order. Reverse for stop.
     //    The event_logger is registered last so it starts after
     //    producers, and stops before them.
-    module_manager_->register_module(
-        std::make_unique<ExampleModule>());
-
     module_manager_->register_module(
         std::make_unique<FilesystemModule>());
 

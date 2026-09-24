@@ -132,13 +132,23 @@ add_executable(axiomdlp-agent
     src/core/module_manager.cpp
     src/platform/common/efsw_file_watcher.cpp
     src/modules/module_base.cpp
-    src/modules/example/example_module.cpp
     src/modules/filesystem/filesystem_module.cpp
     src/modules/event_logger/event_logger_module.cpp
     ${AXIOM_PLATFORM_SOURCES}
 )
 
 target_include_directories(axiomdlp-agent PRIVATE src)
+
+# Compile all spdlog log macros (TRACE..CRITICAL) regardless of the
+# runtime level. Without this, spdlog's SPDLOG_DEBUG and SPDLOG_TRACE
+# expand to (void)0, so their arguments are never evaluated. That both
+# silences useful diagnostics and produces -Wunused-parameter warnings
+# in lambdas whose only statement is a debug log. Runtime filtering is
+# still applied by the configured level, so nothing extra is written
+# unless logging.level is set to "debug" or "trace".
+target_compile_definitions(axiomdlp-agent PRIVATE
+    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
+)
 
 target_link_libraries(axiomdlp-agent PRIVATE
     spdlog::spdlog
