@@ -5,6 +5,8 @@
 #include "core/paths.h"
 
 #include "modules/example/example_module.h"
+#include "modules/event_logger/event_logger_module.h"
+#include "modules/filesystem/filesystem_module.h"
 
 #include <spdlog/spdlog.h>
 
@@ -75,8 +77,17 @@ bool Application::init() {
     module_manager_ = std::make_unique<ModuleManager>();
 
     // 6. Register modules.
+    //    Registration order = start order. Reverse for stop.
+    //    The event_logger is registered last so it starts after
+    //    producers, and stops before them.
     module_manager_->register_module(
         std::make_unique<ExampleModule>());
+
+    module_manager_->register_module(
+        std::make_unique<FilesystemModule>());
+
+    module_manager_->register_module(
+        std::make_unique<EventLoggerModule>());
 
     // 7. Initialize all modules with the shared context.
     if (!module_manager_->initialize_all(*module_context_)) {
@@ -107,6 +118,7 @@ int Application::execute() {
         return 1;
     }
 
+    // Install / uninstall take priority over running.
     if (opts_.install) {
         return install_service(paths::executable_path(), default_service_name());
     }
@@ -114,8 +126,9 @@ int Application::execute() {
         return uninstall_service(default_service_name());
     }
 
+    // Normal run.
     service_ = make_service(default_service_name());
-    service_->set_module_manager(module_manager_.get());
+    service_->set_module_manager(module_manager_.get());    
     const int rc = service_->run();
 
     SPDLOG_INFO("Service returned rc={}", rc);

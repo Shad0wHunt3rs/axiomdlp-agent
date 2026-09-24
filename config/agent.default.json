@@ -3,5 +3,58 @@
     "dir":   "logs",
     "file":  "agent.log",
     "level": "info"
+  },
+  "modules": {
+    "filesystem": {
+      "enabled": true,
+      "watch_paths": [
+        "/",
+        "/root",
+        "/home",
+        "/tmp",
+        "/var/tmp",
+        "/media",
+        "/mnt",
+        "/opt",
+        "/srv",
+        "/data",
+        "/workspace",
+        "/etc",
+        "/usr/local",
+        "/run/user"
+      ],
+      "exclude_paths": [
+        "*/node_modules/*",
+        "*/.git/*",
+        "*/__pycache__/*",
+        "*/.cache/*",
+        "*/.local/share/Trash/*",
+        "*/.local/share/Steam/*",
+        "*/build/*",
+        "*/dist/*",
+        "*/target/*",
+        "*/.gradle/*",
+        "*/.m2/*",
+        "*/.npm/*",
+        "*/.cargo/*",
+        "/var/lib/docker/*",
+        "/var/lib/containers/*",
+        "/var/lib/libvirt/*",
+        "/var/lib/mysql/*",
+        "/var/lib/postgresql/*",
+        "/var/tmp/systemd-private-*",
+        "/tmp/systemd-private-*",
+        "/proc/*",
+        "/sys/*",
+        "/dev/*",
+        "/run/udev/*",
+        "/run/systemd/*",
+        "/snap/*",
+        "/var/cache/*",
+        "/var/log/journal/*"
+      ],
+      "debounce_ms": 300,
+      "max_file_size_mb": 100
+    }
   }
 }

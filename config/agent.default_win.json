@@ -1,0 +1,48 @@
+{
+  "logging": {
+    "dir":   "logs",
+    "file":  "agent.log",
+    "level": "info"
+  },
+  "modules": {
+    "filesystem": {
+      "enabled": true,
+      "watch_paths": [
+        "C:\\",
+        "D:\\",
+        "E:\\",
+        "F:\\",
+        "G:\\",
+        "H:\\"
+      ],
+      "exclude_paths": [
+        "C:\\Windows\\*",
+        "C:\\$Recycle.Bin\\*",
+        "C:\\System Volume Information\\*",
+        "C:\\ProgramData\\Microsoft\\Windows\\Caches\\*",
+        "C:\\ProgramData\\Microsoft\\Windows Defender\\*",
+        "C:\\ProgramData\\Package Cache\\*",
+        "C:\\Users\\*\\AppData\\Local\\Temp\\*",
+        "C:\\Users\\*\\AppData\\Local\\Microsoft\\Windows\\INetCache\\*",
+        "C:\\Users\\*\\AppData\\Local\\Packages\\*\\LocalCache\\*",
+        "C:\\Users\\*\\AppData\\Local\\Microsoft\\Windows\\Explorer\\*",
+        "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\*",
+        "*\\node_modules\\*",
+        "*\\.git\\*",
+        "*\\__pycache__\\*",
+        "*\\build\\*",
+        "*\\dist\\*",
+        "*\\target\\*",
+        "*\\.gradle\\*",
+        "*\\.m2\\*",
+        "*\\.npm\\*",
+        "*\\.cargo\\*",
+        "*\\bin\\obj\\*",
+        "*\\obj\\Debug\\*",
+        "*\\obj\\Release\\*"
+      ],
+      "debounce_ms": 300,
+      "max_file_size_mb": 100
+    }
+  }
+}

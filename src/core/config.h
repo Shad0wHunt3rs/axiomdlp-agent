@@ -2,9 +2,8 @@
 //
 // Centralized configuration loading for the AxiomDLP Agent.
 //
-// Reads config/agent.default.json (or another path), validates values,
-// applies defaults for missing or invalid fields, and returns a populated
-// Config object.
+// Reads config/agent.default.json, validates values, applies defaults,
+// and returns a populated Config object.
 //
 // Design:
 //   - Nested structs mirror the JSON structure.
@@ -28,18 +27,31 @@ struct LoggingConfig {
 };
 
 // ----------------------------------------------------------------
+// Section: modules.filesystem
+// ----------------------------------------------------------------
+struct FilesystemModuleConfig {
+    bool                     enabled = false;
+    std::vector<std::string> watch_paths;
+};
+
+// ----------------------------------------------------------------
+// Section: modules
+// ----------------------------------------------------------------
+struct ModulesConfig {
+    FilesystemModuleConfig filesystem;
+};
+
+// ----------------------------------------------------------------
 // Top-level config
 // ----------------------------------------------------------------
 struct Config {
     LoggingConfig logging;
+    ModulesConfig modules;
 
-    // Warnings collected during load. main() logs these after the
-    // logger is initialized.
+    // Warnings collected during load.
     std::vector<std::string> load_warnings;
 
     // Load the config from a file.
-    // If the file is missing or invalid, defaults are used and
-    // warnings are appended to load_warnings.
     static Config load(const std::string& path);
 };
 

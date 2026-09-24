@@ -15,6 +15,10 @@ if(EXISTS "${AXIOM_DEPS_DIR}/nlohmann_json-src")
     set(FETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON "${AXIOM_DEPS_DIR}/nlohmann_json-src"
         CACHE PATH "nlohmann/json source cache" FORCE)
 endif()
+if(EXISTS "${AXIOM_DEPS_DIR}/efsw-src")
+    set(FETCHCONTENT_SOURCE_DIR_EFSW "${AXIOM_DEPS_DIR}/efsw-src"
+        CACHE PATH "efsw source cache" FORCE)
+endif()
 
 # ----------------------------------------------------------------
 # Language settings
@@ -85,6 +89,21 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spdlog)
 
+# --- efsw (file system watcher) ---
+# Force static build: no shared library to ship.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_STATIC_LIBS ON  CACHE BOOL "" FORCE)
+set(EFSW_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
+set(EFSW_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    efsw
+    GIT_REPOSITORY https://github.com/SpartanJ/efsw.git
+    GIT_TAG        1.7.2
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(efsw)
+
 # ----------------------------------------------------------------
 # Platform-specific sources
 # ----------------------------------------------------------------
@@ -107,12 +126,15 @@ add_executable(axiomdlp-agent
     src/main.cpp
     src/core/application.cpp
     src/core/config.cpp
-    src/core/event.cpp              # ← NEW
-    src/core/event_bus.cpp          # ← NEW
+    src/core/event.cpp
+    src/core/event_bus.cpp
     src/core/logger.cpp
     src/core/module_manager.cpp
+    src/platform/common/efsw_file_watcher.cpp
     src/modules/module_base.cpp
     src/modules/example/example_module.cpp
+    src/modules/filesystem/filesystem_module.cpp
+    src/modules/event_logger/event_logger_module.cpp
     ${AXIOM_PLATFORM_SOURCES}
 )
 
@@ -121,6 +143,7 @@ target_include_directories(axiomdlp-agent PRIVATE src)
 target_link_libraries(axiomdlp-agent PRIVATE
     spdlog::spdlog
     nlohmann_json::nlohmann_json
+    efsw-static
 )
 
 # ----------------------------------------------------------------
@@ -142,12 +165,6 @@ endif()
 if(UNIX AND NOT APPLE)
     # ----------------------------------------------------------------
     # libsystemd (sd_notify) is OPTIONAL.
-    #
-    # Linux targets (32-bit and 64-bit) attempt to link libsystemd via
-    # pkg-config. Windows targets skip this block entirely (UNIX is false).
-    #
-    # For 32-bit builds, PKG_CONFIG_LIBDIR must point at the i386
-    # pkg-config directory so that the correct .pc file is used.
     # ----------------------------------------------------------------
     set(AXIOM_HAVE_SYSTEMD OFF)
 

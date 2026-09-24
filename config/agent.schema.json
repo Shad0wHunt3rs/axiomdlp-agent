@@ -9,24 +9,34 @@
       "type": "object",
       "description": "Logging subsystem configuration.",
       "properties": {
-        "dir": {
-          "type": "string",
-          "description": "Directory where log files are written.",
-          "default": "logs"
-        },
-        "file": {
-          "type": "string",
-          "description": "Log filename inside the log directory.",
-          "default": "agent.log"
-        },
+        "dir":   { "type": "string", "default": "logs" },
+        "file":  { "type": "string", "default": "agent.log" },
         "level": {
           "type": "string",
-          "description": "Minimum log level.",
           "enum": ["trace", "debug", "info", "warn", "error", "critical", "off"],
           "default": "info"
         }
       },
       "additionalProperties": false
+    },
+    "modules": {
+      "type": "object",
+      "description": "Per-module configuration.",
+      "properties": {
+        "filesystem": {
+          "type": "object",
+          "properties": {
+            "enabled":     { "type": "boolean", "default": false },
+            "watch_paths": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": []
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": true
