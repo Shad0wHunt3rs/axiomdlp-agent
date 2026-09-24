@@ -4,7 +4,7 @@
 //
 // It handles:
 //   - Registration (application wires modules in at startup)
-//   - Initialization (passes ServiceContext to each module)
+//   - Initialization (passes ModuleContext to each module)
 //   - Start / stop (in correct order)
 //   - Shutdown (releases resources)
 //   - Aggregate health reporting
@@ -15,7 +15,7 @@
 #pragma once
 
 #include "core/health.h"
-#include "core/service_context.h"
+#include "core/module_context.h"
 #include "interfaces/i_module.h"
 
 #include <cstddef>
@@ -36,11 +36,10 @@ public:
     ModuleManager& operator=(ModuleManager&&) = delete;
 
     // Register a module. Ownership transfers to the manager.
-    // Called by the Application at startup, before initialize_all().
     void register_module(std::unique_ptr<IModule> module);
 
     // Lifecycle — called in this order by the service.
-    bool initialize_all(ServiceContext& context);
+    bool initialize_all(ModuleContext& context);
     bool start_all();
     void stop_all();
     void shutdown_all();

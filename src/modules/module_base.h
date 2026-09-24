@@ -1,12 +1,13 @@
 // src/modules/module_base.h
 //
 // ModuleBase provides default implementations for the trivial methods of
-// the IModule interface.
+// the IModule interface. Real modules inherit from ModuleBase and override
+// only the methods they need.
 
 #pragma once
 
 #include "core/health.h"
-#include "core/service_context.h"
+#include "core/module_context.h"
 #include "interfaces/i_module.h"
 
 #include <string>
@@ -22,7 +23,7 @@ public:
         return "1.0.0";
     }
 
-    bool initialize(ServiceContext& context) override {
+    bool initialize(ModuleContext& context) override {
         ctx_ = &context;
         return true;
     }
@@ -42,7 +43,7 @@ public:
     }
 
 protected:
-    ServiceContext* ctx_ = nullptr;
+    ModuleContext* ctx_ = nullptr;
 };
 
 } // namespace axiom::core

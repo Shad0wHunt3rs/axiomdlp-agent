@@ -68,8 +68,8 @@ bool Application::init() {
     // 3. Create the event bus.
     event_bus_ = std::make_unique<EventBus>();
 
-    // 4. Create the shared service context (needs the bus).
-    service_context_ = std::make_unique<ServiceContext>(config_, *event_bus_);
+    // 4. Create the module context (needs the bus).
+    module_context_ = std::make_unique<ModuleContext>(config_, *event_bus_);
 
     // 5. Create the module manager.
     module_manager_ = std::make_unique<ModuleManager>();
@@ -79,7 +79,7 @@ bool Application::init() {
         std::make_unique<ExampleModule>());
 
     // 7. Initialize all modules with the shared context.
-    if (!module_manager_->initialize_all(*service_context_)) {
+    if (!module_manager_->initialize_all(*module_context_)) {
         SPDLOG_WARN("Some modules failed to initialize");
     }
 
@@ -107,7 +107,6 @@ int Application::execute() {
         return 1;
     }
 
-    // Install / uninstall take priority over running.
     if (opts_.install) {
         return install_service(paths::executable_path(), default_service_name());
     }
@@ -115,7 +114,6 @@ int Application::execute() {
         return uninstall_service(default_service_name());
     }
 
-    // Normal run.
     service_ = make_service(default_service_name());
     service_->set_module_manager(module_manager_.get());
     const int rc = service_->run();

@@ -7,11 +7,10 @@
 namespace axiom::core {
 
 namespace {
-// A test event type used only by this module.
 constexpr const char* kPingEvent = "example_ping";
 }
 
-bool ExampleModule::initialize(ServiceContext& context) {
+bool ExampleModule::initialize(ModuleContext& context) {
     if (!ModuleBase::initialize(context)) {
         return false;
     }
@@ -23,11 +22,10 @@ bool ExampleModule::start() {
     SPDLOG_INFO("example module: starting");
 
     if (ctx_ == nullptr) {
-        SPDLOG_ERROR("example module: no service context");
+        SPDLOG_ERROR("example module: no module context");
         return false;
     }
 
-    // Subscribe to a test event.
     subscription_id_ = ctx_->event_bus.subscribe(
         kPingEvent,
         [](const EventPtr& e) {
@@ -36,8 +34,6 @@ bool ExampleModule::start() {
 
     SPDLOG_INFO("example module: subscribed (id={})", subscription_id_);
 
-    // Publish a test event. Should immediately be delivered to our own
-    // subscriber, proving the bus works end to end.
     auto e = std::make_shared<Event>(Event::create(kPingEvent));
     e->metadata["source"] = "example_module";
     ctx_->event_bus.publish(e);

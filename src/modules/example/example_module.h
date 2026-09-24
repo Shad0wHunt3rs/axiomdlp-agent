@@ -2,16 +2,11 @@
 //
 // ExampleModule is a minimal module used to prove the module system
 // and the event bus work end-to-end.
-//
-// Lifecycle:
-//   initialize() → logs, stores context
-//   start()      → subscribes to a test event, publishes one
-//   stop()       → unsubscribes
-//   shutdown()   → logs
 
 #pragma once
 
 #include "core/event_bus.h"
+#include "core/module_context.h"
 #include "modules/module_base.h"
 
 #include <string>
@@ -24,7 +19,7 @@ public:
         return "example";
     }
 
-    bool initialize(ServiceContext& context) override;
+    bool initialize(ModuleContext& context) override;
     bool start() override;
     void stop() override;
     void shutdown() override;

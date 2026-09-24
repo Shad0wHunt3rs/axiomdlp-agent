@@ -26,7 +26,7 @@ void ModuleManager::register_module(std::unique_ptr<IModule> module) {
 // Lifecycle — initialization
 // ----------------------------------------------------------------
 
-bool ModuleManager::initialize_all(ServiceContext& context) {
+bool ModuleManager::initialize_all(ModuleContext& context) {
     if (modules_.empty()) {
         SPDLOG_WARN("ModuleManager: no modules registered");
         return true;
@@ -42,7 +42,6 @@ bool ModuleManager::initialize_all(ServiceContext& context) {
             SPDLOG_ERROR("ModuleManager: module '{}' failed to initialize",
                          m->name());
             all_ok = false;
-            // Continue with other modules. One failure must not stop the agent.
         }
     }
 
@@ -69,7 +68,6 @@ bool ModuleManager::start_all() {
             SPDLOG_ERROR("ModuleManager: module '{}' failed to start",
                          m->name());
             all_ok = false;
-            // Continue with other modules.
         }
     }
 
@@ -77,10 +75,7 @@ bool ModuleManager::start_all() {
 }
 
 // ----------------------------------------------------------------
-// Lifecycle — stop
-//
-// Stop in REVERSE registration order. If module B was registered after
-// module A (and therefore may depend on A), B should stop before A.
+// Lifecycle — stop (reverse order)
 // ----------------------------------------------------------------
 
 void ModuleManager::stop_all() {
@@ -98,10 +93,7 @@ void ModuleManager::stop_all() {
 }
 
 // ----------------------------------------------------------------
-// Lifecycle — shutdown
-//
-// Called after stop_all(), in the same reverse order. Releases any
-// remaining resources. After this, the manager is empty.
+// Lifecycle — shutdown (reverse order)
 // ----------------------------------------------------------------
 
 void ModuleManager::shutdown_all() {
