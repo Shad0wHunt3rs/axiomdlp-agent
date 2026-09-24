@@ -5,8 +5,8 @@
 #include "core/paths.h"
 
 #include "modules/event_logger/event_logger_module.h"
-#include "modules/filesystem/filesystem_module.h"
-#include "modules/metadata/metadata_module.h"
+#include "modules/filesystem_watcher/filesystem_watcher_module.h"
+#include "modules/inventory/inventory_module.h"
 #include "storage/migrations.h"
 
 #include <spdlog/spdlog.h>
@@ -16,10 +16,6 @@
 #include <iostream>
 
 namespace axiom::core {
-
-// ----------------------------------------------------------------
-// Argument parsing
-// ----------------------------------------------------------------
 
 Application::Options Application::parse_args(int argc, char** argv) {
     Options o;
@@ -38,19 +34,11 @@ Application::Options Application::parse_args(int argc, char** argv) {
     return o;
 }
 
-// ----------------------------------------------------------------
-// Construction / destruction
-// ----------------------------------------------------------------
-
 Application::Application(Options opts) : opts_(std::move(opts)) {}
 
 Application::~Application() {
     shutdown();
 }
-
-// ----------------------------------------------------------------
-// Config path resolution
-// ----------------------------------------------------------------
 
 namespace {
 
@@ -72,17 +60,11 @@ std::string resolve_config_path(const std::string& explicit_path) {
 
 } // namespace
 
-// ----------------------------------------------------------------
-// Initialization
-// ----------------------------------------------------------------
-
 bool Application::init() {
-    // 1. Resolve and load config.
     const std::string config_path = resolve_config_path(opts_.config_path);
     config_ = Config::load(config_path);
     opts_.config_path = config_path;
 
-    // 2. Initialize logging.
     Logger::init(config_.logging.dir, config_.logging.file, config_.logging.level);
     initialized_ = true;
 
@@ -92,7 +74,6 @@ bool Application::init() {
         SPDLOG_WARN("Config: {}", w);
     }
 
-    // 3. Open the database.
     database_ = std::make_unique<Database>();
     if (!database_->open(config_.storage.db_path)) {
         SPDLOG_ERROR("Failed to open database at '{}'",
@@ -100,35 +81,28 @@ bool Application::init() {
         return false;
     }
 
-    // 4. Initialize schema.
     if (!Migrations::apply(*database_)) {
         SPDLOG_ERROR("Schema migration failed");
         return false;
     }
 
-    // 5. Create the metadata store.
-    metadata_store_ = std::make_unique<MetadataStore>(*database_);
-    if (!metadata_store_->initialize_schema()) {
-        SPDLOG_ERROR("MetadataStore::initialize_schema failed");
+    file_store_ = std::make_unique<FileStore>(*database_);
+    if (!file_store_->initialize_schema()) {
+        SPDLOG_ERROR("FileStore::initialize_schema failed");
         return false;
     }
 
-    // 6. Create the event bus.
     event_bus_ = std::make_unique<EventBus>();
 
-    // 7. Create the module context (config + bus + store).
     module_context_ = std::make_unique<ModuleContext>(
-        config_, *event_bus_, *metadata_store_);
+        config_, *event_bus_, *file_store_);
 
-    // 8. Create the module manager.
     module_manager_ = std::make_unique<ModuleManager>();
 
-    // 9. Register modules.
-    module_manager_->register_module(std::make_unique<FilesystemModule>());
-    module_manager_->register_module(std::make_unique<MetadataModule>());
+    module_manager_->register_module(std::make_unique<FilesystemWatcherModule>());
+    module_manager_->register_module(std::make_unique<InventoryModule>());
     module_manager_->register_module(std::make_unique<EventLoggerModule>());
 
-    // 10. Initialize all modules.
     if (!module_manager_->initialize_all(*module_context_)) {
         SPDLOG_ERROR("Some modules failed to initialize; continuing anyway");
     }
@@ -136,36 +110,21 @@ bool Application::init() {
     return true;
 }
 
-// ----------------------------------------------------------------
-// Shutdown
-// ----------------------------------------------------------------
-
 void Application::shutdown() {
     if (!initialized_) return;
 
     SPDLOG_INFO("Application shutting down");
 
-    // Tear down members in reverse dependency order. Each reset()
-    // runs that object's destructor, which may itself log through
-    // SPDLOG_*. All of this must happen BEFORE Logger::shutdown(),
-    // otherwise the destructor of Database (and anything else that
-    // logs on destruction) writes to a dead spdlog and crashes.
     service_.reset();
     module_manager_.reset();
     module_context_.reset();
     event_bus_.reset();
-    metadata_store_.reset();
+    file_store_.reset();
     database_.reset();
 
-    // The log sink is the last thing to go.
     Logger::shutdown();
-
     initialized_ = false;
 }
-
-// ----------------------------------------------------------------
-// Execute
-// ----------------------------------------------------------------
 
 int Application::execute() {
     if (opts_.install || opts_.uninstall) {

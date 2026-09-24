@@ -266,13 +266,13 @@ add_executable(axiomdlp-agent
     src/core/module_manager.cpp
     src/platform/common/efsw_file_watcher.cpp
     src/modules/module_base.cpp
-    src/modules/filesystem/filesystem_module.cpp
+    src/modules/filesystem_watcher/filesystem_watcher_module.cpp
+    src/modules/inventory/inventory_module.cpp
+    src/modules/inventory/inventory_scanner.cpp
     src/modules/event_logger/event_logger_module.cpp
-    src/modules/metadata/metadata_module.cpp
-    src/modules/metadata/walker.cpp
     src/storage/database.cpp
     src/storage/migrations.cpp
-    src/storage/metadata_store.cpp
+    src/storage/file_store.cpp
     ${AXIOM_PLATFORM_SOURCES}
 )
 

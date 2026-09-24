@@ -8,7 +8,7 @@
 #include "core/module_manager.h"
 #include "core/service.h"
 #include "storage/database.h"
-#include "storage/metadata_store.h"
+#include "storage/file_store.h"
 
 #include <memory>
 #include <string>
@@ -38,12 +38,10 @@ private:
     Options opts_;
     Config  config_;
 
-    // Infrastructure, in dependency order:
-    std::unique_ptr<Database>      database_;
-    std::unique_ptr<MetadataStore> metadata_store_;
-    std::unique_ptr<EventBus>      event_bus_;
+    std::unique_ptr<Database>  database_;
+    std::unique_ptr<FileStore> file_store_;
+    std::unique_ptr<EventBus>  event_bus_;
 
-    // Framework
     std::unique_ptr<ModuleContext> module_context_;
     std::unique_ptr<ModuleManager> module_manager_;
     std::unique_ptr<IService>      service_;

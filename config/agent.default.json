@@ -1,7 +1,7 @@
 {
   "logging": {
-    "dir":   "logs",
-    "file":  "agent.log",
+    "dir": "logs",
+    "file": "agent.log",
     "level": "info"
   },
 
@@ -10,7 +10,7 @@
   },
 
   "modules": {
-    "filesystem": {
+    "filesystem_watcher": {
       "enabled": true,
       "watch_paths": [
         "/home",
@@ -34,7 +34,7 @@
       "max_file_size_mb": 100
     },
 
-    "metadata": {
+    "inventory": {
       "enabled": true,
       "watch_paths": [
         "/home",

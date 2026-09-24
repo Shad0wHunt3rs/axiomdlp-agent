@@ -1,46 +1,62 @@
 {
   "logging": {
-    "dir":   "logs",
-    "file":  "agent.log",
+    "dir": "logs",
+    "file": "agent.log",
     "level": "info"
   },
+
+  "storage": {
+    "db_path": "data/agent.db"
+  },
+
   "modules": {
-    "filesystem": {
+    "filesystem_watcher": {
       "enabled": true,
       "watch_paths": [
-        "C:\\Users",
-        "D:\\",
-        "E:\\",
-        "F:\\"
+        "%USERPROFILE%"
       ],
       "exclude_paths": [
-        "C:\\Windows\\*",
-        "C:\\$Recycle.Bin\\*",
-        "C:\\System Volume Information\\*",
-        "C:\\ProgramData\\Microsoft\\Windows\\Caches\\*",
-        "C:\\ProgramData\\Microsoft\\Windows Defender\\*",
-        "C:\\ProgramData\\Package Cache\\*",
-        "C:\\Users\\*\\AppData\\Local\\Temp\\*",
-        "C:\\Users\\*\\AppData\\Local\\Microsoft\\Windows\\INetCache\\*",
-        "C:\\Users\\*\\AppData\\Local\\Packages\\*\\LocalCache\\*",
-        "C:\\Users\\*\\AppData\\Local\\Microsoft\\Windows\\Explorer\\*",
-        "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\*",
-        "*\\node_modules\\*",
-        "*\\.git\\*",
-        "*\\__pycache__\\*",
-        "*\\build\\*",
-        "*\\dist\\*",
-        "*\\target\\*",
-        "*\\.gradle\\*",
-        "*\\.m2\\*",
-        "*\\.npm\\*",
-        "*\\.cargo\\*",
-        "*\\bin\\obj\\*",
-        "*\\obj\\Debug\\*",
-        "*\\obj\\Release\\*"
+        "*/node_modules/*",
+        "*/.git/*",
+        "*/AppData/Local/Temp/*",
+        "*/AppData/Local/Microsoft/Windows/INetCache/*"
       ],
       "debounce_ms": 300,
       "max_file_size_mb": 100
+    },
+
+    "inventory": {
+      "enabled": true,
+      "watch_paths": [
+        "%USERPROFILE%",
+        "%PUBLIC%",
+        "%ProgramData%",
+        "%ProgramFiles%",
+        "%ProgramFiles(x86)%",
+        "%SystemRoot%"
+      ],
+      "exclude_paths": [
+        "*/node_modules/*",
+        "*/.git/*",
+        "*/AppData/Local/Temp/*",
+        "*/AppData/Local/Microsoft/Windows/INetCache/*",
+        "*/AppData/Local/Packages/*/LocalCache/*",
+        "*/AppData/Local/Microsoft/Windows/Explorer/*",
+        "*/AppData/Roaming/Microsoft/Windows/Recent/*",
+        "*/AppData/Local/CrashDumps/*",
+        "*/Windows/WinSxS/*",
+        "*/Windows/assembly/*",
+        "*/Windows/System32/*",
+        "*/Windows/SysWOW64/*",
+        "*/Windows/Installer/*",
+        "*/Windows/Logs/*",
+        "*/ProgramData/Microsoft/Windows Defender/*",
+        "*/ProgramData/Microsoft/Windows/Caches/*",
+        "*/ProgramData/Package Cache/*",
+        "*/$Recycle.Bin/*",
+        "*/System Volume Information/*"
+      ],
+      "interval_seconds": 900
     }
   }
 }

@@ -1,6 +1,6 @@
-// src/storage/metadata_store.cpp
+// src/storage/file_store.cpp
 
-#include "storage/metadata_store.h"
+#include "storage/file_store.h"
 
 #include <spdlog/spdlog.h>
 
@@ -13,12 +13,11 @@ namespace axiom::core {
 
 namespace {
 
-// RAII wrapper for a prepared statement.
 class Stmt {
 public:
     Stmt(sqlite3* db, const char* sql) {
         if (sqlite3_prepare_v2(db, sql, -1, &stmt_, nullptr) != SQLITE_OK) {
-            SPDLOG_ERROR("MetadataStore: prepare failed: {}", sqlite3_errmsg(db));
+            SPDLOG_ERROR("FileStore: prepare failed: {}", sqlite3_errmsg(db));
             stmt_ = nullptr;
         }
     }
@@ -51,9 +50,9 @@ std::string text_col(sqlite3_stmt* s, int idx) {
 // Schema
 // ----------------------------------------------------------------
 
-bool MetadataStore::initialize_schema() {
+bool FileStore::initialize_schema() {
     if (!db_.is_open()) {
-        SPDLOG_ERROR("MetadataStore: database not open");
+        SPDLOG_ERROR("FileStore: database not open");
         return false;
     }
     return db_.exec("SELECT 1 FROM files LIMIT 0;");
@@ -63,15 +62,15 @@ bool MetadataStore::initialize_schema() {
 // Transactions
 // ----------------------------------------------------------------
 
-bool MetadataStore::begin_transaction() { return db_.begin_transaction(); }
-bool MetadataStore::commit()            { return db_.commit(); }
-bool MetadataStore::rollback()          { return db_.rollback(); }
+bool FileStore::begin_transaction() { return db_.begin_transaction(); }
+bool FileStore::commit()            { return db_.commit(); }
+bool FileStore::rollback()          { return db_.rollback(); }
 
 // ----------------------------------------------------------------
 // Upsert
 // ----------------------------------------------------------------
 
-bool MetadataStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
+bool FileStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
     const char* sql = R"SQL(
         INSERT INTO files
             (dev, inode, path, basename, dirname, extension,
@@ -157,7 +156,7 @@ bool MetadataStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
 // Pruning
 // ----------------------------------------------------------------
 
-bool MetadataStore::prune_stale(std::uint64_t current_walk_id) {
+bool FileStore::prune_stale(std::uint64_t current_walk_id) {
     const char* sql = "DELETE FROM files WHERE walk_id < ?;";
     Stmt stmt(db_.handle(), sql);
     if (!stmt.ok()) return false;
@@ -170,7 +169,7 @@ bool MetadataStore::prune_stale(std::uint64_t current_walk_id) {
 // Walk bookkeeping
 // ----------------------------------------------------------------
 
-std::uint64_t MetadataStore::begin_walk(std::int64_t started_at) {
+std::uint64_t FileStore::begin_walk(std::int64_t started_at) {
     const char* sql = R"SQL(
         INSERT INTO walks
             (started_at, finished_at, files_seen, files_new,
@@ -186,14 +185,14 @@ std::uint64_t MetadataStore::begin_walk(std::int64_t started_at) {
     return static_cast<std::uint64_t>(sqlite3_last_insert_rowid(db_.handle()));
 }
 
-bool MetadataStore::finish_walk(std::uint64_t walk_id,
-                                std::int64_t started_at,
-                                std::int64_t finished_at,
-                                std::size_t files_seen,
-                                std::size_t files_new,
-                                std::size_t files_changed,
-                                std::size_t files_deleted,
-                                std::int64_t duration_ms) {
+bool FileStore::finish_walk(std::uint64_t walk_id,
+                            std::int64_t started_at,
+                            std::int64_t finished_at,
+                            std::size_t files_seen,
+                            std::size_t files_new,
+                            std::size_t files_changed,
+                            std::size_t files_deleted,
+                            std::int64_t duration_ms) {
     const char* sql = R"SQL(
         UPDATE walks SET
             started_at = ?, finished_at = ?,
@@ -222,7 +221,7 @@ bool MetadataStore::finish_walk(std::uint64_t walk_id,
 // Queries
 // ----------------------------------------------------------------
 
-std::vector<FileRow> MetadataStore::query(const FileQuery& q) const {
+std::vector<FileRow> FileStore::query(const FileQuery& q) const {
     std::vector<FileRow> out;
 
     std::string sql =
@@ -240,8 +239,6 @@ std::vector<FileRow> MetadataStore::query(const FileQuery& q) const {
     if (q.only_files)           sql += " AND is_directory = 0";
     if (q.only_sensitive)       sql += " AND is_sensitive = 1";
 
-    // Ordering. Whitelist column names to avoid SQL injection through
-    // the query parameter.
     std::string order_col = "path";
     if (q.order_by == "size")     order_col = "size";
     if (q.order_by == "mtime")    order_col = "mtime_ns";
@@ -304,7 +301,7 @@ std::vector<FileRow> MetadataStore::query(const FileQuery& q) const {
 // Aggregations
 // ----------------------------------------------------------------
 
-MetadataStore::Stats MetadataStore::stats() const {
+FileStore::Stats FileStore::stats() const {
     Stats s;
 
     Stmt stmt(db_.handle(),
@@ -325,8 +322,8 @@ MetadataStore::Stats MetadataStore::stats() const {
     return s;
 }
 
-std::vector<MetadataStore::CategoryCount>
-MetadataStore::category_breakdown() const {
+std::vector<FileStore::CategoryCount>
+FileStore::category_breakdown() const {
     std::vector<CategoryCount> out;
 
     Stmt stmt(db_.handle(),
@@ -345,12 +342,10 @@ MetadataStore::category_breakdown() const {
     return out;
 }
 
-std::vector<MetadataStore::DirCount>
-MetadataStore::top_directories(std::size_t limit) const {
+std::vector<FileStore::DirCount>
+FileStore::top_directories(std::size_t limit) const {
     std::vector<DirCount> out;
 
-    // Group by the first two path segments (e.g. "/home/kali").
-    // Uses SQLite's INSTR to find the second '/' after position 1.
     Stmt stmt(db_.handle(),
               "SELECT "
               "  substr(path, 1, instr(substr(path, 2), '/') + 1) AS top_dir, "

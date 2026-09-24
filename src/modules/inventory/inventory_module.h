@@ -1,8 +1,8 @@
-// src/modules/metadata/metadata_module.h
+// src/modules/inventory/inventory_module.h
 //
-// MetadataModule schedules periodic filesystem walks. It owns a
-// background thread that calls the Walker on an interval, and reports
-// walk statistics through the log.
+// InventoryModule schedules periodic filesystem scans. It owns a
+// background thread that calls the InventoryScanner on an interval,
+// and reports scan statistics through the log.
 
 #pragma once
 
@@ -16,9 +16,9 @@
 
 namespace axiom::core {
 
-class MetadataModule final : public ModuleBase {
+class InventoryModule final : public ModuleBase {
 public:
-    std::string name() const override { return "metadata"; }
+    std::string name() const override { return "inventory"; }
 
     bool initialize(ModuleContext& context) override;
     bool start() override;
@@ -27,10 +27,10 @@ public:
     HealthStatus health() const override;
 
 private:
-    void walk_loop();
-    void run_one_walk();
+    void scan_loop();
+    void run_one_scan();
 
-    std::thread       walk_thread_;
+    std::thread       scan_thread_;
     std::atomic<bool> stop_{false};
 
     std::chrono::seconds interval_{900};

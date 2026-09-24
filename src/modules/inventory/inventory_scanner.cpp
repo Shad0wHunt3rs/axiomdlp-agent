@@ -1,11 +1,12 @@
-// src/modules/metadata/walker.cpp
+// src/modules/inventory/inventory_scanner.cpp
 
-#include "modules/metadata/walker.h"
-#include "storage/metadata_store.h"
+#include "modules/inventory/inventory_scanner.h"
+#include "storage/file_store.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <filesystem>
@@ -22,11 +23,8 @@ namespace axiom::core {
 
 namespace {
 
-constexpr std::size_t kBatchSize = 5000;
-
-// ----------------------------------------------------------------
-// Glob / exclusion helpers (unchanged from the previous walker)
-// ----------------------------------------------------------------
+constexpr std::size_t kBatchSize         = 5000;
+constexpr std::size_t kStopCheckInterval = 256;
 
 bool glob_match(const std::string& pattern, const std::string& text) {
     std::size_t pi = 0, ti = 0;
@@ -64,60 +62,44 @@ bool path_matches_pattern(const std::string& pattern, const std::string& path) {
     return false;
 }
 
-// ----------------------------------------------------------------
-// Path decomposition helpers
-// ----------------------------------------------------------------
-
 std::string to_lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
 }
 
-// Lowercase extension without the leading dot. Empty for no extension.
 std::string extract_extension(const std::filesystem::path& p) {
     const auto ext = p.extension().string();
     if (ext.empty() || ext[0] != '.') return {};
     return to_lower(ext.substr(1));
 }
 
-// Filename only.
 std::string extract_basename(const std::filesystem::path& p) {
     return p.filename().string();
 }
 
-// Parent directory as an absolute path string.
 std::string extract_dirname(const std::filesystem::path& p) {
     return p.parent_path().string();
 }
 
-// ----------------------------------------------------------------
-// Category classification by extension. Cheap, no file read.
-// ----------------------------------------------------------------
 std::string categorize(const std::string& ext, bool is_executable) {
     static const std::unordered_map<std::string, std::string> table = {
-        // images
         {"jpg","image"},{"jpeg","image"},{"png","image"},{"gif","image"},
         {"bmp","image"},{"svg","image"},{"webp","image"},{"ico","image"},
         {"tiff","image"},{"tif","image"},{"heic","image"},{"heif","image"},
-        // video
         {"mp4","video"},{"mkv","video"},{"avi","video"},{"mov","video"},
         {"wmv","video"},{"flv","video"},{"webm","video"},{"m4v","video"},
         {"mpg","video"},{"mpeg","video"},
-        // audio
         {"mp3","audio"},{"wav","audio"},{"flac","audio"},{"ogg","audio"},
         {"m4a","audio"},{"aac","audio"},{"wma","audio"},{"opus","audio"},
-        // documents
         {"pdf","document"},{"doc","document"},{"docx","document"},
         {"xls","document"},{"xlsx","document"},{"ppt","document"},
         {"pptx","document"},{"odt","document"},{"ods","document"},
         {"odp","document"},{"txt","document"},{"md","document"},
         {"rtf","document"},{"tex","document"},
-        // archives
         {"zip","archive"},{"tar","archive"},{"gz","archive"},
         {"bz2","archive"},{"xz","archive"},{"7z","archive"},
         {"rar","archive"},{"zst","archive"},{"tgz","archive"},
-        // code
         {"c","code"},{"cpp","code"},{"cc","code"},{"cxx","code"},
         {"h","code"},{"hpp","code"},{"hxx","code"},{"py","code"},
         {"js","code"},{"ts","code"},{"jsx","code"},{"tsx","code"},
@@ -127,14 +109,11 @@ std::string categorize(const std::string& ext, bool is_executable) {
         {"json","code"},{"xml","code"},{"yaml","code"},{"yml","code"},
         {"toml","code"},{"lua","code"},{"pl","code"},{"swift","code"},
         {"kt","code"},{"scala","code"},{"cs","code"},{"sql","code"},
-        // data
         {"csv","data"},{"tsv","data"},{"db","data"},
         {"sqlite","data"},{"sqlite3","data"},{"parquet","data"},
         {"arrow","data"},{"feather","data"},
-        // config
         {"conf","config"},{"cfg","config"},{"ini","config"},
         {"env","config"},{"properties","config"},
-        // executables / libraries
         {"exe","executable"},{"bin","executable"},{"so","executable"},
         {"dll","executable"},{"dylib","executable"},{"app","executable"},
         {"deb","package"},{"rpm","package"},{"msi","package"},
@@ -143,14 +122,10 @@ std::string categorize(const std::string& ext, bool is_executable) {
 
     auto it = table.find(ext);
     if (it != table.end()) return it->second;
-
     if (is_executable) return "executable";
     return "other";
 }
 
-// ----------------------------------------------------------------
-// Surrogate (dev, inode) identity from the path hash.
-// ----------------------------------------------------------------
 std::uint64_t path_identity(const std::string& path) {
     std::hash<std::string> hasher;
     return static_cast<std::uint64_t>(hasher(path));
@@ -159,35 +134,46 @@ std::uint64_t path_identity(const std::string& path) {
 } // namespace
 
 // ----------------------------------------------------------------
-// Walker
+// InventoryScanner
 // ----------------------------------------------------------------
 
-bool Walker::is_excluded(const std::string& path) const {
-    for (const auto& pattern : ctx_.config.modules.metadata.exclude_paths) {
+bool InventoryScanner::is_excluded(const std::string& path) const {
+    for (const auto& pattern : ctx_.config.modules.inventory.exclude_paths) {
         if (path_matches_pattern(pattern, path)) return true;
     }
     return false;
 }
 
-void Walker::walk_one_root(const std::string& root,
-                           std::uint64_t walk_id,
-                           WalkResult& result) {
+void InventoryScanner::scan_one_root(const std::string& root,
+                                     std::uint64_t walk_id,
+                                     const std::atomic<bool>& stop_flag,
+                                     InventoryResult& result) {
     namespace fs = std::filesystem;
     std::error_code ec;
 
     if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
-        SPDLOG_WARN("Walker: skipping '{}' (not a directory)", root);
+        SPDLOG_WARN("InventoryScanner: skipping '{}' (not a directory)", root);
         return;
     }
 
     auto options = fs::directory_options::skip_permission_denied;
-    std::size_t since_commit = 0;
+    std::size_t since_commit   = 0;
+    std::size_t since_stop_chk = 0;
 
     for (auto it = fs::recursive_directory_iterator(root, options, ec);
          it != fs::recursive_directory_iterator();
          it.increment(ec)) {
 
         if (ec) { ec.clear(); continue; }
+
+        if (++since_stop_chk >= kStopCheckInterval) {
+            since_stop_chk = 0;
+            if (stop_flag.load(std::memory_order_relaxed)) {
+                SPDLOG_INFO("InventoryScanner: stop requested, aborting scan early");
+                result.was_cancelled = true;
+                return;
+            }
+        }
 
         const auto& entry   = *it;
         const auto path_str = entry.path().string();
@@ -199,9 +185,6 @@ void Walker::walk_one_root(const std::string& root,
 
         if (entry.is_symlink(ec)) continue;
 
-        // ------------------------------------------------------------
-        // Build the row
-        // ------------------------------------------------------------
         FileRow row;
 
         row.path      = path_str;
@@ -209,26 +192,18 @@ void Walker::walk_one_root(const std::string& root,
         row.dirname   = extract_dirname(entry.path());
         row.extension = extract_extension(entry.path());
 
-        // Surrogate identity.
         row.dev   = 0;
         row.inode = path_identity(path_str);
 
-        // Directory flag.
         row.is_directory = entry.is_directory(ec);
+        row.file_type    = row.is_directory ? "dir" : "file";
 
-        // File type string. Filled in more precisely below on Linux.
-        row.file_type = row.is_directory ? "dir" : "file";
-
-        // Hidden if the basename starts with '.' (and isn't "." or "..").
         row.is_hidden = (!row.basename.empty() &&
                          row.basename[0] == '.' &&
                          row.basename != "." &&
                          row.basename != "..");
 
 #ifndef _WIN32
-        // ------------------------------------------------------------
-        // Linux: full POSIX stat for the richest metadata.
-        // ------------------------------------------------------------
         struct ::stat st{};
         if (::stat(path_str.c_str(), &st) == 0) {
             row.size     = static_cast<std::uint64_t>(st.st_size);
@@ -255,9 +230,7 @@ void Walker::walk_one_root(const std::string& root,
 
             row.is_executable = (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
         } else {
-            // stat failed: fall back to std::filesystem for at least the
-            // size and mtime. mode/uid/gid stay 0.
-            SPDLOG_DEBUG("Walker: stat failed for '{}'", path_str);
+            SPDLOG_DEBUG("InventoryScanner: stat failed for '{}'", path_str);
             if (!row.is_directory) {
                 const auto sz = entry.file_size(ec);
                 row.size = ec ? 0 : static_cast<std::uint64_t>(sz);
@@ -272,9 +245,6 @@ void Walker::walk_one_root(const std::string& root,
             row.is_executable = false;
         }
 #else
-        // ------------------------------------------------------------
-        // Windows: std::filesystem only. POSIX stat fields stay 0.
-        // ------------------------------------------------------------
         if (!row.is_directory) {
             const auto sz = entry.file_size(ec);
             row.size = ec ? 0 : static_cast<std::uint64_t>(sz);
@@ -287,7 +257,6 @@ void Walker::walk_one_root(const std::string& root,
         }
         ec.clear();
 
-        // Windows: executables are identified by extension.
         static const std::vector<std::string> exec_exts = {
             "exe", "bat", "cmd", "com", "ps1", "msi",
         };
@@ -296,64 +265,70 @@ void Walker::walk_one_root(const std::string& root,
                 != exec_exts.end();
 #endif
 
-        // Category from extension + executability flag.
         row.category = categorize(row.extension, row.is_executable);
 
-        // Sensitivity is not populated in this milestone. The Scanner
-        // module will fill these fields when it lands.
         row.is_sensitive = false;
         row.sensitivity  = "";
         row.scan_status  = "pending";
 
-        // ------------------------------------------------------------
-        // Insert
-        // ------------------------------------------------------------
-        if (ctx_.metadata_store.upsert_file(row, walk_id)) {
+        if (ctx_.file_store.upsert_file(row, walk_id)) {
             ++result.files_seen;
             ++since_commit;
 
             if (since_commit >= kBatchSize) {
-                ctx_.metadata_store.commit();
-                ctx_.metadata_store.begin_transaction();
+                ctx_.file_store.commit();
+                ctx_.file_store.begin_transaction();
                 since_commit = 0;
             }
         }
     }
 }
 
-WalkResult Walker::walk_all() {
-    WalkResult r;
+InventoryResult InventoryScanner::scan_all(const std::atomic<bool>& stop_flag) {
+    InventoryResult r;
 
     const auto start = std::chrono::steady_clock::now();
 
-    if (!ctx_.metadata_store.initialize_schema()) {
-        SPDLOG_ERROR("Walker: metadata store not initialized");
+    if (!ctx_.file_store.initialize_schema()) {
+        SPDLOG_ERROR("InventoryScanner: file store not initialized");
         return r;
     }
 
-    const auto& roots = ctx_.config.modules.metadata.watch_paths;
+    const auto& roots = ctx_.config.modules.inventory.watch_paths;
     if (roots.empty()) {
-        SPDLOG_WARN("Walker: no watch paths configured");
+        SPDLOG_WARN("InventoryScanner: no watch paths configured");
         return r;
     }
 
     r.walk_id = 1;
 
-    SPDLOG_INFO("Walker: starting walk over {} root(s)", roots.size());
+    SPDLOG_INFO("InventoryScanner: starting scan over {} root(s)", roots.size());
 
-    ctx_.metadata_store.begin_transaction();
+    ctx_.file_store.begin_transaction();
 
     for (const auto& root : roots) {
-        walk_one_root(root, r.walk_id, r);
+        if (stop_flag.load(std::memory_order_relaxed)) {
+            SPDLOG_INFO("InventoryScanner: stop requested before '{}', aborting",
+                        root);
+            r.was_cancelled = true;
+            break;
+        }
+        scan_one_root(root, r.walk_id, stop_flag, r);
+        if (r.was_cancelled) break;
     }
 
-    ctx_.metadata_store.commit();
+    ctx_.file_store.commit();
 
     r.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
 
-    SPDLOG_INFO("Walker: finished ({} files, {} ms)",
-                r.files_seen, r.duration_ms);
+    if (r.was_cancelled) {
+        SPDLOG_INFO("InventoryScanner: cancelled after {} files ({} ms)",
+                    r.files_seen, r.duration_ms);
+    } else {
+        SPDLOG_INFO("InventoryScanner: finished ({} files, {} ms)",
+                    r.files_seen, r.duration_ms);
+    }
 
     return r;
 }
