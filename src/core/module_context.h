@@ -11,6 +11,8 @@
 // In later milestones, more subsystems will be added here (storage,
 // policy engine, transport).
 
+// src/core/module_context.h
+
 #pragma once
 
 #include "core/config.h"
@@ -18,15 +20,18 @@
 
 namespace axiom::core {
 
+// Forward-declared: only used by reference here.
+class MetadataStore;
+
 struct ModuleContext {
-    // The loaded configuration. Read-only for modules.
-    const Config& config;
+    const Config&  config;
+    EventBus&      event_bus;
+    MetadataStore& metadata_store;   // shared storage for any module
 
-    // The event bus. Modules publish and subscribe through this.
-    EventBus& event_bus;
-
-    ModuleContext(const Config& c, EventBus& bus)
-        : config(c), event_bus(bus) {}
+    ModuleContext(const Config& c,
+                  EventBus& bus,
+                  MetadataStore& store)
+        : config(c), event_bus(bus), metadata_store(store) {}
 };
 
 } // namespace axiom::core

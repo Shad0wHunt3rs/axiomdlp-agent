@@ -60,7 +60,7 @@ struct FileEvent {
 // IFileWatcher — the interface
 // ----------------------------------------------------------------
 
-class IFileWatcher {    
+class IFileWatcher {
 public:
     using Callback = std::function<void(const FileEvent&)>;
 

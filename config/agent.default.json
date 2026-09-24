@@ -4,6 +4,11 @@
     "file":  "agent.log",
     "level": "info"
   },
+
+  "storage": {
+    "db_path": "data/agent.db"
+  },
+
   "modules": {
     "filesystem": {
       "enabled": true,
@@ -14,17 +19,36 @@
         "/media",
         "/mnt",
         "/opt",
-        "/srv",
-        "/data",
-        "/workspace"
+        "/srv"
       ],
       "exclude_paths": [
         "*/node_modules/*",
         "*/.git/*",
         "*/__pycache__/*",
         "*/.cache/*",
-        "*/.local/share/Trash/*",
-        "*/.local/share/Steam/*",
+        "*/logs/*",
+        "/var/tmp/systemd-private-*",
+        "/tmp/systemd-private-*"
+      ],
+      "debounce_ms": 300,
+      "max_file_size_mb": 100
+    },
+
+    "metadata": {
+      "enabled": true,
+      "watch_paths": [
+        "/home",
+        "/etc",
+        "/opt",
+        "/root",
+        "/tmp",
+        "/var/tmp"
+      ],
+      "exclude_paths": [
+        "*/.git/*",
+        "*/node_modules/*",
+        "*/.cache/*",
+        "*/__pycache__/*",
         "*/build/*",
         "*/dist/*",
         "*/target/*",
@@ -32,25 +56,15 @@
         "*/.m2/*",
         "*/.npm/*",
         "*/.cargo/*",
-        "*/logs/*",
         "/var/lib/docker/*",
         "/var/lib/containers/*",
-        "/var/lib/libvirt/*",
-        "/var/lib/mysql/*",
-        "/var/lib/postgresql/*",
-        "/var/tmp/systemd-private-*",
-        "/tmp/systemd-private-*",
         "/proc/*",
         "/sys/*",
         "/dev/*",
-        "/run/udev/*",
-        "/run/systemd/*",
         "/snap/*",
-        "/var/cache/*",
-        "/var/log/journal/*"
+        "/var/log/*"
       ],
-      "debounce_ms": 300,
-      "max_file_size_mb": 100
+      "interval_seconds": 900
     }
   }
 }

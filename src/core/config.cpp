@@ -12,7 +12,6 @@ namespace axiom::core {
 
 namespace {
 
-// Apply a string field from JSON if present and valid.
 void read_string(const json& obj,
                  const char* key,
                  std::string& out,
@@ -26,7 +25,6 @@ void read_string(const json& obj,
     out = obj[key].get<std::string>();
 }
 
-// Apply a boolean field from JSON if present and valid.
 void read_bool(const json& obj,
                const char* key,
                bool& out,
@@ -40,7 +38,6 @@ void read_bool(const json& obj,
     out = obj[key].get<bool>();
 }
 
-// Apply an integer field from JSON if present and valid.
 void read_int(const json& obj,
               const char* key,
               int& out,
@@ -54,7 +51,6 @@ void read_int(const json& obj,
     out = obj[key].get<int>();
 }
 
-// Apply an array-of-strings field from JSON if present and valid.
 void read_string_array(const json& obj,
                        const char* key,
                        std::vector<std::string>& out,
@@ -88,7 +84,7 @@ bool is_valid_level(const std::string& level) {
 Config Config::load(const std::string& path) {
     Config cfg;
 
-    // --- 1. Read the file ---
+    // 1. Read file.
     std::ifstream file(path);
     if (!file.is_open()) {
         cfg.load_warnings.push_back("config file not found at '" + path +
@@ -96,7 +92,7 @@ Config Config::load(const std::string& path) {
         return cfg;
     }
 
-    // --- 2. Parse JSON ---
+    // 2. Parse JSON.
     json root;
     try {
         file >> root;
@@ -112,25 +108,31 @@ Config Config::load(const std::string& path) {
         return cfg;
     }
 
-    // --- 3. logging section ---
+    // 3. logging
     if (root.contains("logging")) {
         const json& log = root["logging"];
         if (log.is_object()) {
             read_string(log, "dir",   cfg.logging.dir,   cfg.load_warnings, "logging");
             read_string(log, "file",  cfg.logging.file,  cfg.load_warnings, "logging");
             read_string(log, "level", cfg.logging.level, cfg.load_warnings, "logging");
-
             if (!is_valid_level(cfg.logging.level)) {
                 cfg.load_warnings.push_back("logging.level '" + cfg.logging.level +
                                             "' is not valid; using 'info'");
                 cfg.logging.level = "info";
             }
-        } else {
-            cfg.load_warnings.push_back("'logging' must be an object; using defaults");
         }
     }
 
-    // --- 4. modules section ---
+    // 4. storage
+    if (root.contains("storage")) {
+        const json& st = root["storage"];
+        if (st.is_object()) {
+            read_string(st, "db_path", cfg.storage.db_path,
+                        cfg.load_warnings, "storage");
+        }
+    }
+
+    // 5. modules
     if (root.contains("modules")) {
         const json& mods = root["modules"];
         if (mods.is_object()) {
@@ -154,9 +156,6 @@ Config Config::load(const std::string& path) {
                              cfg.modules.filesystem.max_file_size_mb,
                              cfg.load_warnings, "modules.filesystem");
 
-                    // Sanity clamps: a negative debounce would fire events
-                    // immediately and defeat the purpose; a negative size
-                    // limit is meaningless.
                     if (cfg.modules.filesystem.debounce_ms < 0) {
                         cfg.load_warnings.push_back(
                             "modules.filesystem.debounce_ms must be >= 0; using 300");
@@ -167,13 +166,33 @@ Config Config::load(const std::string& path) {
                             "modules.filesystem.max_file_size_mb must be >= 0; using 100");
                         cfg.modules.filesystem.max_file_size_mb = 100;
                     }
-                } else {
-                    cfg.load_warnings.push_back(
-                        "'modules.filesystem' must be an object; using defaults");
                 }
             }
-        } else {
-            cfg.load_warnings.push_back("'modules' must be an object; using defaults");
+
+            // modules.metadata
+            if (mods.contains("metadata")) {
+                const json& md = mods["metadata"];
+                if (md.is_object()) {
+                    read_bool(md, "enabled",
+                              cfg.modules.metadata.enabled,
+                              cfg.load_warnings, "modules.metadata");
+                    read_string_array(md, "watch_paths",
+                                      cfg.modules.metadata.watch_paths,
+                                      cfg.load_warnings, "modules.metadata");
+                    read_string_array(md, "exclude_paths",
+                                      cfg.modules.metadata.exclude_paths,
+                                      cfg.load_warnings, "modules.metadata");
+                    read_int(md, "interval_seconds",
+                             cfg.modules.metadata.interval_seconds,
+                             cfg.load_warnings, "modules.metadata");
+
+                    if (cfg.modules.metadata.interval_seconds < 10) {
+                        cfg.load_warnings.push_back(
+                            "modules.metadata.interval_seconds must be >= 10; using 900");
+                        cfg.modules.metadata.interval_seconds = 900;
+                    }
+                }
+            }
         }
     }
 

@@ -8,16 +8,12 @@ build-*/
 # Generated compile database (root merged file)
 compile_commands.json
 
-# VS Code — commit only shared clangd config
+# IDE / OS
 .vscode/*
 !.vscode/settings.json
-
-# IDE misc
 .idea/
 *.swp
 *.swo
-
-# OS misc
 .DS_Store
 Thumbs.db
 
@@ -33,6 +29,7 @@ Thumbs.db
 # Logs and runtime data
 *.log
 logs/
+data/
 
 # CMake-generated
 CMakeCache.txt
@@ -41,6 +38,4 @@ cmake_install.cmake
 
 # clangd cache
 .clangd.cache/
-
-# clangd cache (index files — never commit these)
 .cache/

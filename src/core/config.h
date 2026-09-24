@@ -10,6 +10,8 @@
 //   - Every field has a safe default.
 //   - Loading never throws; problems are collected as warnings.
 
+// src/core/config.h
+
 #pragma once
 
 #include <string>
@@ -27,6 +29,13 @@ struct LoggingConfig {
 };
 
 // ----------------------------------------------------------------
+// Section: storage
+// ----------------------------------------------------------------
+struct StorageConfig {
+    std::string db_path = "data/agent.db";
+};
+
+// ----------------------------------------------------------------
 // Section: modules.filesystem
 // ----------------------------------------------------------------
 struct FilesystemModuleConfig {
@@ -38,10 +47,21 @@ struct FilesystemModuleConfig {
 };
 
 // ----------------------------------------------------------------
+// Section: modules.metadata
+// ----------------------------------------------------------------
+struct MetadataModuleConfig {
+    bool                     enabled = true;
+    std::vector<std::string> watch_paths;
+    std::vector<std::string> exclude_paths;
+    int                      interval_seconds = 900;
+};
+
+// ----------------------------------------------------------------
 // Section: modules
 // ----------------------------------------------------------------
 struct ModulesConfig {
     FilesystemModuleConfig filesystem;
+    MetadataModuleConfig   metadata;
 };
 
 // ----------------------------------------------------------------
@@ -49,12 +69,11 @@ struct ModulesConfig {
 // ----------------------------------------------------------------
 struct Config {
     LoggingConfig logging;
+    StorageConfig storage;
     ModulesConfig modules;
 
-    // Warnings collected during load.
     std::vector<std::string> load_warnings;
 
-    // Load the config from a file.
     static Config load(const std::string& path);
 };
 

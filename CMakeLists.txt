@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(axiomdlp-agent VERSION 0.1.0 LANGUAGES CXX)
+project(axiomdlp-agent VERSION 0.1.0 LANGUAGES C CXX)
 
 # ----------------------------------------------------------------
 # Shared source cache for FetchContent dependencies
@@ -90,7 +90,6 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(spdlog)
 
 # --- efsw (file system watcher) ---
-# Force static build: no shared library to ship.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(BUILD_STATIC_LIBS ON  CACHE BOOL "" FORCE)
 set(EFSW_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
@@ -103,6 +102,141 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(efsw)
+
+# ----------------------------------------------------------------
+# SQLite3 amalgamation
+#
+# Single path for every target. The amalgamation is a .c + .h pair
+# that compiles for every architecture, so one cached copy serves
+# linux-x86_64, linux-i686, windows-x86_64, and windows-i686.
+#
+# Cache location: ${AXIOM_DEPS_DIR}/sqlite3-src/
+#
+# A cache entry is valid only if sqlite3.c exists AND is larger than
+# 5 MB. That threshold catches the failure mode where an interrupted
+# download leaves a truncated file behind: CMake would happily use it
+# and the compiler would produce hundreds of "unterminated #if"
+# errors. With the size check, a truncated file is removed and
+# re-downloaded automatically.
+#
+# Downloads use curl or wget via execute_process. CMake's built-in
+# file(DOWNLOAD) silently produces a 0-byte file when the request
+# fails for any reason (TLS, redirect, proxy, network), which is
+# useless for diagnosing the failure.
+# ----------------------------------------------------------------
+set(AXIOM_SQLITE_DIR  "${AXIOM_DEPS_DIR}/sqlite3-src")
+set(AXIOM_SQLITE_C    "${AXIOM_SQLITE_DIR}/sqlite3.c")
+set(AXIOM_SQLITE_ZIP  "${AXIOM_DEPS_DIR}/sqlite3.zip")
+set(AXIOM_SQLITE_URL  "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip")
+set(AXIOM_SQLITE_MIN_BYTES 5000000)   # ~5 MB; real file is ~9 MB
+
+# --- Validate the current cache (if any) ---
+set(AXIOM_SQLITE_CACHE_OK OFF)
+
+if(EXISTS "${AXIOM_SQLITE_C}")
+    file(SIZE "${AXIOM_SQLITE_C}" cache_size)
+    if(cache_size GREATER_EQUAL ${AXIOM_SQLITE_MIN_BYTES})
+        set(AXIOM_SQLITE_CACHE_OK ON)
+    else()
+        message(STATUS "SQLite cache at ${AXIOM_SQLITE_C} is truncated "
+                       "(${cache_size} bytes < ${AXIOM_SQLITE_MIN_BYTES}); "
+                       "removing and re-downloading")
+        file(REMOVE_RECURSE "${AXIOM_SQLITE_DIR}")
+    endif()
+endif()
+
+# --- Download + extract if the cache is missing or was invalidated ---
+if(NOT AXIOM_SQLITE_CACHE_OK)
+    message(STATUS "Downloading SQLite amalgamation")
+    message(STATUS "  URL: ${AXIOM_SQLITE_URL}")
+
+    file(REMOVE "${AXIOM_SQLITE_ZIP}")
+
+    find_program(AXIOM_CURL NAMES curl)
+    find_program(AXIOM_WGET NAMES wget)
+
+    if(AXIOM_CURL)
+        message(STATUS "  Downloader: ${AXIOM_CURL}")
+        execute_process(
+            COMMAND "${AXIOM_CURL}" -fL --retry 3 --retry-delay 2
+                    -o "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
+            RESULT_VARIABLE dl_result
+            ERROR_VARIABLE  dl_error
+        )
+    elseif(AXIOM_WGET)
+        message(STATUS "  Downloader: ${AXIOM_WGET}")
+        execute_process(
+            COMMAND "${AXIOM_WGET}" -O "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
+            RESULT_VARIABLE dl_result
+            ERROR_VARIABLE  dl_error
+        )
+    else()
+        message(FATAL_ERROR
+            "Neither curl nor wget is installed. Install one:\n"
+            "    sudo apt install -y curl\n"
+            "or download manually from ${AXIOM_SQLITE_URL}\n"
+            "and place the extracted sqlite3.c / sqlite3.h in\n"
+            "    ${AXIOM_SQLITE_DIR}/")
+    endif()
+
+    if(NOT dl_result EQUAL 0)
+        message(FATAL_ERROR
+            "SQLite download failed (exit ${dl_result}).\n"
+            "Output: ${dl_error}\n"
+            "Download manually from ${AXIOM_SQLITE_URL} and place the\n"
+            "extracted sqlite3.c / sqlite3.h in ${AXIOM_SQLITE_DIR}/")
+    endif()
+
+    # Reject a truncated archive before we try to extract it.
+    file(SIZE "${AXIOM_SQLITE_ZIP}" zip_size)
+    if(zip_size LESS 2000000)
+        message(FATAL_ERROR
+            "SQLite download is truncated (${zip_size} bytes). "
+            "Delete ${AXIOM_SQLITE_ZIP} and retry, or download manually "
+            "from ${AXIOM_SQLITE_URL}")
+    endif()
+
+    file(ARCHIVE_EXTRACT INPUT "${AXIOM_SQLITE_ZIP}"
+         DESTINATION "${AXIOM_DEPS_DIR}/sqlite3-extract")
+
+    file(GLOB SQLITE_DIRS "${AXIOM_DEPS_DIR}/sqlite3-extract/sqlite-amalgamation-*")
+    list(LENGTH SQLITE_DIRS SQLITE_DIRS_LEN)
+    if(SQLITE_DIRS_LEN EQUAL 0)
+        message(FATAL_ERROR "SQLite amalgamation extraction produced no directory")
+    endif()
+    list(GET SQLITE_DIRS 0 SQLITE_DIR)
+
+    file(RENAME "${SQLITE_DIR}" "${AXIOM_SQLITE_DIR}")
+    file(REMOVE_RECURSE "${AXIOM_DEPS_DIR}/sqlite3-extract")
+    file(REMOVE "${AXIOM_SQLITE_ZIP}")
+
+    # Final sanity check on the extracted source.
+    file(SIZE "${AXIOM_SQLITE_C}" extracted_size)
+    if(extracted_size LESS ${AXIOM_SQLITE_MIN_BYTES})
+        message(FATAL_ERROR
+            "Extracted sqlite3.c is truncated (${extracted_size} bytes). "
+            "Something is wrong with the download or extraction.")
+    endif()
+
+    message(STATUS "SQLite amalgamation cached at ${AXIOM_SQLITE_DIR}")
+else()
+    message(STATUS "Using cached SQLite amalgamation from .deps/sqlite3-src/")
+endif()
+
+# --- Build the amalgamation as a static library ---
+add_library(axiom_sqlite STATIC "${AXIOM_SQLITE_C}")
+target_include_directories(axiom_sqlite PUBLIC "${AXIOM_SQLITE_DIR}")
+
+target_compile_definitions(axiom_sqlite PRIVATE
+    SQLITE_THREADSAFE=1
+    SQLITE_OMIT_LOAD_EXTENSION=1
+    SQLITE_DEFAULT_MEMSTATUS=0
+    SQLITE_DQS=0
+)
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(axiom_sqlite PUBLIC dl pthread)
+endif()
 
 # ----------------------------------------------------------------
 # Platform-specific sources
@@ -134,6 +268,11 @@ add_executable(axiomdlp-agent
     src/modules/module_base.cpp
     src/modules/filesystem/filesystem_module.cpp
     src/modules/event_logger/event_logger_module.cpp
+    src/modules/metadata/metadata_module.cpp
+    src/modules/metadata/walker.cpp
+    src/storage/database.cpp
+    src/storage/migrations.cpp
+    src/storage/metadata_store.cpp
     ${AXIOM_PLATFORM_SOURCES}
 )
 
@@ -154,6 +293,7 @@ target_link_libraries(axiomdlp-agent PRIVATE
     spdlog::spdlog
     nlohmann_json::nlohmann_json
     efsw-static
+    axiom_sqlite
 )
 
 # ----------------------------------------------------------------

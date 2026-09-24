@@ -6,6 +6,8 @@
 
 #include "modules/event_logger/event_logger_module.h"
 #include "modules/filesystem/filesystem_module.h"
+#include "modules/metadata/metadata_module.h"
+#include "storage/migrations.h"
 
 #include <spdlog/spdlog.h>
 
@@ -33,7 +35,6 @@ Application::Options Application::parse_args(int argc, char** argv) {
             std::cerr << "unknown argument: " << a << "\n";
         }
     }
-    // config_path is resolved later, once we know the platform default.
     return o;
 }
 
@@ -53,14 +54,6 @@ Application::~Application() {
 
 namespace {
 
-// Choose the config file to load:
-//   1. explicit --config <path> if provided
-//   2. ./config/agent.default.json if it exists (dev workflow)
-//   3. the platform default (/etc/axiomdlp/agent.json, ...)
-//
-// Step 3 fixes the "config not found when running as a service" bug:
-// systemd runs the process with CWD=/, so the dev-relative path never
-// resolves.
 std::string resolve_config_path(const std::string& explicit_path) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -87,7 +80,7 @@ bool Application::init() {
     // 1. Resolve and load config.
     const std::string config_path = resolve_config_path(opts_.config_path);
     config_ = Config::load(config_path);
-    opts_.config_path = config_path;   // remember for logging
+    opts_.config_path = config_path;
 
     // 2. Initialize logging.
     Logger::init(config_.logging.dir, config_.logging.file, config_.logging.level);
@@ -99,31 +92,43 @@ bool Application::init() {
         SPDLOG_WARN("Config: {}", w);
     }
 
-    // 3. Create the event bus.
+    // 3. Open the database.
+    database_ = std::make_unique<Database>();
+    if (!database_->open(config_.storage.db_path)) {
+        SPDLOG_ERROR("Failed to open database at '{}'",
+                     config_.storage.db_path);
+        return false;
+    }
+
+    // 4. Initialize schema.
+    if (!Migrations::apply(*database_)) {
+        SPDLOG_ERROR("Schema migration failed");
+        return false;
+    }
+
+    // 5. Create the metadata store.
+    metadata_store_ = std::make_unique<MetadataStore>(*database_);
+    if (!metadata_store_->initialize_schema()) {
+        SPDLOG_ERROR("MetadataStore::initialize_schema failed");
+        return false;
+    }
+
+    // 6. Create the event bus.
     event_bus_ = std::make_unique<EventBus>();
 
-    // 4. Create the module context (needs the bus).
-    module_context_ = std::make_unique<ModuleContext>(config_, *event_bus_);
+    // 7. Create the module context (config + bus + store).
+    module_context_ = std::make_unique<ModuleContext>(
+        config_, *event_bus_, *metadata_store_);
 
-    // 5. Create the module manager.
+    // 8. Create the module manager.
     module_manager_ = std::make_unique<ModuleManager>();
 
-    // 6. Register modules.
-    //    Registration order = start order. Reverse for stop.
-    //    The event_logger is registered last so it starts after
-    //    producers, and stops before them.
-    module_manager_->register_module(
-        std::make_unique<FilesystemModule>());
+    // 9. Register modules.
+    module_manager_->register_module(std::make_unique<FilesystemModule>());
+    module_manager_->register_module(std::make_unique<MetadataModule>());
+    module_manager_->register_module(std::make_unique<EventLoggerModule>());
 
-    module_manager_->register_module(
-        std::make_unique<EventLoggerModule>());
-
-    // 7. Initialize all modules with the shared context.
-    //
-    //    Fail-safe by design: one module failing to initialize does
-    //    not stop the agent. The ModuleManager logs which modules
-    //    failed; we simply note the summary here. This returns true
-    //    intentionally - a partial agent is better than no agent.
+    // 10. Initialize all modules.
     if (!module_manager_->initialize_all(*module_context_)) {
         SPDLOG_ERROR("Some modules failed to initialize; continuing anyway");
     }
@@ -139,7 +144,22 @@ void Application::shutdown() {
     if (!initialized_) return;
 
     SPDLOG_INFO("Application shutting down");
+
+    // Tear down members in reverse dependency order. Each reset()
+    // runs that object's destructor, which may itself log through
+    // SPDLOG_*. All of this must happen BEFORE Logger::shutdown(),
+    // otherwise the destructor of Database (and anything else that
+    // logs on destruction) writes to a dead spdlog and crashes.
+    service_.reset();
+    module_manager_.reset();
+    module_context_.reset();
+    event_bus_.reset();
+    metadata_store_.reset();
+    database_.reset();
+
+    // The log sink is the last thing to go.
     Logger::shutdown();
+
     initialized_ = false;
 }
 
@@ -148,11 +168,7 @@ void Application::shutdown() {
 // ----------------------------------------------------------------
 
 int Application::execute() {
-    // Install / uninstall do not need config, modules, or the event
-    // bus. Handle them before full init so a one-shot command doesn't
-    // create log directories or start the module system.
     if (opts_.install || opts_.uninstall) {
-        // Minimal logger so the messages are still visible.
         Logger::init("logs", "install.log", "info");
         initialized_ = true;
 
@@ -174,7 +190,6 @@ int Application::execute() {
         return 1;
     }
 
-    // Normal run.
     service_ = make_service(default_service_name());
     service_->set_module_manager(module_manager_.get());
     const int rc = service_->run();

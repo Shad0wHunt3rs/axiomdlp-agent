@@ -84,7 +84,8 @@ bool path_matches_pattern(const std::string& pattern, const std::string& path) {
 }
 
 // Absolute, lexically-normalized form of `p`. Used so the log-dir
-// exclusion works regardless of the CWD the agent started in.
+// and data-dir exclusions work regardless of the CWD the agent
+// started in.
 std::string absolute_lexical(const std::string& p) {
     std::error_code ec;
     auto abs = std::filesystem::absolute(p, ec);
@@ -231,6 +232,23 @@ void FilesystemModule::build_excludes() {
         exclude_paths_.push_back(log_dir_abs + "/*");
         SPDLOG_INFO("filesystem module: excluding own log directory '{}'",
                     log_dir_abs);
+    }
+
+    // 3. Implicit: the agent's own data directory (SQLite DB + WAL + SHM).
+    //
+    //    The MetadataModule writes to the SQLite database during every
+    //    walk. Without this exclusion, each write produces a new
+    //    file_write event on the bus, and the agent ends up watching
+    //    its own database churn.
+    if (!ctx_->config.storage.db_path.empty()) {
+        const auto db_dir = std::filesystem::path(ctx_->config.storage.db_path)
+                                .parent_path().string();
+        if (!db_dir.empty()) {
+            const std::string db_dir_abs = absolute_lexical(db_dir);
+            exclude_paths_.push_back(db_dir_abs + "/*");
+            SPDLOG_INFO("filesystem module: excluding own data directory '{}'",
+                        db_dir_abs);
+        }
     }
 }
 

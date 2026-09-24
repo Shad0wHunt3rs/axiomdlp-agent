@@ -1,7 +1,4 @@
 // src/core/application.h
-//
-// Application owns config, logging, the event bus, the module context,
-// the module manager, and the service lifecycle.
 
 #pragma once
 
@@ -10,6 +7,8 @@
 #include "core/module_context.h"
 #include "core/module_manager.h"
 #include "core/service.h"
+#include "storage/database.h"
+#include "storage/metadata_store.h"
 
 #include <memory>
 #include <string>
@@ -39,17 +38,15 @@ private:
     Options opts_;
     Config  config_;
 
-    // The event bus — created before the module context.
-    std::unique_ptr<EventBus> event_bus_;
+    // Infrastructure, in dependency order:
+    std::unique_ptr<Database>      database_;
+    std::unique_ptr<MetadataStore> metadata_store_;
+    std::unique_ptr<EventBus>      event_bus_;
 
-    // The module context — passed to modules during initialize.
+    // Framework
     std::unique_ptr<ModuleContext> module_context_;
-
-    // The module manager — owns and drives all modules.
     std::unique_ptr<ModuleManager> module_manager_;
-
-    // The platform service.
-    std::unique_ptr<IService> service_;
+    std::unique_ptr<IService>      service_;
 
     bool initialized_ = false;
 };

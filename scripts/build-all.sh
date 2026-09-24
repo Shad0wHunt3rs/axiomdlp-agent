@@ -4,10 +4,9 @@ set -euo pipefail
 # ----------------------------------------------------------------
 # One-time: populate the nlohmann_json source cache.
 #
-# FetchContent needs the nlohmann_json source to be available for
-# cross-compiles (Windows builds), but cloning it from GitHub takes
-# ~13 minutes. We pre-populate a local cache so the first clone is
-# reused forever.
+# FetchContent needs the source available for cross-compiles (Windows
+# builds), but cloning from GitHub takes ~13 minutes. We pre-populate
+# a local cache so the first clone is reused forever.
 # ----------------------------------------------------------------
 DEPS_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps"
 

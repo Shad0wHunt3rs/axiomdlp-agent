@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AxiomDLP — Filesystem Inventory</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:      #0f1117;
+    --panel:   #161922;
+    --panel-2: #1e222d;
+    --border:  #2a2f3d;
+    --text:    #d8dde8;
+    --muted:   #7c8799;
+    --accent:  #4ea1ff;
+    --good:    #34d399;
+    --warn:    #fbbf24;
+    --bad:     #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+  }
+  header {
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+  }
+  header .badge {
+    background: var(--panel-2);
+    color: var(--muted);
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: ui-monospace, monospace;
+  }
+  header .refresh {
+    margin-left: auto;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+  }
+  header .refresh:hover { opacity: 0.85; }
+
+  main { padding: 24px 32px; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 20px;
+  }
+  .card .label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 6px;
+  }
+  .card .value {
+    font-size: 26px;
+    font-weight: 600;
+    font-family: ui-monospace, monospace;
+  }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px;
+  }
+  .panel h2 {
+    margin: 0 0 16px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .chart-wrap { height: 280px; position: relative; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+  }
+  td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-family: ui-monospace, monospace;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--panel-2); }
+
+  .path {
+    max-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+  }
+  .path:hover { direction: ltr; text-align: right; }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    align-items: center;
+  }
+  .filter-bar input, .filter-bar select {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .filter-bar input { flex: 1; }
+  .filter-bar select { min-width: 130px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AxiomDLP — Filesystem Inventory</h1>
+  <span class="badge" id="schema-badge">schema v—</span>
+  <button class="refresh" onclick="refreshAll()">Refresh</button>
+</header>
+
+<main>
+  <!-- Summary cards -->
+  <div class="cards" id="cards">
+    <div class="card"><div class="label">Files</div>       <div class="value" id="stat-files">—</div></div>
+    <div class="card"><div class="label">Directories</div> <div class="value" id="stat-dirs">—</div></div>
+    <div class="card"><div class="label">Total Size</div>  <div class="value" id="stat-bytes">—</div></div>
+    <div class="card"><div class="label">Sensitive (future)</div> <div class="value" id="stat-sensitive">—</div></div>
+  </div>
+
+  <!-- Charts -->
+  <div class="grid-2">
+    <div class="panel">
+      <h2>Files by Category</h2>
+      <div class="chart-wrap"><canvas id="chart-categories"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>Top 25 Extensions</h2>
+      <div class="chart-wrap"><canvas id="chart-extensions"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <h2>Top-Level Directories</h2>
+      <table id="table-dirs">
+        <thead><tr><th>Directory</th><th>Files</th><th>Size</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>Largest Files</h2>
+      <table id="table-largest">
+        <thead><tr><th>Path</th><th>Size</th><th>Category</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Browse -->
+  <div class="panel" style="margin-top: 24px;">
+    <h2>Browse Files</h2>
+    <div class="filter-bar">
+      <input id="search" placeholder="Search path (e.g. Downloads, .pdf, video)">
+      <select id="order">
+        <option value="size">Sort by size</option>
+        <option value="mtime">Sort by modified</option>
+        <option value="path">Sort by path</option>
+      </select>
+      <button class="refresh" onclick="refreshFiles()">Apply</button>
+    </div>
+    <table id="table-files">
+      <thead>
+        <tr>
+          <th style="width: 60%;">Path</th>
+          <th>Size</th>
+          <th>Category</th>
+          <th>Modified</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+// ------------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------------
+const fmtBytes = (b) => {
+  if (b === 0 || b == null) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(b) / Math.log(1024));
+  const v = b / Math.pow(1024, i);
+  return v.toFixed(v < 10 ? 2 : 1) + " " + units[i];
+};
+const fmtNum = (n) => (n || 0).toLocaleString();
+const fmtDate = (ns) => {
+  if (!ns) return "—";
+  const ms = Math.floor(ns / 1_000_000);
+  const d = new Date(ms);
+  return d.toISOString().replace("T", " ").slice(0, 19);
+};
+const get = (url) => fetch(url).then(r => r.json());
+
+// ------------------------------------------------------------------
+// Summary cards
+// ------------------------------------------------------------------
+async function loadStats() {
+  const s = await get("/api/stats");
+  document.getElementById("stat-files").textContent     = fmtNum(s.files);
+  document.getElementById("stat-dirs").textContent      = fmtNum(s.dirs);
+  document.getElementById("stat-bytes").textContent     = fmtBytes(s.bytes);
+  document.getElementById("stat-sensitive").textContent = fmtNum(s.sensitive);
+  document.getElementById("schema-badge").textContent   = "schema v" + s.schema;
+}
+
+// ------------------------------------------------------------------
+// Category pie chart
+// ------------------------------------------------------------------
+let catChart = null;
+async function loadCategories() {
+  const data = await get("/api/categories");
+  const ctx  = document.getElementById("chart-categories");
+
+  const palette = [
+    "#4ea1ff","#34d399","#fbbf24","#f87171","#a78bfa",
+    "#22d3ee","#fb923c","#e879f9","#84cc16","#f472b6",
+  ];
+
+  if (catChart) catChart.destroy();
+  catChart = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels: data.map(d => d.category),
+      datasets: [{
+        data: data.map(d => d.count),
+        backgroundColor: data.map((_, i) => palette[i % palette.length]),
+        borderColor: "#161922",
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: "right",
+          labels: { color: "#d8dde8", boxWidth: 12, font: { size: 12 } },
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const item = data[ctx.dataIndex];
+              return `${item.category}: ${fmtNum(item.count)} files, ${fmtBytes(item.bytes)}`;
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+// ------------------------------------------------------------------
+// Extension bar chart
+// ------------------------------------------------------------------
+let extChart = null;
+async function loadExtensions() {
+  const data = await get("/api/extensions");
+  const ctx  = document.getElementById("chart-extensions");
+
+  if (extChart) extChart.destroy();
+  extChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: data.map(d => "." + d.extension),
+      datasets: [{
+        label: "Files",
+        data: data.map(d => d.count),
+        backgroundColor: "#4ea1ff",
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: "#7c8799", font: { size: 10 } }, grid: { display: false } },
+        y: { ticks: { color: "#7c8799", font: { size: 11 } }, grid: { color: "#2a2f3d" } },
+      },
+    },
+  });
+}
+
+// ------------------------------------------------------------------
+// Top directories table
+// ------------------------------------------------------------------
+async function loadTopDirs() {
+  const data = await get("/api/top-dirs");
+  const tbody = document.querySelector("#table-dirs tbody");
+  tbody.innerHTML = "";
+  for (const d of data) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${d.dir}</td>
+      <td>${fmtNum(d.count)}</td>
+      <td>${fmtBytes(d.bytes)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+// ------------------------------------------------------------------
+// Largest files table
+// ------------------------------------------------------------------
+async function loadLargest() {
+  const data = await get("/api/files?limit=20&order=size");
+  const tbody = document.querySelector("#table-largest tbody");
+  tbody.innerHTML = "";
+  for (const f of data) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="path" title="${f.path}">${f.path}</td>
+      <td>${fmtBytes(f.size)}</td>
+      <td><span class="tag">${f.category}</span></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+// ------------------------------------------------------------------
+// Browse files
+// ------------------------------------------------------------------
+async function refreshFiles() {
+  const search = document.getElementById("search").value.trim();
+  const order  = document.getElementById("order").value;
+  let url = `/api/files?limit=200&order=${order}`;
+  if (search) url += `&search=${encodeURIComponent(search)}`;
+
+  const data = await get(url);
+  const tbody = document.querySelector("#table-files tbody");
+  tbody.innerHTML = "";
+
+  if (data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#7c8799;">No matches.</td></tr>';
+    return;
+  }
+
+  for (const f of data) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="path" title="${f.path}">${f.path}</td>
+      <td>${fmtBytes(f.size)}</td>
+      <td><span class="tag">${f.category}</span></td>
+      <td>${fmtDate(f.mtime_ns)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+// ------------------------------------------------------------------
+// Wire it up
+// ------------------------------------------------------------------
+async function refreshAll() {
+  await Promise.all([
+    loadStats(),
+    loadCategories(),
+    loadExtensions(),
+    loadTopDirs(),
+    loadLargest(),
+  ]);
+  await refreshFiles();
+}
+
+document.getElementById("search").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") refreshFiles();
+});
+
+refreshAll();
+</script>
+</body>
+</html>
