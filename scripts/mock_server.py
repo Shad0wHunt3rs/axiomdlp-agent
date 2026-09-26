@@ -21,7 +21,7 @@ except ImportError:
     print("Install:  pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PORT = 8765
 
 # Track stats for a periodic summary.

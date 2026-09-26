@@ -19,7 +19,10 @@
         "*/node_modules/*",
         "*/.git/*",
         "*/AppData/Local/Temp/*",
-        "*/AppData/Local/Microsoft/Windows/INetCache/*"
+        "*/AppData/Local/Microsoft/Windows/INetCache/*",
+        "*/AppData/Local/Packages/*/LocalCache/*",
+        "*/AppData/Local/Microsoft/Windows/Explorer/*",
+        "*/AppData/Roaming/Microsoft/Windows/Recent/*"
       ],
       "debounce_ms": 300,
       "max_file_size_mb": 100
@@ -32,7 +35,6 @@
         "%PUBLIC%",
         "%ProgramData%",
         "%ProgramFiles%",
-        "%ProgramFiles(x86)%",
         "%SystemRoot%"
       ],
       "exclude_paths": [
@@ -57,6 +59,13 @@
         "*/System Volume Information/*"
       ],
       "interval_seconds": 900
+    },
+
+    "transport": {
+      "enabled": true,
+      "server_url": "ws://192.168.1.42:8765",
+      "reconnect_backoff_seconds": 5,
+      "reconnect_backoff_max_seconds": 60
     }
   }
 }
