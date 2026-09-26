@@ -13,12 +13,17 @@ namespace axiom::core {
 
 namespace {
 
+// Expand environment variables in a string. Supports both Windows-style
+// %VAR% and POSIX-style ${VAR}. Undefined variables are left in place
+// so misconfigurations are visible in the log rather than producing an
+// empty string silently.
 std::string expand_env(const std::string& s) {
     std::string out;
     out.reserve(s.size());
     std::size_t i = 0;
 
     while (i < s.size()) {
+        // Windows style: %VAR%
         if (s[i] == '%') {
             const auto end = s.find('%', i + 1);
             if (end != std::string::npos && end > i + 1) {
@@ -31,6 +36,7 @@ std::string expand_env(const std::string& s) {
             }
         }
 
+        // POSIX style: ${VAR}
         if (s[i] == '$' && i + 1 < s.size() && s[i + 1] == '{') {
             const auto end = s.find('}', i + 2);
             if (end != std::string::npos) {
@@ -49,7 +55,8 @@ std::string expand_env(const std::string& s) {
 }
 
 void read_string(const json& obj, const char* key, std::string& out,
-                 std::vector<std::string>& warnings, const std::string& section) {
+                 std::vector<std::string>& warnings,
+                 const std::string& section) {
     if (!obj.contains(key)) return;
     if (!obj[key].is_string()) {
         warnings.push_back(section + "." + key + " must be a string; using default");
@@ -59,7 +66,8 @@ void read_string(const json& obj, const char* key, std::string& out,
 }
 
 void read_bool(const json& obj, const char* key, bool& out,
-               std::vector<std::string>& warnings, const std::string& section) {
+               std::vector<std::string>& warnings,
+               const std::string& section) {
     if (!obj.contains(key)) return;
     if (!obj[key].is_boolean()) {
         warnings.push_back(section + "." + key + " must be a boolean; using default");
@@ -69,7 +77,8 @@ void read_bool(const json& obj, const char* key, bool& out,
 }
 
 void read_int(const json& obj, const char* key, int& out,
-              std::vector<std::string>& warnings, const std::string& section) {
+              std::vector<std::string>& warnings,
+              const std::string& section) {
     if (!obj.contains(key)) return;
     if (!obj[key].is_number_integer()) {
         warnings.push_back(section + "." + key + " must be an integer; using default");
@@ -100,9 +109,105 @@ void read_string_array(const json& obj, const char* key,
 }
 
 bool is_valid_level(const std::string& level) {
-    return level == "trace" || level == "debug" || level == "info" ||
-           level == "warn"  || level == "error" || level == "critical" ||
+    return level == "trace"    || level == "debug" || level == "info"  ||
+           level == "warn"     || level == "error" || level == "critical" ||
            level == "off";
+}
+
+// ----------------------------------------------------------------
+// Section parsers
+// ----------------------------------------------------------------
+
+void parse_logging(const json& root, Config& cfg) {
+    if (!root.contains("logging")) return;
+    const json& log = root["logging"];
+    if (!log.is_object()) return;
+
+    read_string(log, "dir",   cfg.logging.dir,   cfg.load_warnings, "logging");
+    read_string(log, "file",  cfg.logging.file,  cfg.load_warnings, "logging");
+    read_string(log, "level", cfg.logging.level, cfg.load_warnings, "logging");
+
+    if (!is_valid_level(cfg.logging.level)) {
+        cfg.load_warnings.push_back("logging.level '" + cfg.logging.level +
+                                    "' is not valid; using 'info'");
+        cfg.logging.level = "info";
+    }
+}
+
+void parse_storage(const json& root, Config& cfg) {
+    if (!root.contains("storage")) return;
+    const json& st = root["storage"];
+    if (!st.is_object()) return;
+
+    read_string(st, "db_path", cfg.storage.db_path,
+                cfg.load_warnings, "storage");
+}
+
+void parse_filesystem_watcher(const json& mods, Config& cfg) {
+    if (!mods.contains("filesystem_watcher")) return;
+    const json& fw = mods["filesystem_watcher"];
+    if (!fw.is_object()) return;
+
+    auto& m = cfg.modules.filesystem_watcher;
+    const std::string section = "modules.filesystem_watcher";
+
+    read_bool         (fw, "enabled",          m.enabled,          cfg.load_warnings, section);
+    read_string_array (fw, "watch_paths",      m.watch_paths,      cfg.load_warnings, section);
+    read_string_array (fw, "exclude_paths",    m.exclude_paths,    cfg.load_warnings, section);
+    read_int          (fw, "debounce_ms",      m.debounce_ms,      cfg.load_warnings, section);
+    read_int          (fw, "max_file_size_mb", m.max_file_size_mb, cfg.load_warnings, section);
+
+    if (m.debounce_ms < 0) {
+        cfg.load_warnings.push_back(section + ".debounce_ms must be >= 0; using 300");
+        m.debounce_ms = 300;
+    }
+    if (m.max_file_size_mb < 0) {
+        cfg.load_warnings.push_back(section + ".max_file_size_mb must be >= 0; using 100");
+        m.max_file_size_mb = 100;
+    }
+}
+
+void parse_inventory(const json& mods, Config& cfg) {
+    if (!mods.contains("inventory")) return;
+    const json& inv = mods["inventory"];
+    if (!inv.is_object()) return;
+
+    auto& m = cfg.modules.inventory;
+    const std::string section = "modules.inventory";
+
+    read_bool         (inv, "enabled",          m.enabled,          cfg.load_warnings, section);
+    read_string_array (inv, "watch_paths",      m.watch_paths,      cfg.load_warnings, section);
+    read_string_array (inv, "exclude_paths",    m.exclude_paths,    cfg.load_warnings, section);
+    read_int          (inv, "interval_seconds", m.interval_seconds, cfg.load_warnings, section);
+
+    if (m.interval_seconds < 10) {
+        cfg.load_warnings.push_back(section + ".interval_seconds must be >= 10; using 900");
+        m.interval_seconds = 900;
+    }
+}
+
+void parse_transport(const json& mods, Config& cfg) {
+    if (!mods.contains("transport")) return;
+    const json& t = mods["transport"];
+    if (!t.is_object()) return;
+
+    auto& m = cfg.modules.transport;
+    const std::string section = "modules.transport";
+
+    read_bool   (t, "enabled",                       m.enabled,                       cfg.load_warnings, section);
+    read_string (t, "server_url",                    m.server_url,                    cfg.load_warnings, section);
+    read_int    (t, "reconnect_backoff_seconds",     m.reconnect_backoff_seconds,     cfg.load_warnings, section);
+    read_int    (t, "reconnect_backoff_max_seconds", m.reconnect_backoff_max_seconds, cfg.load_warnings, section);
+
+    if (m.reconnect_backoff_seconds < 1) {
+        cfg.load_warnings.push_back(section + ".reconnect_backoff_seconds must be >= 1; using 5");
+        m.reconnect_backoff_seconds = 5;
+    }
+    if (m.reconnect_backoff_max_seconds < m.reconnect_backoff_seconds) {
+        cfg.load_warnings.push_back(section +
+            ".reconnect_backoff_max_seconds must be >= reconnect_backoff_seconds; using 60");
+        m.reconnect_backoff_max_seconds = 60;
+    }
 }
 
 } // namespace
@@ -110,6 +215,7 @@ bool is_valid_level(const std::string& level) {
 Config Config::load(const std::string& path) {
     Config cfg;
 
+    // 1. Read file.
     std::ifstream file(path);
     if (!file.is_open()) {
         cfg.load_warnings.push_back("config file not found at '" + path +
@@ -117,6 +223,7 @@ Config Config::load(const std::string& path) {
         return cfg;
     }
 
+    // 2. Parse JSON.
     json root;
     try {
         file >> root;
@@ -132,86 +239,16 @@ Config Config::load(const std::string& path) {
         return cfg;
     }
 
-    if (root.contains("logging")) {
-        const json& log = root["logging"];
-        if (log.is_object()) {
-            read_string(log, "dir",   cfg.logging.dir,   cfg.load_warnings, "logging");
-            read_string(log, "file",  cfg.logging.file,  cfg.load_warnings, "logging");
-            read_string(log, "level", cfg.logging.level, cfg.load_warnings, "logging");
-            if (!is_valid_level(cfg.logging.level)) {
-                cfg.load_warnings.push_back("logging.level '" + cfg.logging.level +
-                                            "' is not valid; using 'info'");
-                cfg.logging.level = "info";
-            }
-        }
-    }
-
-    if (root.contains("storage")) {
-        const json& st = root["storage"];
-        if (st.is_object()) {
-            read_string(st, "db_path", cfg.storage.db_path,
-                        cfg.load_warnings, "storage");
-        }
-    }
+    // 3. Section parsers.
+    parse_logging(root, cfg);
+    parse_storage(root, cfg);
 
     if (root.contains("modules")) {
         const json& mods = root["modules"];
         if (mods.is_object()) {
-            if (mods.contains("filesystem_watcher")) {
-                const json& fw = mods["filesystem_watcher"];
-                if (fw.is_object()) {
-                    read_bool(fw, "enabled",
-                              cfg.modules.filesystem_watcher.enabled,
-                              cfg.load_warnings, "modules.filesystem_watcher");
-                    read_string_array(fw, "watch_paths",
-                                      cfg.modules.filesystem_watcher.watch_paths,
-                                      cfg.load_warnings, "modules.filesystem_watcher");
-                    read_string_array(fw, "exclude_paths",
-                                      cfg.modules.filesystem_watcher.exclude_paths,
-                                      cfg.load_warnings, "modules.filesystem_watcher");
-                    read_int(fw, "debounce_ms",
-                             cfg.modules.filesystem_watcher.debounce_ms,
-                             cfg.load_warnings, "modules.filesystem_watcher");
-                    read_int(fw, "max_file_size_mb",
-                             cfg.modules.filesystem_watcher.max_file_size_mb,
-                             cfg.load_warnings, "modules.filesystem_watcher");
-
-                    if (cfg.modules.filesystem_watcher.debounce_ms < 0) {
-                        cfg.load_warnings.push_back(
-                            "modules.filesystem_watcher.debounce_ms must be >= 0; using 300");
-                        cfg.modules.filesystem_watcher.debounce_ms = 300;
-                    }
-                    if (cfg.modules.filesystem_watcher.max_file_size_mb < 0) {
-                        cfg.load_warnings.push_back(
-                            "modules.filesystem_watcher.max_file_size_mb must be >= 0; using 100");
-                        cfg.modules.filesystem_watcher.max_file_size_mb = 100;
-                    }
-                }
-            }
-
-            if (mods.contains("inventory")) {
-                const json& inv = mods["inventory"];
-                if (inv.is_object()) {
-                    read_bool(inv, "enabled",
-                              cfg.modules.inventory.enabled,
-                              cfg.load_warnings, "modules.inventory");
-                    read_string_array(inv, "watch_paths",
-                                      cfg.modules.inventory.watch_paths,
-                                      cfg.load_warnings, "modules.inventory");
-                    read_string_array(inv, "exclude_paths",
-                                      cfg.modules.inventory.exclude_paths,
-                                      cfg.load_warnings, "modules.inventory");
-                    read_int(inv, "interval_seconds",
-                             cfg.modules.inventory.interval_seconds,
-                             cfg.load_warnings, "modules.inventory");
-
-                    if (cfg.modules.inventory.interval_seconds < 10) {
-                        cfg.load_warnings.push_back(
-                            "modules.inventory.interval_seconds must be >= 10; using 900");
-                        cfg.modules.inventory.interval_seconds = 900;
-                    }
-                }
-            }
+            parse_filesystem_watcher(mods, cfg);
+            parse_inventory(mods, cfg);
+            parse_transport(mods, cfg);
         }
     }
 

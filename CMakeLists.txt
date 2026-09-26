@@ -104,33 +104,75 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(efsw)
 
 # ----------------------------------------------------------------
-# SQLite3 amalgamation
+# Boost (Beast + Asio + System) — headers only
 #
-# Single path for every target. The amalgamation is a .c + .h pair
-# that compiles for every architecture, so one cached copy serves
-# linux-x86_64, linux-i686, windows-x86_64, and windows-i686.
+# We do NOT use find_package(Boost). For cross-compiled targets it
+# searches the target's system include paths, where Boost is not
+# installed.
 #
-# Cache location: ${AXIOM_DEPS_DIR}/sqlite3-src/
+# We also must NOT add /usr/include directly to the target's include
+# path, because that would expose the host's Linux system headers to
+# cross-compiled targets. Those headers conflict with MinGW's own
+# headers for libc (stdlib.h, stdint.h, time.h, wchar.h, ...) and
+# cause hundreds of cascading type errors.
 #
-# A cache entry is valid only if sqlite3.c exists AND is larger than
-# 5 MB. That threshold catches the failure mode where an interrupted
-# download leaves a truncated file behind: CMake would happily use it
-# and the compiler would produce hundreds of "unterminated #if"
-# errors. With the size check, a truncated file is removed and
-# re-downloaded automatically.
-#
-# Downloads use curl or wget via execute_process. CMake's built-in
-# file(DOWNLOAD) silently produces a 0-byte file when the request
-# fails for any reason (TLS, redirect, proxy, network), which is
-# useless for diagnosing the failure.
+# The fix: create an isolated directory containing ONLY the boost/
+# subtree (via a symlink), and use that as the include path. Cross
+# targets see Boost but nothing else from the host's /usr/include.
 # ----------------------------------------------------------------
-set(AXIOM_SQLITE_DIR  "${AXIOM_DEPS_DIR}/sqlite3-src")
-set(AXIOM_SQLITE_C    "${AXIOM_SQLITE_DIR}/sqlite3.c")
-set(AXIOM_SQLITE_ZIP  "${AXIOM_DEPS_DIR}/sqlite3.zip")
-set(AXIOM_SQLITE_URL  "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip")
-set(AXIOM_SQLITE_MIN_BYTES 5000000)   # ~5 MB; real file is ~9 MB
+set(AXIOM_BOOST_ROOT "" CACHE PATH "Override Boost header root")
 
-# --- Validate the current cache (if any) ---
+if(NOT AXIOM_BOOST_ROOT)
+    foreach(candidate "/usr/include" "/usr/local/include")
+        if(EXISTS "${candidate}/boost/beast.hpp")
+            set(AXIOM_BOOST_ROOT "${candidate}")
+            break()
+        endif()
+    endforeach()
+endif()
+
+if(NOT AXIOM_BOOST_ROOT OR NOT EXISTS "${AXIOM_BOOST_ROOT}/boost/beast.hpp")
+    message(FATAL_ERROR
+        "Boost headers not found. Install them with:\n"
+        "    sudo apt install -y libboost-dev\n"
+        "Then verify that /usr/include/boost/beast.hpp exists.")
+endif()
+
+set(AXIOM_BOOST_ISOLATED_DIR "${AXIOM_DEPS_DIR}/boost-include")
+
+if(NOT EXISTS "${AXIOM_BOOST_ISOLATED_DIR}/boost/beast.hpp")
+    message(STATUS "Creating isolated Boost include directory at ${AXIOM_BOOST_ISOLATED_DIR}")
+    file(MAKE_DIRECTORY "${AXIOM_BOOST_ISOLATED_DIR}")
+    file(CREATE_LINK
+         "${AXIOM_BOOST_ROOT}/boost"
+         "${AXIOM_BOOST_ISOLATED_DIR}/boost"
+         SYMBOLIC)
+endif()
+
+file(STRINGS "${AXIOM_BOOST_ROOT}/boost/version.hpp"
+     _boost_version_line
+     REGEX "#define BOOST_LIB_VERSION ")
+
+if(_boost_version_line MATCHES "\"([0-9_]+)\"")
+    set(_boost_version_raw "${CMAKE_MATCH_1}")
+    string(REPLACE "_" "." _boost_version "${_boost_version_raw}")
+else()
+    set(_boost_version "unknown")
+endif()
+
+message(STATUS "Boost headers (isolated): ${AXIOM_BOOST_ISOLATED_DIR}/boost (version ${_boost_version})")
+
+find_package(Threads REQUIRED)
+
+# ----------------------------------------------------------------
+# SQLite3 amalgamation
+# ----------------------------------------------------------------
+set(AXIOM_SQLITE_DIR "${AXIOM_DEPS_DIR}/sqlite3-src")
+set(AXIOM_SQLITE_C   "${AXIOM_SQLITE_DIR}/sqlite3.c")
+set(AXIOM_SQLITE_ZIP "${AXIOM_DEPS_DIR}/sqlite3.zip")
+set(AXIOM_SQLITE_URL "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip")
+set(AXIOM_SQLITE_MIN_BYTES 5000000)
+
 set(AXIOM_SQLITE_CACHE_OK OFF)
 
 if(EXISTS "${AXIOM_SQLITE_C}")
@@ -138,62 +180,43 @@ if(EXISTS "${AXIOM_SQLITE_C}")
     if(cache_size GREATER_EQUAL ${AXIOM_SQLITE_MIN_BYTES})
         set(AXIOM_SQLITE_CACHE_OK ON)
     else()
-        message(STATUS "SQLite cache at ${AXIOM_SQLITE_C} is truncated "
-                       "(${cache_size} bytes < ${AXIOM_SQLITE_MIN_BYTES}); "
-                       "removing and re-downloading")
+        message(STATUS "SQLite cache truncated (${cache_size} bytes); re-downloading")
         file(REMOVE_RECURSE "${AXIOM_SQLITE_DIR}")
     endif()
 endif()
 
-# --- Download + extract if the cache is missing or was invalidated ---
 if(NOT AXIOM_SQLITE_CACHE_OK)
     message(STATUS "Downloading SQLite amalgamation")
-    message(STATUS "  URL: ${AXIOM_SQLITE_URL}")
 
     file(REMOVE "${AXIOM_SQLITE_ZIP}")
 
-    find_program(AXIOM_CURL NAMES curl)
-    find_program(AXIOM_WGET NAMES wget)
+    find_program(AXIOM_CURL_BIN NAMES curl)
+    find_program(AXIOM_WGET_BIN NAMES wget)
 
-    if(AXIOM_CURL)
-        message(STATUS "  Downloader: ${AXIOM_CURL}")
+    if(AXIOM_CURL_BIN)
         execute_process(
-            COMMAND "${AXIOM_CURL}" -fL --retry 3 --retry-delay 2
+            COMMAND "${AXIOM_CURL_BIN}" -fL --retry 3 --retry-delay 2
                     -o "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
             RESULT_VARIABLE dl_result
             ERROR_VARIABLE  dl_error
         )
-    elseif(AXIOM_WGET)
-        message(STATUS "  Downloader: ${AXIOM_WGET}")
+    elseif(AXIOM_WGET_BIN)
         execute_process(
-            COMMAND "${AXIOM_WGET}" -O "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
+            COMMAND "${AXIOM_WGET_BIN}" -O "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
             RESULT_VARIABLE dl_result
             ERROR_VARIABLE  dl_error
         )
     else()
-        message(FATAL_ERROR
-            "Neither curl nor wget is installed. Install one:\n"
-            "    sudo apt install -y curl\n"
-            "or download manually from ${AXIOM_SQLITE_URL}\n"
-            "and place the extracted sqlite3.c / sqlite3.h in\n"
-            "    ${AXIOM_SQLITE_DIR}/")
+        message(FATAL_ERROR "Neither curl nor wget is installed.")
     endif()
 
     if(NOT dl_result EQUAL 0)
-        message(FATAL_ERROR
-            "SQLite download failed (exit ${dl_result}).\n"
-            "Output: ${dl_error}\n"
-            "Download manually from ${AXIOM_SQLITE_URL} and place the\n"
-            "extracted sqlite3.c / sqlite3.h in ${AXIOM_SQLITE_DIR}/")
+        message(FATAL_ERROR "SQLite download failed: ${dl_error}")
     endif()
 
-    # Reject a truncated archive before we try to extract it.
     file(SIZE "${AXIOM_SQLITE_ZIP}" zip_size)
     if(zip_size LESS 2000000)
-        message(FATAL_ERROR
-            "SQLite download is truncated (${zip_size} bytes). "
-            "Delete ${AXIOM_SQLITE_ZIP} and retry, or download manually "
-            "from ${AXIOM_SQLITE_URL}")
+        message(FATAL_ERROR "SQLite download is truncated (${zip_size} bytes).")
     endif()
 
     file(ARCHIVE_EXTRACT INPUT "${AXIOM_SQLITE_ZIP}"
@@ -210,12 +233,9 @@ if(NOT AXIOM_SQLITE_CACHE_OK)
     file(REMOVE_RECURSE "${AXIOM_DEPS_DIR}/sqlite3-extract")
     file(REMOVE "${AXIOM_SQLITE_ZIP}")
 
-    # Final sanity check on the extracted source.
     file(SIZE "${AXIOM_SQLITE_C}" extracted_size)
     if(extracted_size LESS ${AXIOM_SQLITE_MIN_BYTES})
-        message(FATAL_ERROR
-            "Extracted sqlite3.c is truncated (${extracted_size} bytes). "
-            "Something is wrong with the download or extraction.")
+        message(FATAL_ERROR "Extracted sqlite3.c is truncated (${extracted_size} bytes).")
     endif()
 
     message(STATUS "SQLite amalgamation cached at ${AXIOM_SQLITE_DIR}")
@@ -223,7 +243,6 @@ else()
     message(STATUS "Using cached SQLite amalgamation from .deps/sqlite3-src/")
 endif()
 
-# --- Build the amalgamation as a static library ---
 add_library(axiom_sqlite STATIC "${AXIOM_SQLITE_C}")
 target_include_directories(axiom_sqlite PUBLIC "${AXIOM_SQLITE_DIR}")
 
@@ -270,21 +289,21 @@ add_executable(axiomdlp-agent
     src/modules/inventory/inventory_module.cpp
     src/modules/inventory/inventory_scanner.cpp
     src/modules/event_logger/event_logger_module.cpp
+    src/modules/transport/transport_module.cpp
+    src/modules/transport/websocket_client.cpp
+    src/modules/transport/outbound_queue.cpp
+    src/modules/transport/message_router.cpp
     src/storage/database.cpp
     src/storage/migrations.cpp
     src/storage/file_store.cpp
     ${AXIOM_PLATFORM_SOURCES}
 )
 
-target_include_directories(axiomdlp-agent PRIVATE src)
+target_include_directories(axiomdlp-agent PRIVATE
+    src
+    ${AXIOM_BOOST_ISOLATED_DIR}
+)
 
-# Compile all spdlog log macros (TRACE..CRITICAL) regardless of the
-# runtime level. Without this, spdlog's SPDLOG_DEBUG and SPDLOG_TRACE
-# expand to (void)0, so their arguments are never evaluated. That both
-# silences useful diagnostics and produces -Wunused-parameter warnings
-# in lambdas whose only statement is a debug log. Runtime filtering is
-# still applied by the configured level, so nothing extra is written
-# unless logging.level is set to "debug" or "trace".
 target_compile_definitions(axiomdlp-agent PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
 )
@@ -294,13 +313,14 @@ target_link_libraries(axiomdlp-agent PRIVATE
     nlohmann_json::nlohmann_json
     efsw-static
     axiom_sqlite
+    Threads::Threads
 )
 
 # ----------------------------------------------------------------
 # Platform-specific settings
 # ----------------------------------------------------------------
 if(WIN32)
-    target_link_libraries(axiomdlp-agent PRIVATE advapi32 shell32)
+    target_link_libraries(axiomdlp-agent PRIVATE advapi32 shell32 ws2_32)
 
     target_link_options(axiomdlp-agent PRIVATE
         -static -static-libgcc -static-libstdc++
@@ -313,9 +333,6 @@ if(WIN32)
 endif()
 
 if(UNIX AND NOT APPLE)
-    # ----------------------------------------------------------------
-    # libsystemd (sd_notify) is OPTIONAL.
-    # ----------------------------------------------------------------
     set(AXIOM_HAVE_SYSTEMD OFF)
 
     include(FindPkgConfig QUIET)
@@ -351,9 +368,6 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 
-# ----------------------------------------------------------------
-# Compiler warnings
-# ----------------------------------------------------------------
 if(MSVC)
     target_compile_options(axiomdlp-agent PRIVATE /W4 /permissive-)
 else()

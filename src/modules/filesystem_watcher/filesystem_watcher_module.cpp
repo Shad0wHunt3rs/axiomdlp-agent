@@ -110,48 +110,94 @@ bool FilesystemWatcherModule::start() {
         return true;
     }
 
+    // Start the flusher thread first. It does nothing until events
+    // arrive, so it can safely run before the watcher exists.
     flush_stop_.store(false, std::memory_order_relaxed);
     flush_thread_ = std::thread([this] { flush_loop(); });
 
-    watcher_ = make_file_watcher();
-    if (!watcher_) {
+    // Start the watcher setup on a dedicated thread. Returns
+    // immediately; the service becomes responsive within ~200ms even
+    // if the underlying recursive enumeration takes tens of seconds.
+    setup_done_.store(false, std::memory_order_relaxed);
+    setup_thread_ = std::thread([this] { setup_watcher_async(); });
+
+    running_ = true;
+    SPDLOG_INFO("filesystem_watcher module: started (watcher initializing)");
+    return true;
+}
+
+void FilesystemWatcherModule::setup_watcher_async() {
+    auto w = make_file_watcher();
+    if (!w) {
         SPDLOG_ERROR("filesystem_watcher module: failed to create file watcher");
-        flush_stop_.store(true, std::memory_order_relaxed);
-        if (flush_thread_.joinable()) flush_thread_.join();
-        return false;
+        setup_done_.store(true, std::memory_order_relaxed);
+        return;
     }
 
     const auto& paths = ctx_->config.modules.filesystem_watcher.watch_paths;
 
-    const bool ok = watcher_->start(
+    SPDLOG_INFO("filesystem_watcher module: initializing watcher over {} path(s)",
+                paths.size());
+
+    const bool ok = w->start(
         paths,
         [this](const FileEvent& fe) { on_file_event(fe); });
 
     if (!ok) {
         SPDLOG_ERROR("filesystem_watcher module: watcher failed to start");
-        watcher_.reset();
-        flush_stop_.store(true, std::memory_order_relaxed);
-        if (flush_thread_.joinable()) flush_thread_.join();
-        return false;
+        setup_done_.store(true, std::memory_order_relaxed);
+        return;
     }
 
-    running_ = true;
-    SPDLOG_INFO("filesystem_watcher module: started (debounce {} ms)",
-                debounce_window_.count());
-    return true;
+    // If stop was requested while we were initializing, tear down
+    // immediately instead of publishing the watcher.
+    if (flush_stop_.load(std::memory_order_relaxed)) {
+        w->stop();
+        setup_done_.store(true, std::memory_order_relaxed);
+        SPDLOG_INFO("filesystem_watcher module: watcher setup cancelled");
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(watcher_mutex_);
+        watcher_ = std::move(w);
+    }
+    setup_done_.store(true, std::memory_order_relaxed);
+    SPDLOG_INFO("filesystem_watcher module: watcher ready");
 }
 
 void FilesystemWatcherModule::stop() {
-    if (watcher_) {
-        watcher_->stop();
-        watcher_.reset();
+    // Signal the flusher. This is independent of the watcher's state.
+    flush_stop_.store(true, std::memory_order_relaxed);
+
+    // Wait for the setup thread. If it's still inside efsw's
+    // recursive enumeration, we have no way to interrupt it — the
+    // syscalls are not signal-aware. This is bounded by the same
+    // delay the process would have incurred during synchronous
+    // startup; the improvement is that the service was responsive
+    // during the entire window.
+    if (setup_thread_.joinable()) {
+        if (!setup_done_.load(std::memory_order_relaxed)) {
+            SPDLOG_INFO("filesystem_watcher module: waiting for watcher setup to complete...");
+        }
+        setup_thread_.join();
     }
 
-    flush_stop_.store(true, std::memory_order_relaxed);
+    // Stop and destroy the watcher, if it was published.
+    {
+        std::lock_guard<std::mutex> lock(watcher_mutex_);
+        if (watcher_) {
+            watcher_->stop();
+            watcher_.reset();
+        }
+    }
+
+    // Join the flusher.
     if (flush_thread_.joinable()) {
         flush_thread_.join();
     }
 
+    // Drain pending events.
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         for (auto& [path, pending] : pending_) {
@@ -177,6 +223,9 @@ HealthStatus FilesystemWatcherModule::health() const {
     }
     if (!running_) {
         return HealthStatus::failed("watcher not running");
+    }
+    if (!setup_done_.load(std::memory_order_relaxed)) {
+        return HealthStatus::degraded("watcher initializing");
     }
     return HealthStatus::ok();
 }

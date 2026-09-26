@@ -13,7 +13,6 @@ namespace axiom::core {
 
 namespace {
 
-// Read PRAGMA user_version. Returns -1 on error.
 int read_user_version(Database& db) {
     sqlite3* h = db.handle();
     if (h == nullptr) return -1;
@@ -34,7 +33,6 @@ int read_user_version(Database& db) {
     return version;
 }
 
-// Write PRAGMA user_version. Returns true on success.
 bool write_user_version(Database& db, int version) {
     const std::string sql = "PRAGMA user_version = " + std::to_string(version) + ";";
     return db.exec(sql);
@@ -42,16 +40,6 @@ bool write_user_version(Database& db, int version) {
 
 // ----------------------------------------------------------------
 // Migration 2: enriched files table
-//
-// The v1 table was minimal. v2 adds:
-//   - basename / dirname / extension  (query-friendly path parts)
-//   - ctime_ns / atime_ns             (inode + access times)
-//   - file_type / is_symlink / is_hidden / is_executable
-//   - uid / gid / nlink               (owner info, POSIX)
-//   - category                         (image / video / document / code / ...)
-//
-// The old table is dropped. This database is a regenerable cache of
-// the filesystem at a point in time; losing it costs one walk cycle.
 // ----------------------------------------------------------------
 bool apply_v2(Database& db) {
     SPDLOG_INFO("Migrations: applying v2 (enriched files table)");
@@ -83,7 +71,6 @@ bool apply_v2(Database& db) {
             nlink          INTEGER NOT NULL DEFAULT 0,
             category       TEXT    NOT NULL DEFAULT 'other',
 
-            -- Populated by the future Scanner module. For now always 0.
             is_sensitive   INTEGER NOT NULL DEFAULT 0,
             sensitivity    TEXT    NOT NULL DEFAULT '',
             scan_status    TEXT    NOT NULL DEFAULT 'pending',
@@ -154,9 +141,6 @@ bool Migrations::apply(Database& db) {
         return true;
     }
 
-    // For this project the schema is currently monolithic: v2 drops
-    // and recreates everything, so any version below 2 goes straight
-    // to v2. When v3 arrives, add an incremental branch here.
     if (current < 2) {
         if (!apply_v2(db)) {
             SPDLOG_ERROR("Migrations: v2 failed");
@@ -166,6 +150,7 @@ bool Migrations::apply(Database& db) {
             SPDLOG_ERROR("Migrations: cannot write user_version=2");
             return false;
         }
+        current = 2;
     }
 
     return true;

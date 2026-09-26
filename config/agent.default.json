@@ -65,6 +65,13 @@
         "/var/log/*"
       ],
       "interval_seconds": 900
+    },
+
+    "transport": {
+        "enabled": true,
+        "server_url": "ws://127.0.0.1:8765",
+        "reconnect_backoff_seconds": 5,
+        "reconnect_backoff_max_seconds": 60
     }
   }
 }

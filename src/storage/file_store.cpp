@@ -13,6 +13,7 @@ namespace axiom::core {
 
 namespace {
 
+// RAII wrapper for a prepared statement.
 class Stmt {
 public:
     Stmt(sqlite3* db, const char* sql) {
@@ -295,6 +296,71 @@ std::vector<FileRow> FileStore::query(const FileQuery& q) const {
         out.push_back(std::move(r));
     }
     return out;
+}
+
+// ----------------------------------------------------------------
+// Transport support
+// ----------------------------------------------------------------
+
+std::uint64_t FileStore::max_file_id() const {
+    Stmt stmt(db_.handle(), "SELECT COALESCE(MAX(id), 0) FROM files;");
+    if (!stmt.ok()) return 0;
+
+    if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        return static_cast<std::uint64_t>(sqlite3_column_int64(stmt.get(), 0));
+    }
+    return 0;
+}
+
+std::vector<FileStore::SensitiveRow>
+FileStore::query_sensitive_after(std::uint64_t after_id,
+                                 std::size_t limit) const {
+    std::vector<SensitiveRow> out;
+
+    Stmt stmt(db_.handle(),
+              "SELECT id, path, size, sensitivity, last_seen "
+              "FROM files "
+              "WHERE is_sensitive = 1 AND id > ? "
+              "ORDER BY id ASC LIMIT ?;");
+    if (!stmt.ok()) return out;
+
+    sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(after_id));
+    sqlite3_bind_int64(stmt.get(), 2, static_cast<sqlite3_int64>(limit));
+
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        SensitiveRow r;
+        r.id          = static_cast<std::uint64_t>(sqlite3_column_int64(stmt.get(), 0));
+        r.path        = text_col(stmt.get(), 1);
+        r.size        = static_cast<std::uint64_t>(sqlite3_column_int64(stmt.get(), 2));
+        r.sensitivity = text_col(stmt.get(), 3);
+        r.last_seen   = sqlite3_column_int64(stmt.get(), 4);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+bool FileStore::mark_random_files_sensitive(std::size_t count) {
+    const char* sql =
+        "UPDATE files SET "
+        "  is_sensitive = 1, "
+        "  sensitivity = CASE (abs(random()) % 4) "
+        "    WHEN 0 THEN 'mock_credit_card' "
+        "    WHEN 1 THEN 'mock_pii' "
+        "    WHEN 2 THEN 'mock_credentials' "
+        "    ELSE 'mock_document' "
+        "  END, "
+        "  scan_status = 'scanned' "
+        "WHERE id IN ("
+        "  SELECT id FROM files "
+        "  WHERE is_directory = 0 "
+        "  ORDER BY random() LIMIT ? "
+        ");";
+
+    Stmt stmt(db_.handle(), sql);
+    if (!stmt.ok()) return false;
+
+    sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(count));
+    return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
 
 // ----------------------------------------------------------------
