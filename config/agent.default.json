@@ -68,10 +68,17 @@
     },
 
     "transport": {
-        "enabled": true,
-        "server_url": "ws://127.0.0.1:8765",
-        "reconnect_backoff_seconds": 5,
-        "reconnect_backoff_max_seconds": 60
+      "enabled": false,
+      "server_url": "ws://127.0.0.1:8765",
+      "reconnect_backoff_seconds": 5,
+      "reconnect_backoff_max_seconds": 60
+    },
+
+    "agent_sync": {
+      "enabled": true,
+      "http_base_url": "http://127.0.0.1:3000",
+      "api_token": "axdlp_user_wKu7JytRCHKSSUcMnkV33tc9krwB4vruR6vg1VII",
+      "heartbeat_interval_seconds": 30
     }
   }
 }

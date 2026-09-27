@@ -1,9 +1,4 @@
 // src/core/module_context.h
-//
-// ModuleContext holds references to all shared subsystems that modules
-// may need. It is created once at startup by the Application, passed to
-// the ModuleManager, and distributed to every module during
-// initialize().
 
 #pragma once
 
@@ -14,18 +9,21 @@ namespace axiom::core {
 
 class Database;
 class FileStore;
+class StateStore;
 
 struct ModuleContext {
     const Config& config;
     EventBus&     event_bus;
     FileStore&    file_store;
+    StateStore&   state_store;
     Database&     database;
 
     ModuleContext(const Config& c,
                   EventBus&     bus,
                   FileStore&    store,
+                  StateStore&   state,
                   Database&     db)
-        : config(c), event_bus(bus), file_store(store), database(db) {}
+        : config(c), event_bus(bus), file_store(store), state_store(state), database(db) {}
 };
 
 } // namespace axiom::core

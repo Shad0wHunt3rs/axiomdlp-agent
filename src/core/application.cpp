@@ -4,11 +4,13 @@
 #include "core/logger.h"
 #include "core/paths.h"
 
+#include "modules/agent_sync/agent_sync_module.h"
 #include "modules/event_logger/event_logger_module.h"
 #include "modules/filesystem_watcher/filesystem_watcher_module.h"
 #include "modules/inventory/inventory_module.h"
 #include "modules/transport/transport_module.h"
 #include "storage/migrations.h"
+#include "storage/state_store.h"
 
 #include <spdlog/spdlog.h>
 
@@ -114,12 +116,19 @@ bool Application::init() {
         return false;
     }
 
+    // 5b. Create the state store (key/value, used by agent_sync).
+    state_store_ = std::make_unique<StateStore>(*database_);
+    if (!state_store_->initialize_schema()) {
+        SPDLOG_ERROR("StateStore::initialize_schema failed");
+        return false;
+    }
+
     // 6. Create the event bus.
     event_bus_ = std::make_unique<EventBus>();
 
-    // 7. Create the module context (config + bus + store + database).
+    // 7. Create the module context.
     module_context_ = std::make_unique<ModuleContext>(
-        config_, *event_bus_, *file_store_, *database_);
+        config_, *event_bus_, *file_store_, *state_store_, *database_);
 
     // 8. Create the module manager.
     module_manager_ = std::make_unique<ModuleManager>();
@@ -129,6 +138,7 @@ bool Application::init() {
     module_manager_->register_module(std::make_unique<InventoryModule>());
     module_manager_->register_module(std::make_unique<EventLoggerModule>());
     module_manager_->register_module(std::make_unique<TransportModule>());
+    module_manager_->register_module(std::make_unique<AgentSyncModule>());
 
     // 10. Initialize all modules.
     if (!module_manager_->initialize_all(*module_context_)) {
@@ -153,6 +163,7 @@ void Application::shutdown() {
     module_manager_.reset();
     module_context_.reset();
     event_bus_.reset();
+    state_store_.reset();
     file_store_.reset();
     database_.reset();
 

@@ -9,6 +9,7 @@
 #include "core/service.h"
 #include "storage/database.h"
 #include "storage/file_store.h"
+#include "storage/state_store.h"
 
 #include <memory>
 #include <string>
@@ -18,9 +19,9 @@ namespace axiom::core {
 class Application {
 public:
     struct Options {
-        bool install     = false;
-        bool uninstall   = false;
-        bool foreground  = false;
+        bool install    = false;
+        bool uninstall  = false;
+        bool foreground = false;
         std::string config_path;
     };
 
@@ -38,9 +39,10 @@ private:
     Options opts_;
     Config  config_;
 
-    std::unique_ptr<Database>  database_;
-    std::unique_ptr<FileStore> file_store_;
-    std::unique_ptr<EventBus>  event_bus_;
+    std::unique_ptr<Database>   database_;
+    std::unique_ptr<FileStore>  file_store_;
+    std::unique_ptr<StateStore> state_store_;
+    std::unique_ptr<EventBus>   event_bus_;
 
     std::unique_ptr<ModuleContext> module_context_;
     std::unique_ptr<ModuleManager> module_manager_;

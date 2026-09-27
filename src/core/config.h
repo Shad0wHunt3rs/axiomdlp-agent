@@ -1,6 +1,4 @@
 // src/core/config.h
-//
-// Centralized configuration loading for the AxiomDLP Agent.
 
 #pragma once
 
@@ -9,25 +7,16 @@
 
 namespace axiom::core {
 
-// ----------------------------------------------------------------
-// Section: logging
-// ----------------------------------------------------------------
 struct LoggingConfig {
     std::string dir   = "logs";
     std::string file  = "agent.log";
     std::string level = "info";
 };
 
-// ----------------------------------------------------------------
-// Section: storage
-// ----------------------------------------------------------------
 struct StorageConfig {
     std::string db_path = "data/agent.db";
 };
 
-// ----------------------------------------------------------------
-// Section: modules.filesystem_watcher
-// ----------------------------------------------------------------
 struct FilesystemWatcherModuleConfig {
     bool                     enabled = false;
     std::vector<std::string> watch_paths;
@@ -36,9 +25,6 @@ struct FilesystemWatcherModuleConfig {
     int                      max_file_size_mb = 100;
 };
 
-// ----------------------------------------------------------------
-// Section: modules.inventory
-// ----------------------------------------------------------------
 struct InventoryModuleConfig {
     bool                     enabled = true;
     std::vector<std::string> watch_paths;
@@ -46,13 +32,6 @@ struct InventoryModuleConfig {
     int                      interval_seconds = 900;
 };
 
-// ----------------------------------------------------------------
-// Section: modules.transport
-//
-// Minimal for now: the module only establishes and maintains a
-// WebSocket connection to the server. No heartbeats, no shipping,
-// no persistence.
-// ----------------------------------------------------------------
 struct TransportModuleConfig {
     bool        enabled    = false;
     std::string server_url = "ws://127.0.0.1:8765";
@@ -62,17 +41,29 @@ struct TransportModuleConfig {
 };
 
 // ----------------------------------------------------------------
-// Section: modules
+// agent_sync — HTTP register + heartbeat to the AxiomDLP Core server.
 // ----------------------------------------------------------------
+struct AgentSyncModuleConfig {
+    bool        enabled = true;
+
+    // Base URL for the HTTP API. No trailing slash.
+    // E.g. "http://127.0.0.1:3000"
+    std::string http_base_url = "http://127.0.0.1:3000";
+
+    // The "axdlp_user_..." enrollment token issued at user registration.
+    std::string api_token;
+
+    // How often to POST /agent/heartbeat.
+    int heartbeat_interval_seconds = 30;
+};
+
 struct ModulesConfig {
     FilesystemWatcherModuleConfig filesystem_watcher;
     InventoryModuleConfig         inventory;
     TransportModuleConfig         transport;
+    AgentSyncModuleConfig         agent_sync;
 };
 
-// ----------------------------------------------------------------
-// Top-level config
-// ----------------------------------------------------------------
 struct Config {
     LoggingConfig logging;
     StorageConfig storage;

@@ -119,6 +119,10 @@ FetchContent_MakeAvailable(efsw)
 # The fix: create an isolated directory containing ONLY the boost/
 # subtree (via a symlink), and use that as the include path. Cross
 # targets see Boost but nothing else from the host's /usr/include.
+#
+# Boost.Beast provides both the WebSocket client (used by the
+# transport module) and the HTTP client (used by the agent_sync
+# module). No external HTTP library is needed.
 # ----------------------------------------------------------------
 set(AXIOM_BOOST_ROOT "" CACHE PATH "Override Boost header root")
 
@@ -283,8 +287,10 @@ add_executable(axiomdlp-agent
     src/core/event_bus.cpp
     src/core/logger.cpp
     src/core/module_manager.cpp
+    src/net/http_client.cpp
     src/platform/common/efsw_file_watcher.cpp
     src/modules/module_base.cpp
+    src/modules/agent_sync/agent_sync_module.cpp
     src/modules/filesystem_watcher/filesystem_watcher_module.cpp
     src/modules/inventory/inventory_module.cpp
     src/modules/inventory/inventory_scanner.cpp
@@ -296,6 +302,7 @@ add_executable(axiomdlp-agent
     src/storage/database.cpp
     src/storage/migrations.cpp
     src/storage/file_store.cpp
+    src/storage/state_store.cpp
     ${AXIOM_PLATFORM_SOURCES}
 )
 
@@ -306,6 +313,7 @@ target_include_directories(axiomdlp-agent PRIVATE
 
 target_compile_definitions(axiomdlp-agent PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
+    AXIOM_AGENT_VERSION="${PROJECT_VERSION}"
 )
 
 target_link_libraries(axiomdlp-agent PRIVATE

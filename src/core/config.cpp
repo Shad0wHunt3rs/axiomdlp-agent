@@ -210,6 +210,34 @@ void parse_transport(const json& mods, Config& cfg) {
     }
 }
 
+// ----------------------------------------------------------------
+// agent_sync — HTTP register + heartbeat to the AxiomDLP Core server.
+// ----------------------------------------------------------------
+void parse_agent_sync(const json& mods, Config& cfg) {
+    if (!mods.contains("agent_sync")) return;
+    const json& a = mods["agent_sync"];
+    if (!a.is_object()) return;
+
+    auto& m = cfg.modules.agent_sync;
+    const std::string section = "modules.agent_sync";
+
+    read_bool   (a, "enabled",                    m.enabled,                    cfg.load_warnings, section);
+    read_string (a, "http_base_url",              m.http_base_url,              cfg.load_warnings, section);
+    read_string (a, "api_token",                  m.api_token,                  cfg.load_warnings, section);
+    read_int    (a, "heartbeat_interval_seconds", m.heartbeat_interval_seconds, cfg.load_warnings, section);
+
+    if (m.heartbeat_interval_seconds < 5) {
+        cfg.load_warnings.push_back(section + ".heartbeat_interval_seconds must be >= 5; using 30");
+        m.heartbeat_interval_seconds = 30;
+    }
+
+    // Strip any trailing slashes so url concatenations don't produce
+    // double slashes (e.g. "http://host:3000//api/v1/...").
+    while (!m.http_base_url.empty() && m.http_base_url.back() == '/') {
+        m.http_base_url.pop_back();
+    }
+}
+
 } // namespace
 
 Config Config::load(const std::string& path) {
@@ -249,6 +277,7 @@ Config Config::load(const std::string& path) {
             parse_filesystem_watcher(mods, cfg);
             parse_inventory(mods, cfg);
             parse_transport(mods, cfg);
+            parse_agent_sync(mods, cfg);
         }
     }
 

@@ -115,10 +115,38 @@ bool apply_v2(Database& db) {
     return true;
 }
 
+// ----------------------------------------------------------------
+// Migration 3: key/value state table
+//
+// Used by StateStore to persist small pieces of agent state that
+// must survive restarts: agent_id assigned by the server, the
+// enrollment timestamp, the last policy version, etc.
+// ----------------------------------------------------------------
+bool apply_v3(Database& db) {
+    SPDLOG_INFO("Migrations: applying v3 (state table)");
+
+    const char* sql = R"SQL(
+        CREATE TABLE IF NOT EXISTS state (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    )SQL";
+
+    if (!db.exec("BEGIN TRANSACTION;")) return false;
+    if (!db.exec(sql)) {
+        db.exec("ROLLBACK;");
+        return false;
+    }
+    if (!db.exec("COMMIT;")) return false;
+
+    SPDLOG_INFO("Migrations: v3 applied");
+    return true;
+}
+
 } // namespace
 
 int Migrations::current_version() {
-    return 2;
+    return 3;
 }
 
 bool Migrations::apply(Database& db) {
@@ -151,6 +179,18 @@ bool Migrations::apply(Database& db) {
             return false;
         }
         current = 2;
+    }
+
+    if (current < 3) {
+        if (!apply_v3(db)) {
+            SPDLOG_ERROR("Migrations: v3 failed");
+            return false;
+        }
+        if (!write_user_version(db, 3)) {
+            SPDLOG_ERROR("Migrations: cannot write user_version=3");
+            return false;
+        }
+        current = 3;
     }
 
     return true;
