@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ----------------------------------------------------------------
-# One-time: populate the nlohmann_json source cache.
-#
-# FetchContent needs the source available for cross-compiles (Windows
-# builds), but cloning from GitHub takes ~13 minutes. We pre-populate
-# a local cache so the first clone is reused forever.
-# ----------------------------------------------------------------
-DEPS_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DEPS_DIR="${ROOT}/.deps"
 
 if [ ! -d "${DEPS_DIR}/nlohmann_json-src" ]; then
     echo "==============================================="
@@ -21,9 +15,26 @@ if [ ! -d "${DEPS_DIR}/nlohmann_json-src" ]; then
     echo
 fi
 
-# ----------------------------------------------------------------
-# Build every configured target.
-# ----------------------------------------------------------------
+openssl_target_ready() {
+    local dir="$1"
+    { [ -f "${dir}/lib/libssl.a"    ] && [ -f "${dir}/lib/libcrypto.a"    ]; } || \
+    { [ -f "${dir}/lib64/libssl.a"  ] && [ -f "${dir}/lib64/libcrypto.a"  ]; }
+}
+
+if ! openssl_target_ready "${DEPS_DIR}/openssl-linux-x86_64" || \
+   ! openssl_target_ready "${DEPS_DIR}/openssl-linux-i686"   || \
+   ! openssl_target_ready "${DEPS_DIR}/openssl-mingw64"      || \
+   ! openssl_target_ready "${DEPS_DIR}/openssl-mingw32"; then
+    echo "==============================================="
+    echo "OpenSSL not fully built; building (one-time)..."
+    echo "==============================================="
+    "${ROOT}/scripts/build-openssl.sh"
+    echo
+else
+    echo "OpenSSL: already built for all targets, skipping."
+    echo
+fi
+
 BUILD_TYPE="${1:-release}"
 
 TARGETS=(
@@ -42,13 +53,11 @@ for target in "${TARGETS[@]}"; do
     cmake --build --preset "${preset}"
 done
 
-# ----------------------------------------------------------------
-# Report artifacts.
-# ----------------------------------------------------------------
 echo
 echo "==============================================="
 echo "All builds complete. Artifacts:"
 echo "==============================================="
+
 for target in "${TARGETS[@]}"; do
     if [[ "$target" == windows-* ]]; then
         f="build/${target}-${BUILD_TYPE}/axiomdlp-agent.exe"

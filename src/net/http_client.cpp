@@ -7,9 +7,15 @@
 #include <boost/asio/connect.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ssl/context.hpp>
+#include <boost/asio/ssl/stream.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
+
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
 
 #include <chrono>
 #include <exception>
@@ -17,32 +23,44 @@
 namespace beast = boost::beast;
 namespace http  = beast::http;
 namespace net   = boost::asio;
+namespace ssl   = boost::asio::ssl;
 using tcp       = net::ip::tcp;
 
 namespace axiom::core {
 
 // ----------------------------------------------------------------
-// URL parsing (http://host[:port]/path)
+// URL parsing
 // ----------------------------------------------------------------
 
 namespace {
 
 struct ParsedUrl {
+    std::string scheme;
     std::string host;
-    std::string port   = "80";
+    std::string port;
     std::string target = "/";
     bool        valid  = false;
+
+    bool is_https() const { return scheme == "https"; }
 };
 
-ParsedUrl parse_http_url(const std::string& url) {
+ParsedUrl parse_url(const std::string& url) {
     ParsedUrl r;
 
-    const std::string prefix = "http://";
-    if (url.rfind(prefix, 0) != 0) {
-        return r;   // not http://
+    std::string::size_type scheme_end = 0;
+    if (url.rfind("http://", 0) == 0) {
+        r.scheme   = "http";
+        r.port     = "80";
+        scheme_end = 7;
+    } else if (url.rfind("https://", 0) == 0) {
+        r.scheme   = "https";
+        r.port     = "443";
+        scheme_end = 8;
+    } else {
+        return r;
     }
 
-    const std::size_t host_start = prefix.size();
+    const std::size_t host_start = scheme_end;
     const std::size_t path_start = url.find('/', host_start);
 
     std::string host_port;
@@ -69,20 +87,12 @@ ParsedUrl parse_http_url(const std::string& url) {
 } // namespace
 
 // ----------------------------------------------------------------
-// Impl (empty — nothing to hold yet, but keeps the pattern)
+// Impl
 // ----------------------------------------------------------------
 
-struct HttpClient::Impl {
-    // Stateless for now. Kept so we can add pooled connections or
-    // reusable io_context objects later without changing the header.
-};
-
-// ----------------------------------------------------------------
-// Construction
-// ----------------------------------------------------------------
+struct HttpClient::Impl {};
 
 HttpClient::HttpClient() : impl_(std::make_unique<Impl>()) {}
-
 HttpClient::~HttpClient() = default;
 
 // ----------------------------------------------------------------
@@ -92,37 +102,33 @@ HttpClient::~HttpClient() = default;
 HttpClient::Response HttpClient::post_json(const std::string& url,
                                            const std::string& json_body,
                                            const std::string& bearer_token,
-                                           int timeout_secs) {
+                                           int                timeout_secs,
+                                           bool               verify_tls) {
     Response resp;
 
-    const ParsedUrl parsed = parse_http_url(url);
+    const ParsedUrl parsed = parse_url(url);
     if (!parsed.valid) {
-        resp.error = "invalid URL (must start with http://): " + url;
+        resp.error = "invalid URL (must start with http:// or https://): " + url;
         return resp;
     }
 
     try {
         net::io_context ioc;
 
-        tcp::resolver     resolver(ioc);
-        beast::tcp_stream stream(ioc);
-
-        // Apply the timeout to every I/O operation on this stream.
-        stream.expires_after(std::chrono::seconds(timeout_secs));
-
-        const auto results = resolver.resolve(parsed.host, parsed.port);
-        stream.connect(results);
-
-        // Build the request.
+        // Build the request once. Same shape for HTTP and HTTPS.
         http::request<http::string_body> req{http::verb::post, parsed.target, 11};
 
-        // Host header must include the port if it was explicit in the URL.
+        const bool default_port =
+            (parsed.scheme == "http"  && parsed.port == "80") ||
+            (parsed.scheme == "https" && parsed.port == "443");
+
         std::string host_header = parsed.host;
-        if (parsed.port != "80") {
+        if (!default_port) {
             host_header += ":" + parsed.port;
         }
-        req.set(http::field::host, host_header);
-        req.set(http::field::user_agent, "axiomdlp-agent/0.1");
+
+        req.set(http::field::host,         host_header);
+        req.set(http::field::user_agent,   "axiomdlp-agent/0.1");
         req.set(http::field::content_type, "application/json");
 
         if (!bearer_token.empty()) {
@@ -132,23 +138,80 @@ HttpClient::Response HttpClient::post_json(const std::string& url,
         req.body() = json_body;
         req.prepare_payload();
 
-        // Send and receive.
-        http::write(stream, req);
+        tcp::resolver resolver(ioc);
+        const auto results = resolver.resolve(parsed.host, parsed.port);
 
-        beast::flat_buffer                buffer;
-        http::response<http::string_body> res;
-        http::read(stream, buffer, res);
+        if (parsed.is_https()) {
+            // -------------------- HTTPS --------------------
+            ssl::context ctx{ssl::context::tls_client};
+            ctx.set_default_verify_paths();
 
-        resp.status = res.result_int();
-        resp.body   = std::move(res.body());
+            beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
 
-        // No explicit shutdown or close. tcp_stream's destructor
-        // closes the socket cleanly. We've already read the full
-        // response body, so there is nothing left to negotiate.
-        //
-        // (An explicit shutdown() call would also work but trips
-        // clang-tidy's bugprone-unused-return-value check on recent
-        // Boost versions where the return is marked non-discardable.)
+            // SNI — required by virtually every modern server.
+            if (!SSL_set_tlsext_host_name(stream.native_handle(),
+                                          parsed.host.c_str())) {
+                resp.error = "failed to set SNI hostname";
+                return resp;
+            }
+
+            if (verify_tls) {
+                // Verify the certificate chain against the system trust store.
+                stream.set_verify_mode(ssl::verify_peer);
+
+                // Verify the hostname matches the certificate's CN or SAN.
+                // Uses OpenSSL's X509_VERIFY_PARAM directly, which works on
+                // every OpenSSL version (Boost's host_name_verification
+                // helper does not exist in all Boost releases).
+                X509_VERIFY_PARAM* param = SSL_get0_param(stream.native_handle());
+                X509_VERIFY_PARAM_set_hostflags(
+                    param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+                if (X509_VERIFY_PARAM_set1_host(param,
+                                                parsed.host.c_str(),
+                                                parsed.host.size()) != 1) {
+                    resp.error = "failed to configure hostname verification";
+                    return resp;
+                }
+            } else {
+                stream.set_verify_mode(ssl::verify_none);
+                SPDLOG_WARN("HttpClient: TLS verification DISABLED for {}",
+                            parsed.host);
+            }
+
+            beast::get_lowest_layer(stream).expires_after(
+                std::chrono::seconds(timeout_secs));
+            beast::get_lowest_layer(stream).connect(results);
+
+            stream.handshake(ssl::stream_base::client);
+
+            http::write(stream, req);
+
+            beast::flat_buffer                buffer;
+            http::response<http::string_body> res;
+            http::read(stream, buffer, res);
+
+            resp.status = res.result_int();
+            resp.body   = std::move(res.body());
+
+            // No explicit TLS shutdown. The ssl_stream destructor closes
+            // the session cleanly, and the read above has already consumed
+            // the full response body.
+
+        } else {
+            // -------------------- HTTP --------------------
+            beast::tcp_stream stream(ioc);
+            stream.expires_after(std::chrono::seconds(timeout_secs));
+            stream.connect(results);
+
+            http::write(stream, req);
+
+            beast::flat_buffer                buffer;
+            http::response<http::string_body> res;
+            http::read(stream, buffer, res);
+
+            resp.status = res.result_int();
+            resp.body   = std::move(res.body());
+        }
 
     } catch (const std::exception& e) {
         resp.status = 0;

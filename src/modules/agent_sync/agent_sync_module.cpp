@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <string>
+#include <thread>
 
 namespace axiom::core {
 
@@ -19,15 +20,20 @@ using namespace std::chrono_literals;
 
 namespace {
 
-constexpr const char* kAgentVersion = "0.1.0";
+#ifndef AXIOM_AGENT_VERSION
+#  define AXIOM_AGENT_VERSION "0.1.0"
+#endif
+constexpr const char* kAgentVersion = AXIOM_AGENT_VERSION;
 
 constexpr const char* kStateKeyAgentId = "agent_id";
 
 // Sleep in small ticks so stop_requested_ is honored promptly.
-void interruptible_sleep(std::atomic<bool>& stop_flag, std::chrono::seconds total) {
+void interruptible_sleep(std::atomic<bool>& stop_flag,
+                         std::chrono::seconds total) {
     constexpr auto tick = 100ms;
     auto elapsed = 0ms;
-    const auto target = std::chrono::duration_cast<std::chrono::milliseconds>(total);
+    const auto target =
+        std::chrono::duration_cast<std::chrono::milliseconds>(total);
 
     while (elapsed < target) {
         if (stop_flag.load(std::memory_order_relaxed)) return;
@@ -78,10 +84,10 @@ bool AgentSyncModule::initialize(ModuleContext& context) {
 
     const auto& cfg = ctx_->config.modules.agent_sync;
 
-    enabled_                 = cfg.enabled;
-    http_base_url_           = cfg.http_base_url;
-    api_token_               = cfg.api_token;
-    heartbeat_interval_sec_  = cfg.heartbeat_interval_seconds;
+    enabled_                = cfg.enabled;
+    http_base_url_          = cfg.http_base_url;
+    api_token_              = cfg.api_token;
+    heartbeat_interval_sec_ = cfg.heartbeat_interval_seconds;
 
     if (!enabled_) {
         SPDLOG_INFO("agent_sync module: disabled in config");
@@ -100,8 +106,9 @@ bool AgentSyncModule::initialize(ModuleContext& context) {
     }
 
     SPDLOG_INFO("agent_sync module: initialized "
-                "(server={}, heartbeat_interval={}s)",
-                http_base_url_, heartbeat_interval_sec_);
+                "(server={}, heartbeat_interval={}s, verify_tls={})",
+                http_base_url_, heartbeat_interval_sec_,
+                cfg.verify_tls ? "true" : "false");
     return true;
 }
 
@@ -162,7 +169,8 @@ void AgentSyncModule::sync_loop() {
             agent_id_ = std::stoi(*saved);
             SPDLOG_INFO("agent_sync: loaded agent_id={} from local state", agent_id_);
         } catch (const std::exception&) {
-            SPDLOG_WARN("agent_sync: invalid saved agent_id '{}'; will re-enroll", *saved);
+            SPDLOG_WARN("agent_sync: invalid saved agent_id '{}'; will re-enroll",
+                        *saved);
             ctx_->state_store.remove(kStateKeyAgentId);
             agent_id_ = 0;
         }
@@ -171,15 +179,14 @@ void AgentSyncModule::sync_loop() {
     if (agent_id_ == 0) {
         if (!enroll()) {
             SPDLOG_ERROR("agent_sync: initial enrollment failed; will retry");
-            // Fall through to the loop, where heartbeat will trigger
-            // needs_re_enroll_ and a retry on the next cycle.
             needs_re_enroll_.store(true, std::memory_order_relaxed);
         }
     }
 
     // 2. Heartbeat loop.
     while (!stop_requested_.load(std::memory_order_relaxed)) {
-        interruptible_sleep(stop_requested_, std::chrono::seconds(heartbeat_interval_sec_));
+        interruptible_sleep(stop_requested_,
+                            std::chrono::seconds(heartbeat_interval_sec_));
 
         if (stop_requested_.load(std::memory_order_relaxed)) break;
 
@@ -193,8 +200,8 @@ void AgentSyncModule::sync_loop() {
         }
 
         if (!heartbeat()) {
-            // heartbeat() sets needs_re_enroll_ or returns false to signal
-            // that the loop should stop entirely (e.g. token revoked).
+            // heartbeat() sets needs_re_enroll_ or stops the loop
+            // entirely (e.g. token revoked).
             if (!running_.load(std::memory_order_relaxed)) {
                 break;
             }
@@ -215,9 +222,11 @@ bool AgentSyncModule::enroll() {
         {"agent_version", kAgentVersion}
     };
 
-    SPDLOG_INFO("agent_sync: POST {} (hostname={})", url, body["hostname"].get<std::string>());
+    SPDLOG_INFO("agent_sync: POST {} (hostname={})",
+                url, body["hostname"].get<std::string>());
 
-    const auto resp = http_->post_json(url, body.dump(), api_token_, 15);
+    const auto resp = http_->post_json(url, body.dump(), api_token_, 15,
+                                       ctx_->config.modules.agent_sync.verify_tls);
 
     if (!resp.error.empty()) {
         SPDLOG_WARN("agent_sync: enrollment transport error: {}", resp.error);
@@ -225,7 +234,8 @@ bool AgentSyncModule::enroll() {
     }
 
     if (resp.status == 401) {
-        SPDLOG_ERROR("agent_sync: enrollment rejected (401) — API token is invalid or revoked");
+        SPDLOG_ERROR("agent_sync: enrollment rejected (401) — "
+                     "API token is invalid or revoked");
         running_.store(false, std::memory_order_relaxed);
         stop_requested_.store(true, std::memory_order_relaxed);
         return false;
@@ -237,7 +247,6 @@ bool AgentSyncModule::enroll() {
         return false;
     }
 
-    // Parse response.
     try {
         const auto parsed = json::parse(resp.body);
         agent_id_ = parsed.value("agent_id", 0);
@@ -245,7 +254,8 @@ bool AgentSyncModule::enroll() {
         const int org_id  = parsed.value("organization_id", 0);
 
         if (agent_id_ <= 0) {
-            SPDLOG_ERROR("agent_sync: server returned invalid agent_id: {}", resp.body);
+            SPDLOG_ERROR("agent_sync: server returned invalid agent_id: {}",
+                         resp.body);
             return false;
         }
 
@@ -279,7 +289,8 @@ bool AgentSyncModule::heartbeat() {
         {"agent_version", kAgentVersion}
     };
 
-    const auto resp = http_->post_json(url, body.dump(), api_token_, 10);
+    const auto resp = http_->post_json(url, body.dump(), api_token_, 10,
+                                       ctx_->config.modules.agent_sync.verify_tls);
 
     if (!resp.error.empty()) {
         SPDLOG_WARN("agent_sync: heartbeat transport error: {}", resp.error);
@@ -292,27 +303,31 @@ bool AgentSyncModule::heartbeat() {
     }
 
     if (resp.status == 401) {
-        SPDLOG_ERROR("agent_sync: heartbeat rejected (401) — API token is invalid or revoked");
+        SPDLOG_ERROR("agent_sync: heartbeat rejected (401) — "
+                     "API token is invalid or revoked");
         running_.store(false, std::memory_order_relaxed);
         stop_requested_.store(true, std::memory_order_relaxed);
         return false;
     }
 
     if (resp.status == 403) {
-        SPDLOG_ERROR("agent_sync: heartbeat rejected (403) — this agent has been revoked server-side");
+        SPDLOG_ERROR("agent_sync: heartbeat rejected (403) — "
+                     "this agent has been revoked server-side");
         running_.store(false, std::memory_order_relaxed);
         stop_requested_.store(true, std::memory_order_relaxed);
         return false;
     }
 
     if (resp.status == 404) {
-        SPDLOG_WARN("agent_sync: heartbeat returned 404 — agent_id no longer exists server-side; re-enrolling");
+        SPDLOG_WARN("agent_sync: heartbeat returned 404 — "
+                    "agent_id no longer exists server-side; re-enrolling");
         ctx_->state_store.remove(kStateKeyAgentId);
         needs_re_enroll_.store(true, std::memory_order_relaxed);
         return false;
     }
 
-    SPDLOG_WARN("agent_sync: heartbeat returned HTTP {}: {}", resp.status, resp.body);
+    SPDLOG_WARN("agent_sync: heartbeat returned HTTP {}: {}",
+                resp.status, resp.body);
     return false;
 }
 

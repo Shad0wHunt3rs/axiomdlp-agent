@@ -26,8 +26,10 @@ bool TransportModule::initialize(ModuleContext& context) {
     server_url_            = cfg.server_url;
     reconnect_backoff_sec_ = cfg.reconnect_backoff_seconds;
     reconnect_backoff_max_ = cfg.reconnect_backoff_max_seconds;
+    verify_tls_            = cfg.verify_tls;
 
-    SPDLOG_INFO("transport module: initialized (server: {})", server_url_);
+    SPDLOG_INFO("transport module: initialized (server: {}, verify_tls: {})",
+                server_url_, verify_tls_ ? "true" : "false");
     return true;
 }
 
@@ -40,6 +42,7 @@ bool TransportModule::start() {
 
     ws_ = std::make_unique<WebSocketClient>();
     ws_->set_backoff(reconnect_backoff_sec_, reconnect_backoff_max_);
+    ws_->set_verify_tls(verify_tls_);
     ws_->set_on_message(
         [this](std::string_view msg) { on_ws_message(msg); });
     ws_->set_on_state_change(

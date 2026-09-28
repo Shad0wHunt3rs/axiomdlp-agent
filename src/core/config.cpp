@@ -13,17 +13,12 @@ namespace axiom::core {
 
 namespace {
 
-// Expand environment variables in a string. Supports both Windows-style
-// %VAR% and POSIX-style ${VAR}. Undefined variables are left in place
-// so misconfigurations are visible in the log rather than producing an
-// empty string silently.
 std::string expand_env(const std::string& s) {
     std::string out;
     out.reserve(s.size());
     std::size_t i = 0;
 
     while (i < s.size()) {
-        // Windows style: %VAR%
         if (s[i] == '%') {
             const auto end = s.find('%', i + 1);
             if (end != std::string::npos && end > i + 1) {
@@ -35,8 +30,6 @@ std::string expand_env(const std::string& s) {
                 continue;
             }
         }
-
-        // POSIX style: ${VAR}
         if (s[i] == '$' && i + 1 < s.size() && s[i + 1] == '{') {
             const auto end = s.find('}', i + 2);
             if (end != std::string::npos) {
@@ -48,7 +41,6 @@ std::string expand_env(const std::string& s) {
                 continue;
             }
         }
-
         out += s[i++];
     }
     return out;
@@ -198,6 +190,7 @@ void parse_transport(const json& mods, Config& cfg) {
     read_string (t, "server_url",                    m.server_url,                    cfg.load_warnings, section);
     read_int    (t, "reconnect_backoff_seconds",     m.reconnect_backoff_seconds,     cfg.load_warnings, section);
     read_int    (t, "reconnect_backoff_max_seconds", m.reconnect_backoff_max_seconds, cfg.load_warnings, section);
+    read_bool   (t, "verify_tls",                    m.verify_tls,                    cfg.load_warnings, section);
 
     if (m.reconnect_backoff_seconds < 1) {
         cfg.load_warnings.push_back(section + ".reconnect_backoff_seconds must be >= 1; using 5");
@@ -210,9 +203,6 @@ void parse_transport(const json& mods, Config& cfg) {
     }
 }
 
-// ----------------------------------------------------------------
-// agent_sync — HTTP register + heartbeat to the AxiomDLP Core server.
-// ----------------------------------------------------------------
 void parse_agent_sync(const json& mods, Config& cfg) {
     if (!mods.contains("agent_sync")) return;
     const json& a = mods["agent_sync"];
@@ -225,14 +215,13 @@ void parse_agent_sync(const json& mods, Config& cfg) {
     read_string (a, "http_base_url",              m.http_base_url,              cfg.load_warnings, section);
     read_string (a, "api_token",                  m.api_token,                  cfg.load_warnings, section);
     read_int    (a, "heartbeat_interval_seconds", m.heartbeat_interval_seconds, cfg.load_warnings, section);
+    read_bool   (a, "verify_tls",                 m.verify_tls,                 cfg.load_warnings, section);
 
     if (m.heartbeat_interval_seconds < 5) {
         cfg.load_warnings.push_back(section + ".heartbeat_interval_seconds must be >= 5; using 30");
         m.heartbeat_interval_seconds = 30;
     }
 
-    // Strip any trailing slashes so url concatenations don't produce
-    // double slashes (e.g. "http://host:3000//api/v1/...").
     while (!m.http_base_url.empty() && m.http_base_url.back() == '/') {
         m.http_base_url.pop_back();
     }
@@ -243,7 +232,6 @@ void parse_agent_sync(const json& mods, Config& cfg) {
 Config Config::load(const std::string& path) {
     Config cfg;
 
-    // 1. Read file.
     std::ifstream file(path);
     if (!file.is_open()) {
         cfg.load_warnings.push_back("config file not found at '" + path +
@@ -251,7 +239,6 @@ Config Config::load(const std::string& path) {
         return cfg;
     }
 
-    // 2. Parse JSON.
     json root;
     try {
         file >> root;
@@ -267,7 +254,6 @@ Config Config::load(const std::string& path) {
         return cfg;
     }
 
-    // 3. Section parsers.
     parse_logging(root, cfg);
     parse_storage(root, cfg);
 

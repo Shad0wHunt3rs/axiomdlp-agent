@@ -1,17 +1,11 @@
 // src/modules/transport/websocket_client.h
 //
 // WebSocketClient manages a persistent WebSocket connection to the
-// AxiomDLP Core server. It runs on a single dedicated Asio io_context
-// thread and exposes a thread-safe send() method plus callbacks for
-// received messages and state changes.
+// AxiomDLP Core server. Supports both ws:// (plain) and wss:// (TLS).
 //
 // Built on Boost.Beast + Boost.Asio, using the asynchronous API. All
-// I/O is non-blocking; stop() cancels pending operations immediately
-// via io_context::stop().
-//
-// This class knows nothing about JSON payloads, the event bus, or the
-// module system. It moves bytes. The TransportModule gives those bytes
-// meaning.
+// I/O runs on a dedicated io_context thread. stop() cancels every
+// pending operation and joins the thread.
 
 #pragma once
 
@@ -54,18 +48,17 @@ public:
     // thread exits. Safe to call multiple times.
     void stop();
 
-    // Enqueue a message for delivery. Thread-safe. Returns false if the
-    // queue is full (message dropped).
+    // Enqueue a message for delivery. Thread-safe.
     bool send(std::string message,
               OutboundQueue::Priority priority = OutboundQueue::Priority::Normal);
 
-    // Set reconnect backoff bounds. Call before start().
     void set_backoff(int initial_seconds, int max_seconds);
-
-    // Set queue limits. Call before start().
     void set_queue_limits(std::size_t max_messages, std::size_t max_bytes);
 
-    // Callbacks must be set before start().
+    // Verify the TLS certificate on wss:// connections.
+    // Must be called before start().
+    void set_verify_tls(bool verify);
+
     void set_on_message(MessageCallback cb);
     void set_on_state_change(StateCallback cb);
 
@@ -77,11 +70,19 @@ private:
 
     // Async state machine — all run on the io_context thread.
     void start_connect();
+
+    // Two connect paths: one plain, one TLS.
+    void start_plain_connect(struct ResolverResultsHolder& results);
+    void start_tls_connect  (struct ResolverResultsHolder& results);
+
     void start_read();
     void start_write();
+    void on_read_complete(const boost::system::error_code& ec, std::size_t bytes);
+    void on_write_complete(const boost::system::error_code& ec);
     void on_connect_error(boost::system::error_code ec);
     void on_disconnect(boost::system::error_code ec);
     void schedule_reconnect();
+    void close_streams();
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

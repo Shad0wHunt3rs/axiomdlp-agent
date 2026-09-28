@@ -1,17 +1,14 @@
 // src/net/http_client.h
 //
-// HttpClient — a synchronous HTTP client built on Boost.Beast.
+// HttpClient — a synchronous HTTP/HTTPS client built on Boost.Beast.
 //
-// Design:
-//   - Synchronous (blocking) API. Callers are expected to be on a
-//     background thread (e.g. AgentSyncModule's heartbeat loop).
-//   - Supports HTTP only (no TLS yet). HTTPS will be added later via
-//     Boost.Asio's SSL stream.
+//   - Synchronous (blocking) API, called from background threads.
+//   - Supports http:// and https://.
 //   - Sends JSON bodies with an optional Bearer token.
+//   - TLS uses OpenSSL via Boost.Asio's SSL stream.
+//   - Certificate verification is on by default. Set verify_tls=false
+//     only for development servers with self-signed certs.
 //   - Never throws. All errors are reported via the Response struct.
-//
-// The implementation is pimpl'd so this header stays lightweight and
-// does not drag Boost.Beast into every translation unit that includes it.
 
 #pragma once
 
@@ -22,11 +19,10 @@ namespace axiom::core {
 
 class HttpClient {
 public:
-    // The outcome of one HTTP call.
     struct Response {
-        int         status = 0;   // HTTP status code, or 0 on transport error
-        std::string body;         // response body (may be empty)
-        std::string error;        // transport-level error message (empty on success)
+        int         status = 0;
+        std::string body;
+        std::string error;
 
         bool ok() const     { return error.empty() && status > 0; }
         bool is_2xx() const { return status >= 200 && status < 300; }
@@ -40,18 +36,19 @@ public:
     HttpClient(HttpClient&&)                 = delete;
     HttpClient& operator=(HttpClient&&)      = delete;
 
-    // Perform a synchronous POST with a JSON body and an optional
-    // bearer token. Blocks until the response arrives or the timeout
-    // is exceeded.
+    // Synchronous POST. Blocks until the response arrives or the
+    // timeout is exceeded.
     //
-    // url            — must start with "http://". E.g. "http://127.0.0.1:3000/api/v1/agent/register"
-    // json_body      — the raw JSON string to send
-    // bearer_token   — optional; if non-empty, sent as "Authorization: Bearer <token>"
-    // timeout_secs   — total time budget for the whole exchange
+    // url          — "http://..." or "https://..."
+    // json_body    — raw JSON string
+    // bearer_token — optional; sent as "Authorization: Bearer <token>"
+    // timeout_secs — total time budget
+    // verify_tls   — verify server certificate on https:// (recommended)
     Response post_json(const std::string& url,
                        const std::string& json_body,
                        const std::string& bearer_token = "",
-                       int timeout_secs = 10);
+                       int                timeout_secs = 10,
+                       bool               verify_tls   = true);
 
 private:
     struct Impl;

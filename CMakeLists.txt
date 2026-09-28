@@ -169,6 +169,77 @@ message(STATUS "Boost headers (isolated): ${AXIOM_BOOST_ISOLATED_DIR}/boost (ver
 find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------
+# OpenSSL — TLS support for the agent_sync module (HTTPS).
+#
+# All four targets use statically built OpenSSL from .deps/.
+# No system OpenSSL is required on any platform.
+#
+# Source trees are produced by ./scripts/build-openssl.sh, which
+# creates:
+#   .deps/openssl-linux-x86_64/
+#   .deps/openssl-linux-i686/
+#   .deps/openssl-mingw64/
+#   .deps/openssl-mingw32/
+#
+# Imported targets are created manually because CMake 4.x's
+# find_package(OpenSSL) ignores pre-set library paths on
+# cross-compile targets and on multilib native builds.
+# ----------------------------------------------------------------
+if(WIN32)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw64")
+    else()
+        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw32")
+    endif()
+elseif(UNIX AND NOT APPLE)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-x86_64")
+    else()
+        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-i686")
+    endif()
+endif()
+
+# Locate lib/ or lib64/ — OpenSSL's Configure picks one per target.
+if(EXISTS "${AXIOM_OPENSSL_DIR}/lib/libssl.a")
+    set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib")
+elseif(EXISTS "${AXIOM_OPENSSL_DIR}/lib64/libssl.a")
+    set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib64")
+else()
+    message(FATAL_ERROR
+        "OpenSSL not found in ${AXIOM_OPENSSL_DIR}.\n"
+        "Run ./scripts/build-openssl.sh first.")
+endif()
+
+set(AXIOM_OPENSSL_INCLUDE_DIR "${AXIOM_OPENSSL_DIR}/include")
+
+if(NOT EXISTS "${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/ssl.h")
+    message(FATAL_ERROR
+        "OpenSSL headers not found at ${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/.")
+endif()
+
+# Create the imported targets manually. This is what find_package
+# would produce, but without CMake 4.x detection quirks.
+if(NOT TARGET OpenSSL::SSL)
+    add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)
+    set_target_properties(OpenSSL::SSL PROPERTIES
+        IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}"
+        INTERFACE_LINK_LIBRARIES      "OpenSSL::Crypto")
+endif()
+
+if(NOT TARGET OpenSSL::Crypto)
+    add_library(OpenSSL::Crypto STATIC IMPORTED GLOBAL)
+    set_target_properties(OpenSSL::Crypto PROPERTIES
+        IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}")
+endif()
+
+message(STATUS "OpenSSL (imported from .deps)")
+message(STATUS "  include: ${AXIOM_OPENSSL_INCLUDE_DIR}")
+message(STATUS "  ssl:     ${AXIOM_OPENSSL_LIB_DIR}/libssl.a")
+message(STATUS "  crypto:  ${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a")
+
+# ----------------------------------------------------------------
 # SQLite3 amalgamation
 # ----------------------------------------------------------------
 set(AXIOM_SQLITE_DIR "${AXIOM_DEPS_DIR}/sqlite3-src")
@@ -321,6 +392,8 @@ target_link_libraries(axiomdlp-agent PRIVATE
     nlohmann_json::nlohmann_json
     efsw-static
     axiom_sqlite
+    OpenSSL::SSL
+    OpenSSL::Crypto
     Threads::Threads
 )
 
@@ -328,7 +401,8 @@ target_link_libraries(axiomdlp-agent PRIVATE
 # Platform-specific settings
 # ----------------------------------------------------------------
 if(WIN32)
-    target_link_libraries(axiomdlp-agent PRIVATE advapi32 shell32 ws2_32)
+    target_link_libraries(axiomdlp-agent PRIVATE
+        advapi32 shell32 ws2_32 crypt32)
 
     target_link_options(axiomdlp-agent PRIVATE
         -static -static-libgcc -static-libstdc++
