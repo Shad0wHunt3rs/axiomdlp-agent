@@ -84,6 +84,7 @@ std::string categorize(const std::string& ext, bool is_executable) {
         {"dll","executable"},{"dylib","executable"},{"app","executable"},
         {"deb","package"},{"rpm","package"},{"msi","package"},
         {"apk","package"},{"pkg","package"},{"dmg","package"},
+        {"iso","other"},
     };
 
     auto it = table.find(ext);
@@ -100,6 +101,12 @@ std::uint64_t path_identity(const std::string& path) {
 bool is_scannable_category(const std::string& category,
                            const std::vector<std::string>& scannable) {
     return std::find(scannable.begin(), scannable.end(), category) != scannable.end();
+}
+
+bool is_text_extension(const std::string& ext,
+                       const std::vector<std::string>& text_extensions) {
+    return std::find(text_extensions.begin(),
+                     text_extensions.end(), ext) != text_extensions.end();
 }
 
 } // namespace
@@ -127,7 +134,8 @@ void InventoryScanner::scan_one_root(const std::string& root,
         return;
     }
 
-    const auto& inv_cfg = ctx_.config.modules.inventory;
+    const auto& inv_cfg  = ctx_.config.modules.inventory;
+    const auto& scan_cfg = ctx_.config.modules.content_scanner;
 
     auto options = fs::directory_options::skip_permission_denied;
     std::size_t since_commit   = 0;
@@ -241,16 +249,33 @@ void InventoryScanner::scan_one_root(const std::string& root,
         row.category = categorize(row.extension, row.is_executable);
 
         // ------------------------------------------------------------
-        // Decide whether to hash this file for content scanning
+        // Decide whether to hash and queue this file for scanning.
+        //
+        // A file is eligible for the content scanner only if:
+        //   - it's a regular file (not a directory, not a symlink)
+        //   - its category is in the inventory's scannable list
+        //   - its extension is in the content scanner's text allowlist
+        //   - its size is at or below the configured limit
+        //
+        // Files that fail any check are marked not_applicable or
+        // skipped_too_large right now, so they never enter the scanner
+        // queue and no hashing work is wasted on them.
         // ------------------------------------------------------------
-        const bool is_regular = !row.is_directory && !row.is_symlink;
-        const bool category_ok =
-            is_scannable_category(row.category, inv_cfg.scannable_categories);
-        const bool size_ok = row.size <= inv_cfg.max_file_size_bytes;
+        const bool is_regular    = !row.is_directory && !row.is_symlink;
+        const bool category_ok   = is_scannable_category(row.category,
+                                                         inv_cfg.scannable_categories);
+        const bool extension_ok  = is_text_extension(row.extension,
+                                                     scan_cfg.text_extensions);
+        const bool size_ok       = row.size <= inv_cfg.max_file_size_bytes;
 
         if (!is_regular) {
             row.scan_status = "not_applicable";
         } else if (!category_ok) {
+            row.scan_status = "not_applicable";
+        } else if (!extension_ok) {
+            // Right category but the scanner can't handle this file
+            // type (e.g. PDF, DOCX). Mark it so it doesn't sit in the
+            // pending queue waiting for a scan that will never run.
             row.scan_status = "not_applicable";
         } else if (!size_ok) {
             row.scan_status = "skipped_too_large";

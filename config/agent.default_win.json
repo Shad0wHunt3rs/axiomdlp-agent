@@ -77,6 +77,28 @@
       "api_token": "",
       "heartbeat_interval_seconds": 30,
       "verify_tls": true
+    },
+
+    "content_scanner": {
+      "enabled": true,
+      "batch_size": 50,
+      "batch_max_bytes": 52428800,
+      "scan_interval_seconds": 30,
+      "chunk_size_bytes": 1048576,
+      "chunk_overlap_bytes": 256,
+      "max_file_bytes": 104857600,
+      "max_retries": 3,
+      "request_timeout_seconds": 300,
+      "text_extensions": [
+        "txt", "md", "log", "csv", "tsv",
+        "json", "yaml", "yml", "toml", "xml",
+        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx",
+        "py", "js", "ts", "jsx", "tsx",
+        "go", "rs", "java", "kt", "scala", "cs", "swift",
+        "rb", "php", "pl", "lua", "sql", "sh", "bash", "zsh", "ps1",
+        "html", "css", "scss", "less",
+        "conf", "cfg", "ini", "env", "properties"
+      ]
     }
   }
 }

@@ -5,6 +5,7 @@
 #include "platform/paths.h"
 
 #include "features/agent_sync/agent_sync_module.h"
+#include "features/content_scanner/content_scanner_module.h"
 #include "features/event_logger/event_logger_module.h"
 #include "features/filesystem_watcher/filesystem_watcher_module.h"
 #include "features/inventory/inventory_module.h"
@@ -134,11 +135,14 @@ bool Application::init() {
     module_manager_ = std::make_unique<ModuleManager>();
 
     // 9. Register modules.
+    //    Order matters for stop/shutdown: they run in reverse, so the
+    //    HTTP-dependent modules must be registered last.
     module_manager_->register_module(std::make_unique<FilesystemWatcherModule>());
     module_manager_->register_module(std::make_unique<InventoryModule>());
     module_manager_->register_module(std::make_unique<EventLoggerModule>());
     module_manager_->register_module(std::make_unique<TransportModule>());
     module_manager_->register_module(std::make_unique<AgentSyncModule>());
+    module_manager_->register_module(std::make_unique<ContentScannerModule>());
 
     // 10. Initialize all modules.
     if (!module_manager_->initialize_all(*module_context_)) {

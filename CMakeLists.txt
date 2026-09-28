@@ -122,7 +122,7 @@ FetchContent_MakeAvailable(efsw)
 #
 # Boost.Beast provides both the WebSocket client (used by the
 # transport module) and the HTTP client (used by the agent_sync
-# module). No external HTTP library is needed.
+# and content_scanner modules). No external HTTP library is needed.
 # ----------------------------------------------------------------
 set(AXIOM_BOOST_ROOT "" CACHE PATH "Override Boost header root")
 
@@ -169,7 +169,7 @@ message(STATUS "Boost headers (isolated): ${AXIOM_BOOST_ISOLATED_DIR}/boost (ver
 find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------
-# OpenSSL — TLS support for agent_sync and transport modules.
+# OpenSSL — TLS support for agent_sync, transport, content_scanner.
 #
 # All four targets use statically built OpenSSL from .deps/.
 # Imported targets are created manually because CMake 4.x's
@@ -362,12 +362,14 @@ add_executable(axiomdlp-agent
     # util
     src/util/glob_match.cpp
     src/util/file_hash.cpp
+    src/util/base64.cpp
 
     # platform implementations
     src/platform/common/efsw_file_watcher.cpp
 
     # feature modules
     src/features/agent_sync/agent_sync_module.cpp
+    src/features/content_scanner/content_scanner_module.cpp
     src/features/event_logger/event_logger_module.cpp
     src/features/filesystem_watcher/filesystem_watcher_module.cpp
     src/features/inventory/inventory_module.cpp

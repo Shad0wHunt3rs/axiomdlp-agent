@@ -13,6 +13,7 @@ namespace axiom::core {
 
 namespace {
 
+// RAII wrapper for a prepared statement.
 class Stmt {
 public:
     Stmt(sqlite3* db, const char* sql) {
@@ -54,9 +55,11 @@ constexpr const char* kFileRowColumns =
     "is_sensitive, sensitivity, scan_status, "
     "content_hash, last_scanned_at, scan_attempts, scan_error";
 
+// Read a full FileRow from the current row of `s`, starting at column
+// index `c`. `c` is advanced past every column read.
 FileRow read_file_row(sqlite3_stmt* s, int& c) {
     FileRow r;
-    r.dev             = static_cast<std::uint64_t>(sqlite3_column_int64(s, c++));  // id (skipped)
+    (void)sqlite3_column_int64(s, c++);  // id (skipped)
     r.dev             = static_cast<std::uint64_t>(sqlite3_column_int64(s, c++));
     r.inode           = static_cast<std::uint64_t>(sqlite3_column_int64(s, c++));
     r.path            = text_col(s, c++);
@@ -327,21 +330,24 @@ std::vector<FileRow> FileStore::query(const FileQuery& q) const {
 // Scanner support
 // ----------------------------------------------------------------
 
-std::vector<FileRow> FileStore::fetch_pending_for_scan(std::size_t limit) const {
+std::vector<FileRow> FileStore::fetch_pending_for_scan(std::size_t limit,
+                                                       int max_attempts) const {
     std::vector<FileRow> out;
 
     const std::string sql = std::string("SELECT ") + kFileRowColumns +
         " FROM files "
-        "WHERE scan_status = 'pending' "
+        "WHERE (scan_status = 'pending' OR scan_status = 'scan_error') "
         "  AND content_hash != '' "
         "  AND is_directory = 0 "
+        "  AND scan_attempts < ? "
         "ORDER BY last_seen DESC "
         "LIMIT ?";
 
     Stmt stmt(db_.handle(), sql.c_str());
     if (!stmt.ok()) return out;
 
-    sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(limit));
+    sqlite3_bind_int  (stmt.get(), 1, max_attempts);
+    sqlite3_bind_int64(stmt.get(), 2, static_cast<sqlite3_int64>(limit));
 
     while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
         int c = 0;
@@ -350,46 +356,107 @@ std::vector<FileRow> FileStore::fetch_pending_for_scan(std::size_t limit) const 
     return out;
 }
 
-bool FileStore::update_scan_result(const std::string& content_hash,
-                                   bool sensitive,
-                                   const std::string& sensitivity) {
+std::optional<ScanVerdict> FileStore::find_scan_verdict_by_hash(
+        const std::string& content_hash) const {
+
+    if (content_hash.empty()) return std::nullopt;
+
+    const char* sql =
+        "SELECT is_sensitive, sensitivity FROM files "
+        "WHERE content_hash = ? AND scan_status = 'scanned' "
+        "LIMIT 1";
+
+    Stmt stmt(db_.handle(), sql);
+    if (!stmt.ok()) return std::nullopt;
+
+    sqlite3_bind_text(stmt.get(), 1, content_hash.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    ScanVerdict v;
+    v.sensitive   = sqlite3_column_int(stmt.get(), 0) != 0;
+    v.sensitivity = text_col(stmt.get(), 1);
+    return v;
+}
+
+bool FileStore::update_scan_result_by_path(const std::string& path,
+                                           const std::string& content_hash,
+                                           bool sensitive,
+                                           const std::string& sensitivity) {
     const char* sql =
         "UPDATE files SET "
-        "  is_sensitive   = ?, "
-        "  sensitivity    = ?, "
-        "  scan_status    = 'scanned', "
+        "  content_hash    = ?, "
+        "  is_sensitive    = ?, "
+        "  sensitivity     = ?, "
+        "  scan_status     = 'scanned', "
         "  last_scanned_at = ?, "
-        "  scan_error     = '' "
-        "WHERE content_hash = ?";
+        "  scan_error      = '' "
+        "WHERE path = ?";
 
     Stmt stmt(db_.handle(), sql);
     if (!stmt.ok()) return false;
 
-    sqlite3_bind_int  (stmt.get(), 1, sensitive ? 1 : 0);
-    sqlite3_bind_text (stmt.get(), 2, sensitivity.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt.get(), 3, now_seconds());
-    sqlite3_bind_text (stmt.get(), 4, content_hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text (stmt.get(), 1, content_hash.c_str(),   -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int  (stmt.get(), 2, sensitive ? 1 : 0);
+    sqlite3_bind_text (stmt.get(), 3, sensitivity.c_str(),    -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 4, now_seconds());
+    sqlite3_bind_text (stmt.get(), 5, path.c_str(),           -1, SQLITE_TRANSIENT);
 
     return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
 
-bool FileStore::record_scan_error(const std::string& content_hash,
-                                  const std::string& error) {
+bool FileStore::record_scan_error_by_path(const std::string& path,
+                                          const std::string& error) {
     const char* sql =
         "UPDATE files SET "
-        "  scan_status   = 'scan_error', "
-        "  scan_attempts = scan_attempts + 1, "
-        "  scan_error    = ?, "
+        "  scan_status     = 'scan_error', "
+        "  scan_attempts   = scan_attempts + 1, "
+        "  scan_error      = ?, "
         "  last_scanned_at = ? "
-        "WHERE content_hash = ?";
+        "WHERE path = ?";
 
     Stmt stmt(db_.handle(), sql);
     if (!stmt.ok()) return false;
 
     sqlite3_bind_text (stmt.get(), 1, error.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt.get(), 2, now_seconds());
-    sqlite3_bind_text (stmt.get(), 3, content_hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text (stmt.get(), 3, path.c_str(),  -1, SQLITE_TRANSIENT);
 
+    return sqlite3_step(stmt.get()) == SQLITE_DONE;
+}
+
+bool FileStore::mark_file_missing(const std::string& path) {
+    const char* sql =
+        "UPDATE files SET scan_status = 'missing' WHERE path = ?";
+
+    Stmt stmt(db_.handle(), sql);
+    if (!stmt.ok()) return false;
+
+    sqlite3_bind_text(stmt.get(), 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    return sqlite3_step(stmt.get()) == SQLITE_DONE;
+}
+
+bool FileStore::mark_not_applicable(const std::string& path) {
+    const char* sql =
+        "UPDATE files SET scan_status = 'not_applicable' WHERE path = ?";
+
+    Stmt stmt(db_.handle(), sql);
+    if (!stmt.ok()) return false;
+
+    sqlite3_bind_text(stmt.get(), 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    return sqlite3_step(stmt.get()) == SQLITE_DONE;
+}
+
+bool FileStore::mark_skipped_too_large(const std::string& path) {
+    const char* sql =
+        "UPDATE files SET scan_status = 'skipped_too_large' WHERE path = ?";
+
+    Stmt stmt(db_.handle(), sql);
+    if (!stmt.ok()) return false;
+
+    sqlite3_bind_text(stmt.get(), 1, path.c_str(), -1, SQLITE_TRANSIENT);
     return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
 

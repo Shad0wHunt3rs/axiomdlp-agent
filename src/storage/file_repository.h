@@ -1,6 +1,7 @@
 // src/storage/file_repository.h
 //
-// Domain-specific wrapper for the files table.
+// Domain-specific wrapper for the files table. Knows about FileRow
+// and the queries the rest of the agent needs.
 
 #pragma once
 
@@ -8,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -47,14 +49,14 @@ struct FileRow {
     bool          is_hidden      = false;
     bool          is_executable  = false;
 
-    // Content scanning results
+    // Content scanning result
     bool          is_sensitive   = false;
     std::string   sensitivity;
     std::string   scan_status    = "pending";
 
-    // Content scanning metadata (populated during inventory)
-    std::string   content_hash;        // SHA-256 hex, empty if not hashed
-    std::int64_t  last_scanned_at = 0; // unix seconds, 0 = never scanned
+    // Content scanning metadata
+    std::string   content_hash;
+    std::int64_t  last_scanned_at = 0;
     int           scan_attempts   = 0;
     std::string   scan_error;
 };
@@ -76,15 +78,26 @@ struct FileQuery {
     bool        descending       = false;
 };
 
+// A prior scan verdict for a given content hash.
+struct ScanVerdict {
+    bool        sensitive   = false;
+    std::string sensitivity;
+};
+
 class FileStore {
 public:
     explicit FileStore(Database& db) : db_(db) {}
 
+    // Create or verify the schema. Called once after migrations.
     bool initialize_schema();
 
+    // Insert or update one file. Keyed by (dev, inode).
     bool upsert_file(const FileRow& row, std::uint64_t walk_id);
+
+    // Remove files whose walk_id is older than `current_walk_id`.
     bool prune_stale(std::uint64_t current_walk_id);
 
+    // Walk bookkeeping.
     std::uint64_t begin_walk(std::int64_t started_at);
     bool finish_walk(std::uint64_t walk_id,
                      std::int64_t started_at,
@@ -95,9 +108,48 @@ public:
                      std::size_t files_deleted,
                      std::int64_t duration_ms);
 
+    // General row query.
     std::vector<FileRow> query(const FileQuery& q) const;
 
-    // Transport support — compact rows for the shipping loop.
+    // ----------------------------------------------------------------
+    // Scanner support
+    // ----------------------------------------------------------------
+
+    // Return up to `limit` files that are candidates for scanning.
+    // Excludes files whose scan_attempts has reached max_attempts.
+    std::vector<FileRow> fetch_pending_for_scan(std::size_t limit,
+                                                int max_attempts) const;
+
+    // Look up a previously recorded verdict for the given content hash.
+    // Used to skip HTTP calls when a copy or move of an already-scanned
+    // file appears.
+    std::optional<ScanVerdict> find_scan_verdict_by_hash(
+        const std::string& content_hash) const;
+
+    // Record a successful scan result. Updates by path, sets content_hash
+    // to the value the scanner observed.
+    bool update_scan_result_by_path(const std::string& path,
+                                    const std::string& content_hash,
+                                    bool sensitive,
+                                    const std::string& sensitivity);
+
+    // Record a failed scan attempt. Increments scan_attempts, stores the
+    // error, marks status as 'scan_error'.
+    bool record_scan_error_by_path(const std::string& path,
+                                   const std::string& error);
+
+    // Mark a file that no longer exists on disk.
+    bool mark_file_missing(const std::string& path);
+
+    // Mark a file whose extension is outside the scanner's scope.
+    bool mark_not_applicable(const std::string& path);
+
+    // Mark a file that exceeds the scanner's max_file_bytes limit.
+    bool mark_skipped_too_large(const std::string& path);
+
+    // ----------------------------------------------------------------
+    // Transport support
+    // ----------------------------------------------------------------
     struct SensitiveRow {
         std::uint64_t id           = 0;
         std::string   path;
@@ -112,23 +164,8 @@ public:
     bool mark_random_files_sensitive(std::size_t count);
 
     // ----------------------------------------------------------------
-    // Scanner support
+    // Aggregations
     // ----------------------------------------------------------------
-
-    // Return up to `limit` files that are candidates for content scanning
-    // (scan_status = 'pending' and content_hash is not empty).
-    std::vector<FileRow> fetch_pending_for_scan(std::size_t limit) const;
-
-    // Record the outcome of a scan for the file with this content_hash.
-    bool update_scan_result(const std::string& content_hash,
-                            bool sensitive,
-                            const std::string& sensitivity);
-
-    // Mark a scan as failed. Increments scan_attempts and stores the error.
-    bool record_scan_error(const std::string& content_hash,
-                           const std::string& error);
-
-    // Aggregations.
     struct Stats {
         std::size_t   total_files       = 0;
         std::size_t   total_directories = 0;
@@ -151,6 +188,7 @@ public:
     };
     std::vector<DirCount> top_directories(std::size_t limit = 20) const;
 
+    // Transaction control.
     bool begin_transaction();
     bool commit();
     bool rollback();

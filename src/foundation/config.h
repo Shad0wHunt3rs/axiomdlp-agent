@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -38,10 +39,6 @@ struct FilesystemWatcherModuleConfig {
 
 // ----------------------------------------------------------------
 // Section: modules.inventory
-//
-// The inventory scans the filesystem on an interval, records every
-// file's metadata, and (optionally) computes a SHA-256 hash of files
-// that are candidates for content scanning.
 // ----------------------------------------------------------------
 struct InventoryModuleConfig {
     bool                     enabled = true;
@@ -49,14 +46,9 @@ struct InventoryModuleConfig {
     std::vector<std::string> exclude_paths;
     int                      interval_seconds = 900;
 
-    // Compute SHA-256 of eligible files during inventory.
-    bool compute_hashes = true;
+    bool          compute_hashes      = true;
+    std::uint64_t max_file_size_bytes = 104857600ull;   // 100 MB
 
-    // Files larger than this are skipped entirely — no hash, no scan.
-    // 100 GB = 107374182400 bytes.
-    std::uint64_t max_file_size_bytes = 104857600ull;
-
-    // Only files whose category is in this list are hashed/scanned.
     std::vector<std::string> scannable_categories = {
         "document", "code", "data", "config"
     };
@@ -71,15 +63,11 @@ struct TransportModuleConfig {
 
     int  reconnect_backoff_seconds     = 5;
     int  reconnect_backoff_max_seconds = 60;
-
-    // Verify the TLS certificate on wss:// connections. Must stay
-    // true in production. Set to false only for a dev server with a
-    // self-signed certificate, and expect a loud log warning.
-    bool verify_tls = true;
+    bool verify_tls                    = true;
 };
 
 // ----------------------------------------------------------------
-// Section: modules.agent_sync (HTTP register + heartbeat)
+// Section: modules.agent_sync
 // ----------------------------------------------------------------
 struct AgentSyncModuleConfig {
     bool        enabled = true;
@@ -92,6 +80,57 @@ struct AgentSyncModuleConfig {
 };
 
 // ----------------------------------------------------------------
+// Section: modules.content_scanner
+//
+// Reads text files, splits them into overlapping chunks, sends the
+// chunks to the server, and writes the merged verdict back to the
+// files table.
+//
+// Only files whose extension is in `text_extensions` are scanned.
+// PDFs, DOCX, XLSX and other rich documents require an extraction
+// pipeline that is not implemented yet.
+// ----------------------------------------------------------------
+struct ContentScannerModuleConfig {
+    bool enabled = true;
+
+    // Maximum number of chunks per HTTP POST.
+    int batch_size = 50;
+
+    // Maximum total JSON payload size per POST.
+    std::size_t batch_max_bytes = 50 * 1024 * 1024;   // 50 MB
+
+    // Sleep between scan cycles when there is nothing to do.
+    int scan_interval_seconds = 30;
+
+    // Chunking parameters. Overlap must be large enough to cover any
+    // PII pattern that could straddle a chunk boundary. 256 bytes
+    // covers every common pattern (credit cards, SSNs, IBANs, keys).
+    std::size_t chunk_size_bytes    = 1024 * 1024;   // 1 MB
+    std::size_t chunk_overlap_bytes = 256;
+
+    // Largest file we will read and scan. Matches the inventory limit.
+    std::size_t max_file_bytes = 100 * 1024 * 1024;   // 100 MB
+
+    // Stop retrying a file after this many failures.
+    int max_retries = 3;
+
+    // HTTP timeout for one POST.
+    int request_timeout_seconds = 300;
+
+    // Only files with these extensions are scanned by this module.
+    std::vector<std::string> text_extensions = {
+        "txt", "md", "log", "csv", "tsv",
+        "json", "yaml", "yml", "toml", "xml",
+        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx",
+        "py", "js", "ts", "jsx", "tsx",
+        "go", "rs", "java", "kt", "scala", "cs", "swift",
+        "rb", "php", "pl", "lua", "sql", "sh", "bash", "zsh", "ps1",
+        "html", "css", "scss", "less",
+        "conf", "cfg", "ini", "env", "properties"
+    };
+};
+
+// ----------------------------------------------------------------
 // Section: modules
 // ----------------------------------------------------------------
 struct ModulesConfig {
@@ -99,6 +138,7 @@ struct ModulesConfig {
     InventoryModuleConfig         inventory;
     TransportModuleConfig         transport;
     AgentSyncModuleConfig         agent_sync;
+    ContentScannerModuleConfig    content_scanner;
 };
 
 // ----------------------------------------------------------------

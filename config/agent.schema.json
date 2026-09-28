@@ -84,6 +84,20 @@
               "type": "integer",
               "minimum": 10,
               "default": 900
+            },
+            "compute_hashes": {
+              "type": "boolean",
+              "default": true
+            },
+            "max_file_size_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 104857600
+            },
+            "scannable_categories": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": ["document", "code", "data", "config"]
             }
           },
           "additionalProperties": false
@@ -143,6 +157,81 @@
             "verify_tls": {
               "type": "boolean",
               "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+
+        "content_scanner": {
+          "type": "object",
+          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection, and writes the merged verdict back to the local files table.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "batch_size": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 50,
+              "description": "Maximum number of chunks per HTTP POST."
+            },
+            "batch_max_bytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "default": 52428800,
+              "description": "Maximum estimated JSON payload size per POST."
+            },
+            "scan_interval_seconds": {
+              "type": "integer",
+              "minimum": 5,
+              "default": 30,
+              "description": "Sleep between scan cycles when there is nothing to do."
+            },
+            "chunk_size_bytes": {
+              "type": "integer",
+              "minimum": 4096,
+              "default": 1048576,
+              "description": "Size of each chunk sent to the server."
+            },
+            "chunk_overlap_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 256,
+              "description": "Bytes of overlap between consecutive chunks. Must be less than chunk_size_bytes. Prevents PII patterns from being split across a chunk boundary."
+            },
+            "max_file_bytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "default": 104857600,
+              "description": "Largest file the scanner will read. Should match inventory.max_file_size_bytes."
+            },
+            "max_retries": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 3,
+              "description": "Stop retrying a file after this many failed scan attempts."
+            },
+            "request_timeout_seconds": {
+              "type": "integer",
+              "minimum": 10,
+              "default": 300,
+              "description": "HTTP timeout for one batch POST."
+            },
+            "text_extensions": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [
+                "txt", "md", "log", "csv", "tsv",
+                "json", "yaml", "yml", "toml", "xml",
+                "c", "cpp", "cc", "cxx", "h", "hpp", "hxx",
+                "py", "js", "ts", "jsx", "tsx",
+                "go", "rs", "java", "kt", "scala", "cs", "swift",
+                "rb", "php", "pl", "lua", "sql", "sh", "bash", "zsh", "ps1",
+                "html", "css", "scss", "less",
+                "conf", "cfg", "ini", "env", "properties"
+              ],
+              "description": "Only files with one of these extensions are scanned. Everything else is marked not_applicable."
             }
           },
           "additionalProperties": false

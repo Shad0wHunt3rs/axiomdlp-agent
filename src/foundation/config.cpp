@@ -14,10 +14,6 @@ namespace axiom::core {
 
 namespace {
 
-// Expand environment variables in a string. Supports both Windows-style
-// %VAR% and POSIX-style ${VAR}. Undefined variables are left in place
-// so misconfigurations are visible in the log rather than producing an
-// empty string silently.
 std::string expand_env(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -243,10 +239,53 @@ void parse_agent_sync(const json& mods, Config& cfg) {
         m.heartbeat_interval_seconds = 30;
     }
 
-    // Strip trailing slashes so URL concatenation doesn't produce
-    // double slashes like "http://host:3000//api/v1/...".
     while (!m.http_base_url.empty() && m.http_base_url.back() == '/') {
         m.http_base_url.pop_back();
+    }
+}
+
+void parse_content_scanner(const json& mods, Config& cfg) {
+    if (!mods.contains("content_scanner")) return;
+    const json& c = mods["content_scanner"];
+    if (!c.is_object()) return;
+
+    auto& m = cfg.modules.content_scanner;
+    const std::string section = "modules.content_scanner";
+
+    read_bool   (c, "enabled",               m.enabled,               cfg.load_warnings, section);
+    read_int    (c, "batch_size",            m.batch_size,            cfg.load_warnings, section);
+    read_int    (c, "scan_interval_seconds", m.scan_interval_seconds, cfg.load_warnings, section);
+    read_int    (c, "max_retries",           m.max_retries,           cfg.load_warnings, section);
+    read_int    (c, "request_timeout_seconds", m.request_timeout_seconds, cfg.load_warnings, section);
+
+    std::uint64_t tmp = m.batch_max_bytes;
+    read_uint64 (c, "batch_max_bytes", tmp, cfg.load_warnings, section);
+    m.batch_max_bytes = static_cast<std::size_t>(tmp);
+
+    tmp = m.chunk_size_bytes;
+    read_uint64 (c, "chunk_size_bytes", tmp, cfg.load_warnings, section);
+    m.chunk_size_bytes = static_cast<std::size_t>(tmp);
+
+    tmp = m.chunk_overlap_bytes;
+    read_uint64 (c, "chunk_overlap_bytes", tmp, cfg.load_warnings, section);
+    m.chunk_overlap_bytes = static_cast<std::size_t>(tmp);
+
+    tmp = m.max_file_bytes;
+    read_uint64 (c, "max_file_bytes", tmp, cfg.load_warnings, section);
+    m.max_file_bytes = static_cast<std::size_t>(tmp);
+
+    read_string_array (c, "text_extensions", m.text_extensions, cfg.load_warnings, section);
+
+    // Sanity checks.
+    if (m.batch_size < 1)            m.batch_size = 50;
+    if (m.max_retries < 1)           m.max_retries = 3;
+    if (m.scan_interval_seconds < 5) m.scan_interval_seconds = 30;
+    if (m.chunk_size_bytes < 4096)   m.chunk_size_bytes = 1024 * 1024;
+    if (m.chunk_overlap_bytes == 0)  m.chunk_overlap_bytes = 256;
+    if (m.chunk_overlap_bytes >= m.chunk_size_bytes) {
+        cfg.load_warnings.push_back(section +
+            ".chunk_overlap_bytes must be < chunk_size_bytes; using 256");
+        m.chunk_overlap_bytes = 256;
     }
 }
 
@@ -287,6 +326,7 @@ Config Config::load(const std::string& path) {
             parse_inventory(mods, cfg);
             parse_transport(mods, cfg);
             parse_agent_sync(mods, cfg);
+            parse_content_scanner(mods, cfg);
         }
     }
 
