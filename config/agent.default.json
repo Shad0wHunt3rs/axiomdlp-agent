@@ -63,11 +63,14 @@
         "/snap/*",
         "/var/log/*"
       ],
-      "interval_seconds": 900
+      "interval_seconds": 900,
+      "compute_hashes": true,
+      "max_file_size_bytes": 104857600,
+      "scannable_categories": ["document", "code", "data", "config"]
     },
 
     "transport": {
-      "enabled": true,
+      "enabled": false,
       "server_url": "ws://127.0.0.1:8765",
       "reconnect_backoff_seconds": 5,
       "reconnect_backoff_max_seconds": 60,

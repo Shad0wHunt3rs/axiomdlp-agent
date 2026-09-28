@@ -1,7 +1,6 @@
-// src/storage/file_store.h
+// src/storage/file_repository.h
 //
-// Domain-specific wrapper for the files table. Knows about FileRow
-// and the queries the rest of the agent needs.
+// Domain-specific wrapper for the files table.
 
 #pragma once
 
@@ -48,10 +47,16 @@ struct FileRow {
     bool          is_hidden      = false;
     bool          is_executable  = false;
 
-    // Reserved for the future Scanner module.
+    // Content scanning results
     bool          is_sensitive   = false;
     std::string   sensitivity;
     std::string   scan_status    = "pending";
+
+    // Content scanning metadata (populated during inventory)
+    std::string   content_hash;        // SHA-256 hex, empty if not hashed
+    std::int64_t  last_scanned_at = 0; // unix seconds, 0 = never scanned
+    int           scan_attempts   = 0;
+    std::string   scan_error;
 };
 
 // Query parameters for FileStore::query().
@@ -75,16 +80,11 @@ class FileStore {
 public:
     explicit FileStore(Database& db) : db_(db) {}
 
-    // Create or verify the schema. Called once after migrations.
     bool initialize_schema();
 
-    // Insert or update one file. Keyed by (dev, inode).
     bool upsert_file(const FileRow& row, std::uint64_t walk_id);
-
-    // Remove files whose walk_id is older than `current_walk_id`.
     bool prune_stale(std::uint64_t current_walk_id);
 
-    // Walk bookkeeping.
     std::uint64_t begin_walk(std::int64_t started_at);
     bool finish_walk(std::uint64_t walk_id,
                      std::int64_t started_at,
@@ -95,14 +95,9 @@ public:
                      std::size_t files_deleted,
                      std::int64_t duration_ms);
 
-    // General row query.
     std::vector<FileRow> query(const FileQuery& q) const;
 
-    // ----------------------------------------------------------------
     // Transport support — compact rows for the shipping loop.
-    // ----------------------------------------------------------------
-
-    // A compact row containing just the fields the transport ships.
     struct SensitiveRow {
         std::uint64_t id           = 0;
         std::string   path;
@@ -111,22 +106,29 @@ public:
         std::int64_t  last_seen    = 0;
     };
 
-    // Return the highest id currently in the files table.
     std::uint64_t max_file_id() const;
-
-    // Return up to `limit` sensitive files with id > after_id,
-    // ordered by id ascending.
     std::vector<SensitiveRow> query_sensitive_after(std::uint64_t after_id,
                                                     std::size_t limit) const;
-
-    // Mark N random non-directory rows as sensitive, assigning a mock
-    // category. Used to test the transport pipeline before the real
-    // scanner exists.
     bool mark_random_files_sensitive(std::size_t count);
 
     // ----------------------------------------------------------------
-    // Aggregations.
+    // Scanner support
     // ----------------------------------------------------------------
+
+    // Return up to `limit` files that are candidates for content scanning
+    // (scan_status = 'pending' and content_hash is not empty).
+    std::vector<FileRow> fetch_pending_for_scan(std::size_t limit) const;
+
+    // Record the outcome of a scan for the file with this content_hash.
+    bool update_scan_result(const std::string& content_hash,
+                            bool sensitive,
+                            const std::string& sensitivity);
+
+    // Mark a scan as failed. Increments scan_attempts and stores the error.
+    bool record_scan_error(const std::string& content_hash,
+                           const std::string& error);
+
+    // Aggregations.
     struct Stats {
         std::size_t   total_files       = 0;
         std::size_t   total_directories = 0;
@@ -149,7 +151,6 @@ public:
     };
     std::vector<DirCount> top_directories(std::size_t limit = 20) const;
 
-    // Transaction control.
     bool begin_transaction();
     bool commit();
     bool rollback();

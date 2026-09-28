@@ -361,6 +361,7 @@ add_executable(axiomdlp-agent
 
     # util
     src/util/glob_match.cpp
+    src/util/file_hash.cpp
 
     # platform implementations
     src/platform/common/efsw_file_watcher.cpp

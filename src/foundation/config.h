@@ -1,9 +1,10 @@
-// src/core/config.h
+// src/foundation/config.h
 //
 // Centralized configuration loading for the AxiomDLP Agent.
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -37,12 +38,28 @@ struct FilesystemWatcherModuleConfig {
 
 // ----------------------------------------------------------------
 // Section: modules.inventory
+//
+// The inventory scans the filesystem on an interval, records every
+// file's metadata, and (optionally) computes a SHA-256 hash of files
+// that are candidates for content scanning.
 // ----------------------------------------------------------------
 struct InventoryModuleConfig {
     bool                     enabled = true;
     std::vector<std::string> watch_paths;
     std::vector<std::string> exclude_paths;
     int                      interval_seconds = 900;
+
+    // Compute SHA-256 of eligible files during inventory.
+    bool compute_hashes = true;
+
+    // Files larger than this are skipped entirely — no hash, no scan.
+    // 100 GB = 107374182400 bytes.
+    std::uint64_t max_file_size_bytes = 104857600ull;
+
+    // Only files whose category is in this list are hashed/scanned.
+    std::vector<std::string> scannable_categories = {
+        "document", "code", "data", "config"
+    };
 };
 
 // ----------------------------------------------------------------

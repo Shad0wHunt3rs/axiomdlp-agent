@@ -2,6 +2,7 @@
 
 #include "features/inventory/inventory_scanner.h"
 #include "storage/file_repository.h"
+#include "util/file_hash.h"
 #include "util/glob_match.h"
 
 #include <spdlog/spdlog.h>
@@ -96,6 +97,11 @@ std::uint64_t path_identity(const std::string& path) {
     return static_cast<std::uint64_t>(hasher(path));
 }
 
+bool is_scannable_category(const std::string& category,
+                           const std::vector<std::string>& scannable) {
+    return std::find(scannable.begin(), scannable.end(), category) != scannable.end();
+}
+
 } // namespace
 
 // ----------------------------------------------------------------
@@ -120,6 +126,8 @@ void InventoryScanner::scan_one_root(const std::string& root,
         SPDLOG_WARN("InventoryScanner: skipping '{}' (not a directory)", root);
         return;
     }
+
+    const auto& inv_cfg = ctx_.config.modules.inventory;
 
     auto options = fs::directory_options::skip_permission_denied;
     std::size_t since_commit   = 0;
@@ -232,9 +240,37 @@ void InventoryScanner::scan_one_root(const std::string& root,
 
         row.category = categorize(row.extension, row.is_executable);
 
-        row.is_sensitive = false;
-        row.sensitivity  = "";
-        row.scan_status  = "pending";
+        // ------------------------------------------------------------
+        // Decide whether to hash this file for content scanning
+        // ------------------------------------------------------------
+        const bool is_regular = !row.is_directory && !row.is_symlink;
+        const bool category_ok =
+            is_scannable_category(row.category, inv_cfg.scannable_categories);
+        const bool size_ok = row.size <= inv_cfg.max_file_size_bytes;
+
+        if (!is_regular) {
+            row.scan_status = "not_applicable";
+        } else if (!category_ok) {
+            row.scan_status = "not_applicable";
+        } else if (!size_ok) {
+            row.scan_status = "skipped_too_large";
+            SPDLOG_WARN("InventoryScanner: skipping '{}' "
+                        "({} bytes > {} byte limit)",
+                        path_str, row.size, inv_cfg.max_file_size_bytes);
+        } else if (inv_cfg.compute_hashes) {
+            const auto hash_result = util::compute_sha256(path_str);
+            if (hash_result.ok()) {
+                row.content_hash = hash_result.hex_digest;
+                row.scan_status  = "pending";
+            } else {
+                row.scan_status = "scan_error";
+                row.scan_error  = "hash: " + hash_result.error;
+                SPDLOG_WARN("InventoryScanner: hash failed for '{}': {}",
+                            path_str, hash_result.error);
+            }
+        } else {
+            row.scan_status = "pending";
+        }
 
         if (ctx_.file_store.upsert_file(row, walk_id)) {
             ++result.files_seen;

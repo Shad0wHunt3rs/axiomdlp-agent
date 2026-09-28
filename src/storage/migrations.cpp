@@ -117,10 +117,6 @@ bool apply_v2(Database& db) {
 
 // ----------------------------------------------------------------
 // Migration 3: key/value state table
-//
-// Used by StateStore to persist small pieces of agent state that
-// must survive restarts: agent_id assigned by the server, the
-// enrollment timestamp, the last policy version, etc.
 // ----------------------------------------------------------------
 bool apply_v3(Database& db) {
     SPDLOG_INFO("Migrations: applying v3 (state table)");
@@ -143,10 +139,43 @@ bool apply_v3(Database& db) {
     return true;
 }
 
+// ----------------------------------------------------------------
+// Migration 4: content-scanning metadata
+//
+// Adds the columns the future content scanner needs to track what
+// has been hashed, what has been sent to the server for inspection,
+// and what state each file is in.
+// ----------------------------------------------------------------
+bool apply_v4(Database& db) {
+    SPDLOG_INFO("Migrations: applying v4 (scanner metadata)");
+
+    const char* sql = R"SQL(
+        ALTER TABLE files ADD COLUMN content_hash     TEXT    NOT NULL DEFAULT '';
+        ALTER TABLE files ADD COLUMN last_scanned_at  INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE files ADD COLUMN scan_attempts    INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE files ADD COLUMN scan_error       TEXT    NOT NULL DEFAULT '';
+
+        CREATE INDEX IF NOT EXISTS idx_files_scan_status
+            ON files(scan_status);
+        CREATE INDEX IF NOT EXISTS idx_files_content_hash
+            ON files(content_hash);
+    )SQL";
+
+    if (!db.exec("BEGIN TRANSACTION;")) return false;
+    if (!db.exec(sql)) {
+        db.exec("ROLLBACK;");
+        return false;
+    }
+    if (!db.exec("COMMIT;")) return false;
+
+    SPDLOG_INFO("Migrations: v4 applied");
+    return true;
+}
+
 } // namespace
 
 int Migrations::current_version() {
-    return 3;
+    return 4;
 }
 
 bool Migrations::apply(Database& db) {
@@ -191,6 +220,18 @@ bool Migrations::apply(Database& db) {
             return false;
         }
         current = 3;
+    }
+
+    if (current < 4) {
+        if (!apply_v4(db)) {
+            SPDLOG_ERROR("Migrations: v4 failed");
+            return false;
+        }
+        if (!write_user_version(db, 4)) {
+            SPDLOG_ERROR("Migrations: cannot write user_version=4");
+            return false;
+        }
+        current = 4;
     }
 
     return true;

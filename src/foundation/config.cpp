@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 
@@ -81,6 +82,24 @@ void read_int(const json& obj, const char* key, int& out,
         return;
     }
     out = obj[key].get<int>();
+}
+
+void read_uint64(const json& obj, const char* key, std::uint64_t& out,
+                 std::vector<std::string>& warnings,
+                 const std::string& section) {
+    if (!obj.contains(key)) return;
+    if (!obj[key].is_number_unsigned() && !obj[key].is_number_integer()) {
+        warnings.push_back(section + "." + key +
+                           " must be a non-negative integer; using default");
+        return;
+    }
+    const auto v = obj[key].get<std::int64_t>();
+    if (v < 0) {
+        warnings.push_back(section + "." + key +
+                           " must be non-negative; using default");
+        return;
+    }
+    out = static_cast<std::uint64_t>(v);
 }
 
 void read_string_array(const json& obj, const char* key,
@@ -166,10 +185,13 @@ void parse_inventory(const json& mods, Config& cfg) {
     auto& m = cfg.modules.inventory;
     const std::string section = "modules.inventory";
 
-    read_bool         (inv, "enabled",          m.enabled,          cfg.load_warnings, section);
-    read_string_array (inv, "watch_paths",      m.watch_paths,      cfg.load_warnings, section);
-    read_string_array (inv, "exclude_paths",    m.exclude_paths,    cfg.load_warnings, section);
-    read_int          (inv, "interval_seconds", m.interval_seconds, cfg.load_warnings, section);
+    read_bool         (inv, "enabled",              m.enabled,              cfg.load_warnings, section);
+    read_string_array (inv, "watch_paths",          m.watch_paths,          cfg.load_warnings, section);
+    read_string_array (inv, "exclude_paths",        m.exclude_paths,        cfg.load_warnings, section);
+    read_int          (inv, "interval_seconds",     m.interval_seconds,     cfg.load_warnings, section);
+    read_bool         (inv, "compute_hashes",       m.compute_hashes,       cfg.load_warnings, section);
+    read_uint64       (inv, "max_file_size_bytes",  m.max_file_size_bytes,  cfg.load_warnings, section);
+    read_string_array (inv, "scannable_categories", m.scannable_categories, cfg.load_warnings, section);
 
     if (m.interval_seconds < 10) {
         cfg.load_warnings.push_back(section + ".interval_seconds must be >= 10; using 900");
@@ -271,4 +293,4 @@ Config Config::load(const std::string& path) {
     return cfg;
 }
 
-} // namespace axiom::cores
+} // namespace axiom::core

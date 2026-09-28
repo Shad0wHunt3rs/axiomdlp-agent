@@ -1,4 +1,4 @@
-// src/storage/file_store.cpp
+// src/storage/file_repository.cpp
 
 #include "storage/file_repository.h"
 
@@ -13,7 +13,6 @@ namespace axiom::core {
 
 namespace {
 
-// RAII wrapper for a prepared statement.
 class Stmt {
 public:
     Stmt(sqlite3* db, const char* sql) {
@@ -43,6 +42,49 @@ std::int64_t now_seconds() {
 std::string text_col(sqlite3_stmt* s, int idx) {
     const unsigned char* p = sqlite3_column_text(s, idx);
     return p ? reinterpret_cast<const char*>(p) : "";
+}
+
+// Column list for every SELECT that returns a full FileRow. Keeping
+// it in one place means adding a column only requires one edit.
+constexpr const char* kFileRowColumns =
+    "id, dev, inode, path, basename, dirname, extension, "
+    "size, mtime_ns, ctime_ns, atime_ns, mode, file_type, "
+    "is_directory, is_symlink, is_hidden, is_executable, "
+    "uid, gid, nlink, category, "
+    "is_sensitive, sensitivity, scan_status, "
+    "content_hash, last_scanned_at, scan_attempts, scan_error";
+
+FileRow read_file_row(sqlite3_stmt* s, int& c) {
+    FileRow r;
+    r.dev             = static_cast<std::uint64_t>(sqlite3_column_int64(s, c++));  // id (skipped)
+    r.dev             = static_cast<std::uint64_t>(sqlite3_column_int64(s, c++));
+    r.inode           = static_cast<std::uint64_t>(sqlite3_column_int64(s, c++));
+    r.path            = text_col(s, c++);
+    r.basename        = text_col(s, c++);
+    r.dirname         = text_col(s, c++);
+    r.extension       = text_col(s, c++);
+    r.size            = static_cast<std::uint64_t>(sqlite3_column_int64(s, c++));
+    r.mtime_ns        = sqlite3_column_int64(s, c++);
+    r.ctime_ns        = sqlite3_column_int64(s, c++);
+    r.atime_ns        = sqlite3_column_int64(s, c++);
+    r.mode            = static_cast<std::uint32_t>(sqlite3_column_int64(s, c++));
+    r.file_type       = text_col(s, c++);
+    r.is_directory    = sqlite3_column_int(s, c++) != 0;
+    r.is_symlink      = sqlite3_column_int(s, c++) != 0;
+    r.is_hidden       = sqlite3_column_int(s, c++) != 0;
+    r.is_executable   = sqlite3_column_int(s, c++) != 0;
+    r.uid             = static_cast<std::uint32_t>(sqlite3_column_int64(s, c++));
+    r.gid             = static_cast<std::uint32_t>(sqlite3_column_int64(s, c++));
+    r.nlink           = static_cast<std::uint32_t>(sqlite3_column_int64(s, c++));
+    r.category        = text_col(s, c++);
+    r.is_sensitive    = sqlite3_column_int(s, c++) != 0;
+    r.sensitivity     = text_col(s, c++);
+    r.scan_status     = text_col(s, c++);
+    r.content_hash    = text_col(s, c++);
+    r.last_scanned_at = sqlite3_column_int64(s, c++);
+    r.scan_attempts   = sqlite3_column_int(s, c++);
+    r.scan_error      = text_col(s, c++);
+    return r;
 }
 
 } // namespace
@@ -80,6 +122,7 @@ bool FileStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
              is_directory, is_symlink, is_hidden, is_executable,
              uid, gid, nlink, category,
              is_sensitive, sensitivity, scan_status,
+             content_hash, last_scanned_at, scan_attempts, scan_error,
              first_seen, last_seen, walk_id)
         VALUES
             (?, ?, ?, ?, ?, ?,
@@ -88,6 +131,7 @@ bool FileStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
              ?, ?, ?, ?,
              ?, ?, ?, ?,
              ?, ?, ?,
+             ?, ?, ?, ?,
              ?, ?, ?)
         ON CONFLICT(dev, inode) DO UPDATE SET
             path           = excluded.path,
@@ -108,6 +152,12 @@ bool FileStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
             gid            = excluded.gid,
             nlink          = excluded.nlink,
             category       = excluded.category,
+            content_hash   = excluded.content_hash,
+            scan_status    = CASE
+                WHEN files.content_hash = excluded.content_hash
+                    THEN files.scan_status
+                ELSE excluded.scan_status
+            END,
             last_seen      = excluded.last_seen,
             walk_id        = excluded.walk_id
     )SQL";
@@ -146,9 +196,14 @@ bool FileStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
     sqlite3_bind_text (stmt.get(), 22, row.sensitivity.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text (stmt.get(), 23, row.scan_status.c_str(), -1, SQLITE_TRANSIENT);
 
-    sqlite3_bind_int64(stmt.get(), 24, now);
-    sqlite3_bind_int64(stmt.get(), 25, now);
-    sqlite3_bind_int64(stmt.get(), 26, static_cast<sqlite3_int64>(walk_id));
+    sqlite3_bind_text (stmt.get(), 24, row.content_hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 25, row.last_scanned_at);
+    sqlite3_bind_int  (stmt.get(), 26, row.scan_attempts);
+    sqlite3_bind_text (stmt.get(), 27, row.scan_error.c_str(),   -1, SQLITE_TRANSIENT);
+
+    sqlite3_bind_int64(stmt.get(), 28, now);
+    sqlite3_bind_int64(stmt.get(), 29, now);
+    sqlite3_bind_int64(stmt.get(), 30, static_cast<sqlite3_int64>(walk_id));
 
     return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
@@ -225,13 +280,7 @@ bool FileStore::finish_walk(std::uint64_t walk_id,
 std::vector<FileRow> FileStore::query(const FileQuery& q) const {
     std::vector<FileRow> out;
 
-    std::string sql =
-        "SELECT dev, inode, path, basename, dirname, extension, "
-        "size, mtime_ns, ctime_ns, atime_ns, mode, file_type, "
-        "is_directory, is_symlink, is_hidden, is_executable, "
-        "uid, gid, nlink, category, "
-        "is_sensitive, sensitivity, scan_status "
-        "FROM files WHERE 1=1";
+    std::string sql = std::string("SELECT ") + kFileRowColumns + " FROM files WHERE 1=1";
 
     if (!q.path_prefix.empty()) sql += " AND path LIKE ?";
     if (!q.category.empty())    sql += " AND category = ?";
@@ -268,34 +317,80 @@ std::vector<FileRow> FileStore::query(const FileQuery& q) const {
     sqlite3_bind_int64(stmt.get(), idx,   static_cast<sqlite3_int64>(q.offset));
 
     while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
-        FileRow r;
         int c = 0;
-        r.dev          = static_cast<std::uint64_t>(sqlite3_column_int64(stmt.get(), c++));
-        r.inode        = static_cast<std::uint64_t>(sqlite3_column_int64(stmt.get(), c++));
-        r.path         = text_col(stmt.get(), c++);
-        r.basename     = text_col(stmt.get(), c++);
-        r.dirname      = text_col(stmt.get(), c++);
-        r.extension    = text_col(stmt.get(), c++);
-        r.size         = static_cast<std::uint64_t>(sqlite3_column_int64(stmt.get(), c++));
-        r.mtime_ns     = sqlite3_column_int64(stmt.get(), c++);
-        r.ctime_ns     = sqlite3_column_int64(stmt.get(), c++);
-        r.atime_ns     = sqlite3_column_int64(stmt.get(), c++);
-        r.mode         = static_cast<std::uint32_t>(sqlite3_column_int64(stmt.get(), c++));
-        r.file_type    = text_col(stmt.get(), c++);
-        r.is_directory = sqlite3_column_int(stmt.get(), c++) != 0;
-        r.is_symlink   = sqlite3_column_int(stmt.get(), c++) != 0;
-        r.is_hidden    = sqlite3_column_int(stmt.get(), c++) != 0;
-        r.is_executable= sqlite3_column_int(stmt.get(), c++) != 0;
-        r.uid          = static_cast<std::uint32_t>(sqlite3_column_int64(stmt.get(), c++));
-        r.gid          = static_cast<std::uint32_t>(sqlite3_column_int64(stmt.get(), c++));
-        r.nlink        = static_cast<std::uint32_t>(sqlite3_column_int64(stmt.get(), c++));
-        r.category     = text_col(stmt.get(), c++);
-        r.is_sensitive = sqlite3_column_int(stmt.get(), c++) != 0;
-        r.sensitivity  = text_col(stmt.get(), c++);
-        r.scan_status  = text_col(stmt.get(), c++);
-        out.push_back(std::move(r));
+        out.push_back(read_file_row(stmt.get(), c));
     }
     return out;
+}
+
+// ----------------------------------------------------------------
+// Scanner support
+// ----------------------------------------------------------------
+
+std::vector<FileRow> FileStore::fetch_pending_for_scan(std::size_t limit) const {
+    std::vector<FileRow> out;
+
+    const std::string sql = std::string("SELECT ") + kFileRowColumns +
+        " FROM files "
+        "WHERE scan_status = 'pending' "
+        "  AND content_hash != '' "
+        "  AND is_directory = 0 "
+        "ORDER BY last_seen DESC "
+        "LIMIT ?";
+
+    Stmt stmt(db_.handle(), sql.c_str());
+    if (!stmt.ok()) return out;
+
+    sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(limit));
+
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        int c = 0;
+        out.push_back(read_file_row(stmt.get(), c));
+    }
+    return out;
+}
+
+bool FileStore::update_scan_result(const std::string& content_hash,
+                                   bool sensitive,
+                                   const std::string& sensitivity) {
+    const char* sql =
+        "UPDATE files SET "
+        "  is_sensitive   = ?, "
+        "  sensitivity    = ?, "
+        "  scan_status    = 'scanned', "
+        "  last_scanned_at = ?, "
+        "  scan_error     = '' "
+        "WHERE content_hash = ?";
+
+    Stmt stmt(db_.handle(), sql);
+    if (!stmt.ok()) return false;
+
+    sqlite3_bind_int  (stmt.get(), 1, sensitive ? 1 : 0);
+    sqlite3_bind_text (stmt.get(), 2, sensitivity.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 3, now_seconds());
+    sqlite3_bind_text (stmt.get(), 4, content_hash.c_str(), -1, SQLITE_TRANSIENT);
+
+    return sqlite3_step(stmt.get()) == SQLITE_DONE;
+}
+
+bool FileStore::record_scan_error(const std::string& content_hash,
+                                  const std::string& error) {
+    const char* sql =
+        "UPDATE files SET "
+        "  scan_status   = 'scan_error', "
+        "  scan_attempts = scan_attempts + 1, "
+        "  scan_error    = ?, "
+        "  last_scanned_at = ? "
+        "WHERE content_hash = ?";
+
+    Stmt stmt(db_.handle(), sql);
+    if (!stmt.ok()) return false;
+
+    sqlite3_bind_text (stmt.get(), 1, error.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 2, now_seconds());
+    sqlite3_bind_text (stmt.get(), 3, content_hash.c_str(), -1, SQLITE_TRANSIENT);
+
+    return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
 
 // ----------------------------------------------------------------
