@@ -12,7 +12,7 @@
 // The watcher runs on efsw's own background thread. Our callback is
 // invoked on that thread.
 
-#include "core/file_watcher.h"
+#include "platform/file_watcher.h"
 
 #include <efsw/efsw.hpp>
 

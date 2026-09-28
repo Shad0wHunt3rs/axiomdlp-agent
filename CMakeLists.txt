@@ -169,18 +169,9 @@ message(STATUS "Boost headers (isolated): ${AXIOM_BOOST_ISOLATED_DIR}/boost (ver
 find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------
-# OpenSSL — TLS support for the agent_sync module (HTTPS).
+# OpenSSL — TLS support for agent_sync and transport modules.
 #
 # All four targets use statically built OpenSSL from .deps/.
-# No system OpenSSL is required on any platform.
-#
-# Source trees are produced by ./scripts/build-openssl.sh, which
-# creates:
-#   .deps/openssl-linux-x86_64/
-#   .deps/openssl-linux-i686/
-#   .deps/openssl-mingw64/
-#   .deps/openssl-mingw32/
-#
 # Imported targets are created manually because CMake 4.x's
 # find_package(OpenSSL) ignores pre-set library paths on
 # cross-compile targets and on multilib native builds.
@@ -199,7 +190,6 @@ elseif(UNIX AND NOT APPLE)
     endif()
 endif()
 
-# Locate lib/ or lib64/ — OpenSSL's Configure picks one per target.
 if(EXISTS "${AXIOM_OPENSSL_DIR}/lib/libssl.a")
     set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib")
 elseif(EXISTS "${AXIOM_OPENSSL_DIR}/lib64/libssl.a")
@@ -217,8 +207,6 @@ if(NOT EXISTS "${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/ssl.h")
         "OpenSSL headers not found at ${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/.")
 endif()
 
-# Create the imported targets manually. This is what find_package
-# would produce, but without CMake 4.x detection quirks.
 if(NOT TARGET OpenSSL::SSL)
     add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)
     set_target_properties(OpenSSL::SSL PROPERTIES
@@ -337,13 +325,13 @@ endif()
 # ----------------------------------------------------------------
 if(WIN32)
     set(AXIOM_PLATFORM_SOURCES
-        src/platform/windows/paths_windows.cpp
-        src/platform/windows/service_win.cpp
+        src/platform/windows/paths.cpp
+        src/platform/windows/service.cpp
     )
 elseif(UNIX AND NOT APPLE)
     set(AXIOM_PLATFORM_SOURCES
-        src/platform/linux/paths_linux.cpp
-        src/platform/linux/service_linux.cpp
+        src/platform/linux/paths.cpp
+        src/platform/linux/service.cpp
     )
 endif()
 
@@ -352,28 +340,45 @@ endif()
 # ----------------------------------------------------------------
 add_executable(axiomdlp-agent
     src/main.cpp
-    src/core/application.cpp
-    src/core/config.cpp
-    src/core/event.cpp
-    src/core/event_bus.cpp
-    src/core/logger.cpp
-    src/core/module_manager.cpp
+
+    # foundation
+    src/foundation/application.cpp
+    src/foundation/config.cpp
+    src/foundation/logger.cpp
+
+    # events
+    src/events/event.cpp
+    src/events/event_bus.cpp
+
+    # module framework
+    src/modules/module_manager.cpp
+
+    # net
     src/net/http_client.cpp
+    src/net/websocket_client.cpp
+    src/net/outbound_queue.cpp
+    src/net/message_router.cpp
+
+    # util
+    src/util/glob_match.cpp
+
+    # platform implementations
     src/platform/common/efsw_file_watcher.cpp
-    src/modules/module_base.cpp
-    src/modules/agent_sync/agent_sync_module.cpp
-    src/modules/filesystem_watcher/filesystem_watcher_module.cpp
-    src/modules/inventory/inventory_module.cpp
-    src/modules/inventory/inventory_scanner.cpp
-    src/modules/event_logger/event_logger_module.cpp
-    src/modules/transport/transport_module.cpp
-    src/modules/transport/websocket_client.cpp
-    src/modules/transport/outbound_queue.cpp
-    src/modules/transport/message_router.cpp
-    src/storage/database.cpp
+
+    # feature modules
+    src/features/agent_sync/agent_sync_module.cpp
+    src/features/event_logger/event_logger_module.cpp
+    src/features/filesystem_watcher/filesystem_watcher_module.cpp
+    src/features/inventory/inventory_module.cpp
+    src/features/inventory/inventory_scanner.cpp
+    src/features/websocket_transport/transport_module.cpp
+
+    # storage
+    src/storage/sqlite_database.cpp
     src/storage/migrations.cpp
-    src/storage/file_store.cpp
-    src/storage/state_store.cpp
+    src/storage/file_repository.cpp
+    src/storage/state_repository.cpp
+
     ${AXIOM_PLATFORM_SOURCES}
 )
 

@@ -24,8 +24,7 @@
         "*/AppData/Local/Microsoft/Windows/Explorer/*",
         "*/AppData/Roaming/Microsoft/Windows/Recent/*"
       ],
-      "debounce_ms": 300,
-      "max_file_size_mb": 100
+      "debounce_ms": 300
     },
 
     "inventory": {
@@ -65,7 +64,16 @@
       "enabled": true,
       "server_url": "ws://192.168.1.42:8765",
       "reconnect_backoff_seconds": 5,
-      "reconnect_backoff_max_seconds": 60
+      "reconnect_backoff_max_seconds": 60,
+      "verify_tls": true
+    },
+
+    "agent_sync": {
+      "enabled": true,
+      "http_base_url": "http://192.168.1.42:3000",
+      "api_token": "",
+      "heartbeat_interval_seconds": 30,
+      "verify_tls": true
     }
   }
 }

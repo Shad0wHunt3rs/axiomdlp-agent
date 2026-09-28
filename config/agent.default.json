@@ -30,8 +30,7 @@
         "/var/tmp/systemd-private-*",
         "/tmp/systemd-private-*"
       ],
-      "debounce_ms": 300,
-      "max_file_size_mb": 100
+      "debounce_ms": 300
     },
 
     "inventory": {
@@ -68,7 +67,7 @@
     },
 
     "transport": {
-      "enabled": false,
+      "enabled": true,
       "server_url": "ws://127.0.0.1:8765",
       "reconnect_backoff_seconds": 5,
       "reconnect_backoff_max_seconds": 60,

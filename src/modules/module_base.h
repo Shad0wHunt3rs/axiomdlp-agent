@@ -1,14 +1,12 @@
 // src/modules/module_base.h
 //
-// ModuleBase provides default implementations for the trivial methods of
-// the IModule interface. Real modules inherit from ModuleBase and override
-// only the methods they need.
+// ModuleBase provides default implementations for the trivial methods
+// of the IModule interface. Real modules inherit from ModuleBase and
+// override only the methods they need.
 
 #pragma once
 
-#include "core/health.h"
-#include "core/module_context.h"
-#include "interfaces/i_module.h"
+#include "modules/i_module.h"
 
 #include <string>
 

@@ -1,7 +1,7 @@
 // src/storage/migrations.cpp
 
 #include "storage/migrations.h"
-#include "storage/database.h"
+#include "storage/sqlite_database.h"
 
 #include <spdlog/spdlog.h>
 
