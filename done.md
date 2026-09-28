@@ -2,7 +2,7 @@
 
 **Status Document — Everything Implemented, Verified, and Fixed**
 
-Last updated: 2026-09-26, after full cross-platform verification of the transport layer.
+Last updated: 2026-09-28, after HTTPS/WSS support, tree reorganization, agent_sync module, and file hashing.
 
 ---
 
@@ -11,29 +11,30 @@ Last updated: 2026-09-26, after full cross-platform verification of the transpor
 1. [Executive Summary](#1-executive-summary)
 2. [The Four Verified Platforms](#2-the-four-verified-platforms)
 3. [Architecture Overview](#3-architecture-overview)
-4. [What Exists — Directory Layout](#4-what-exists--directory-layout)
+4. [Source Tree Layout](#4-source-tree-layout)
 5. [The Build System](#5-the-build-system)
-6. [Core Framework](#6-core-framework)
-7. [Module System](#7-module-system)
-8. [Event Bus](#8-event-bus)
-9. [Filesystem Watcher Module](#9-filesystem-watcher-module)
-10. [Inventory Module](#10-inventory-module)
-11. [Storage Layer](#11-storage-layer)
-12. [Transport Module](#12-transport-module)
-13. [Local Visualization](#13-local-visualization)
-14. [Configuration System](#14-configuration-system)
-15. [The Data Model](#15-the-data-model)
-16. [The Complete Bug History](#16-the-complete-bug-history)
-17. [Runtime Evidence](#17-runtime-evidence)
-18. [Known Limitations](#18-known-limitations)
-19. [What Does Not Exist Yet](#19-what-does-not-exist-yet)
-20. [Lessons Learned](#20-lessons-learned)
+6. [Foundation Layer](#6-foundation-layer)
+7. [Events Layer](#7-events-layer)
+8. [Module Framework](#8-module-framework)
+9. [Platform Layer](#9-platform-layer)
+10. [Net Layer (HTTP and WebSocket)](#10-net-layer-http-and-websocket)
+11. [Utility Layer](#11-utility-layer)
+12. [Storage Layer](#12-storage-layer)
+13. [Feature Modules](#13-feature-modules)
+14. [TLS / OpenSSL Integration](#14-tls--openssl-integration)
+15. [Configuration System](#15-configuration-system)
+16. [The Data Model](#16-the-data-model)
+17. [The Complete Bug History](#17-the-complete-bug-history)
+18. [Runtime Evidence](#18-runtime-evidence)
+19. [Known Limitations](#19-known-limitations)
+20. [What Does Not Exist Yet](#20-what-does-not-exist-yet)
+21. [Lessons Learned](#21-lessons-learned)
 
 ---
 
 ## 1. Executive Summary
 
-The AxiomDLP Endpoint Agent is a **working, cross-platform, network-connected service foundation** with four fully verified build targets, three data-producing modules, and a persistent local SQLite database. It runs as a native service on Linux and Windows, watches the filesystem in real time, maintains a complete inventory of every file with rich metadata, and maintains a persistent WebSocket connection to a central server.
+The AxiomDLP Endpoint Agent is a **cross-platform, network-connected, TLS-capable service foundation** with four fully verified build targets, four data-producing modules, a persistent local SQLite database with SHA-256 file fingerprinting, and HTTP + WebSocket connectivity to the AxiomDLP Core server.
 
 **What works today:**
 
@@ -42,68 +43,39 @@ The AxiomDLP Endpoint Agent is a **working, cross-platform, network-connected se
 - Async structured logging with rotation and non-blocking delivery
 - JSON configuration with fail-safe defaults and environment variable expansion
 - Real-time filesystem watching via inotify (Linux) and ReadDirectoryChangesW (Windows)
-- Debounced event delivery with priority-based merge
 - Periodic full-tree inventory scanning with interruptible cancellation
-- SQLite persistence with versioned migrations and enriched file metadata
+- SHA-256 content hashing of eligible files, with metadata stored in SQLite
 - Persistent WebSocket connection to a server with automatic reconnection
-- Priority-ordered outbound message queue
-- Type-keyed incoming message dispatch
+- HTTP client supporting `http://` and `https://` with certificate verification
+- WebSocket client supporting `ws://` and `wss://` with certificate verification
+- Agent enrollment with the Core server via `POST /api/v1/agent/register`
+- Periodic heartbeat via `POST /api/v1/agent/heartbeat`
+- Automatic re-enrollment on 404, clean shutdown on 401/403
+- Statically linked OpenSSL 3.3.2 for all four targets
 - Local visualization dashboard (Python server + HTML page)
 
 **What does not exist yet:**
 
-- Content scanning (regex, ML, remote PII)
+- Content scanning (sending file bytes to the server for PII detection)
 - Policy engine (decisions from scan results)
 - Enforcement (blocking file operations)
-- Heartbeats over the WebSocket
-- Data shipping to the server
-- Cursor persistence for the shipper
+- Data shipping of events to the server
 - Kernel-mode enforcement
 
-The agent is a **complete capture, inventory, and connectivity platform with no decision-making layer**. It sees everything, records everything, and can talk to a server. It acts on nothing.
+The agent is a **complete capture, inventory, fingerprinting, and connectivity platform with no decision-making layer**. It sees everything, records everything, hashes everything, and talks to a server. It acts on nothing yet.
 
 ---
 
 ## 2. The Four Verified Platforms
 
-The most recent test run confirms all four targets work end-to-end:
+All four targets build, link, and run. All support TLS.
 
-| Platform | Build | Run | Watch | Scan | Network |
-|----------|-------|-----|-------|------|---------|
-| **Linux x86_64** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Linux i686** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Windows x86_64** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Windows i686** | ✅ | ✅ | ✅ | ✅ | ✅ |
-
-### Windows x86_64 — Verified
-
-```
-[23:17:02.673] WebSocketClient: connecting to 192.168.100.38:8765
-[23:17:02.677] WebSocketClient: connected                      ← 4ms
-[23:17:02.677] transport module: state = connected
-[23:17:03.805] [event] type=file_write path=C:\Users\kali\AppData\...
-[23:17:29.912] InventoryScanner: finished (24228 files, 8692 ms)
-```
-
-### Windows i686 — Verified
-
-```
-[23:17:21.223] WebSocketClient: connecting to 192.168.100.38:8765
-[23:17:21.236] WebSocketClient: connected                      ← 13ms
-[23:17:21.236] transport module: state = connected
-[23:17:29.912] InventoryScanner: finished (18183 files, 8692 ms)
-```
-
-### Mock Server (Kali) — Verified Both Connections
-
-```
-[+] client connected: ('192.168.100.92', 49944)      ← x86_64 agent
-[-] client disconnected: ('192.168.100.92', 49944)
-[+] client connected: ('192.168.100.92', 49968)      ← i686 agent
-[-] client disconnected: ('192.168.100.92', 49968)
-```
-
-The Windows VM is on a bridged network (192.168.100.92) and connects to the Kali host (192.168.100.38). Both architectures establish and maintain the WebSocket connection.
+| Platform | Build | Run | Watch | Hash | HTTP | WSS |
+|----------|-------|-----|-------|------|------|-----|
+| **Linux x86_64** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Linux i686** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Windows x86_64** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Windows i686** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ---
 
@@ -112,9 +84,8 @@ The Windows VM is on a bridged network (192.168.100.92) and connects to the Kali
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        APPLICATION                                   │
-│  Owns: Config, Logger, Database, FileStore, EventBus,                │
+│  Owns: Config, Logger, Database, FileStore, StateStore, EventBus,    │
 │        ModuleContext, ModuleManager, Service                         │
-│  Responsibilities: boot, wire, dispatch install/uninstall/run        │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
                                ▼
@@ -128,54 +99,57 @@ The Windows VM is on a bridged network (192.168.100.92) and connects to the Kali
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       MODULE MANAGER                                 │
 │  Lifecycle: initialize → start → stop → shutdown (reverse)           │
-│  Aggregates health. Fail-safe: one broken module never kills all     │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
-    ┌──────────────┬───────────┼───────────┬──────────────────┐
-    ▼              ▼           ▼           ▼                  ▼
-┌─────────┐  ┌──────────┐  ┌────────┐  ┌──────────┐  ┌────────────┐
-│Filesystem│ │Inventory │ │Event   │  │Transport │  │(future     │
-│Watcher  │  │Module    │ │Logger  │  │Module    │  │ modules)   │
-└────┬────┘  └─────┬────┘ └───┬────┘  └─────┬────┘  └────────────┘
-     │             │          │             │
-     │ publish     │ write    │ subscribe   │ WebSocket
-     ▼             ▼          ▼             ▼
-┌─────────┐  ┌──────────┐  ┌────────┐  ┌──────────┐
-│EventBus │  │FileStore │  │EventBus│  │Remote    │
-│(pub/sub)│  │(SQLite)  │  │        │  │Server    │
-└─────────┘  └──────────┘  └────────┘  └──────────┘
+    ┌──────────────┬───────────┼───────────┬──────────────┬──────────┐
+    ▼              ▼           ▼           ▼              ▼          ▼
+┌─────────┐  ┌──────────┐  ┌────────┐  ┌────────────┐  ┌─────────┐  ┌────────┐
+│Filesystem│ │Inventory │ │Event   │  │WebSocket   │  │AgentSync│  │(future)│
+│Watcher  │  │Module    │ │Logger  │  │Transport   │  │Module   │  │        │
+└────┬────┘  └─────┬────┘ └───┬────┘  └─────┬──────┘  └────┬────┘  └────────┘
+     │             │          │             │              │
+     │ publish     │ hash     │ subscribe   │ WebSocket    │ HTTP + TLS
+     ▼             ▼          ▼             ▼              ▼
+┌─────────┐  ┌──────────┐  ┌────────┐  ┌──────────┐  ┌──────────────┐
+│EventBus │  │FileStore │  │EventBus│  │WS Server │  │Core Server   │
+│(pub/sub)│  │(SQLite)  │  │        │  │          │  │(register +   │
+│         │  │          │  │        │  │          │  │ heartbeat)   │
+└─────────┘  └──────────┘  └────────┘  └──────────┘  └──────────────┘
 ```
 
 **Design principles enforced:**
 
-1. **Interface in `core/`, implementation in `platform/` or `modules/`** — business logic never includes OS headers.
-2. **CMake selects one platform file per target** — no runtime dispatch, no `#ifdef` in application code.
-3. **Every feature is a module** — new DLP capabilities are added without touching the core.
+1. **Layered source tree** — `foundation/` ← `events/` ← `modules/` ← `features/`. Higher layers depend on lower; lower never on higher.
+2. **Interface in `platform/`, implementation in `platform/<os>/`** — business logic never includes OS headers.
+3. **Every capability is a module** — new DLP features are added by creating `features/<name>/` and registering in `application.cpp`.
 4. **Modules communicate through the event bus** — never directly.
 5. **Fail-safe** — bad config, missing paths, failed modules never crash the agent.
 6. **RAII everywhere** — destructors clean up, no manual resource management.
 
 ---
 
-## 4. What Exists — Directory Layout
+## 4. Source Tree Layout
 
 ```
 axiomdlp-agent/
 ├── CMakeLists.txt                     Root build recipe
 ├── CMakePresets.json                  8 named build configurations
-├── compile_commands.json              Merged clangd DB (gitignored)
-├── .clangd                            clangd config
-├── .vscode/settings.json              clangd + query-driver
-├── .gitignore
-├── LICENSE                            Apache 2.0
 ├── README.md
 ├── DONE.md                            (this file)
+├── LICENSE                            Apache 2.0
+├── .clangd / .clang-tidy / .clang-format
+├── .gitignore
 │
-├── .deps/                             Cached third-party sources
-│   ├── spdlog-src/                    v1.14.1
-│   ├── nlohmann_json-src/             v3.11.3
-│   ├── efsw-src/                      1.7.2
-│   ├── sqlite3-src/                   3.46.1 amalgamation
+├── .deps/                             Cached third-party (gitignored)
+│   ├── spdlog-src/
+│   ├── nlohmann_json-src/
+│   ├── efsw-src/
+│   ├── sqlite3-src/
+│   ├── openssl-src/
+│   ├── openssl-linux-x86_64/          Statically built OpenSSL 3.3.2
+│   ├── openssl-linux-i686/
+│   ├── openssl-mingw64/
+│   ├── openssl-mingw32/
 │   └── boost-include/                 Isolated Boost headers
 │
 ├── cmake/toolchains/                  Cross-compile toolchains
@@ -190,56 +164,77 @@ axiomdlp-agent/
 │   └── agent.schema.json              JSON Schema
 │
 ├── data/                              Runtime SQLite DB (gitignored)
-│   └── agent.db
-│
 ├── logs/                              Runtime logs (gitignored)
-│   └── agent.log
 │
 ├── scripts/
 │   ├── build-all.sh                   Build all four targets
-│   ├── merge-compile-commands.sh      Merge 6 DBs for clangd
-│   ├── mock_server.py                 Local WebSocket test server
-│   ├── viz_server.py                  Local HTTP server for dashboard
+│   ├── build-openssl.sh               One-time OpenSSL build (4 targets)
+│   ├── merge-compile-commands.sh      Merge clangd DBs
+│   ├── mock_server.py                 WebSocket test server
+│   ├── viz_server.py                  Dashboard HTTP server
 │   └── viz.html                       Browser dashboard
 │
 └── src/
-    ├── main.cpp                       5-line entry point
-    │
-    ├── core/
+    ├── main.cpp                       Entry point
+
+    ├── foundation/                    Boot layer
     │   ├── application.{h,cpp}        Orchestration, arg parsing
     │   ├── config.{h,cpp}             JSON load + validation + env expansion
-    │   ├── event.{h,cpp}              Event struct + factory
-    │   ├── event_bus.{h,cpp}          Thread-safe pub/sub
-    │   ├── file_watcher.h             IFileWatcher interface
-    │   ├── health.h                   HealthStatus types
-    │   ├── logger.{h,cpp}             Async spdlog setup
-    │   ├── module_context.h           Shared module dependency container
-    │   ├── module_manager.{h,cpp}     Lifecycle orchestrator
-    │   ├── paths.h                    Platform path API
-    │   └── service.h                  IService interface
-    │
-    ├── interfaces/
-    │   └── i_module.h                 The 7-method module contract
-    │
-    ├── modules/
-    │   ├── module_base.{h,cpp}        Convenience base class
-    │   ├── event_logger/              Logs every bus event
-    │   ├── filesystem_watcher/        Real-time file event source
-    │   ├── inventory/                 Periodic metadata inventory
-    │   └── transport/                 WebSocket connection to server
-    │
-    ├── platform/
-    │   ├── common/efsw_file_watcher.cpp   IFileWatcher via efsw
-    │   ├── linux/                     systemd + POSIX paths
-    │   └── windows/                   SCM + Windows paths
-    │
-    └── storage/
-        ├── database.{h,cpp}           Raw SQLite wrapper
-        ├── migrations.{h,cpp}         Schema versioning (v1, v2)
-        └── file_store.{h,cpp}         Domain-specific files table
-```
+    │   └── logger.{h,cpp}             Async spdlog setup
 
-**Total: 13 directories, 48 files.**
+    ├── events/                        Event model
+    │   ├── event.{h,cpp}              Event struct + factory
+    │   └── event_bus.{h,cpp}          Thread-safe pub/sub
+
+    ├── modules/                       Module framework (no features)
+    │   ├── i_module.h                 The 7-method module contract
+    │   ├── module_base.h              Convenience base class
+    │   ├── module_context.h           Shared dependency container
+    │   ├── module_manager.{h,cpp}     Lifecycle orchestrator
+    │   └── health.h                   HealthStatus types
+
+    ├── platform/                      OS abstraction
+    │   ├── paths.h                    Path interface
+    │   ├── service.h                  Service interface
+    │   ├── file_watcher.h             File watcher interface
+    │   ├── common/
+    │   │   └── efsw_file_watcher.cpp  IFileWatcher via efsw
+    │   ├── linux/
+    │   │   ├── paths.cpp              systemd + POSIX paths
+    │   │   └── service.cpp            systemd service lifecycle
+    │   └── windows/
+    │       ├── paths.cpp              SCM + Windows paths
+    │       └── service.cpp            SCM service lifecycle
+
+    ├── net/                           Network clients
+    │   ├── http_client.{h,cpp}        Sync HTTP/HTTPS (Boost.Beast)
+    │   ├── websocket_client.{h,cpp}   Async WS/WSS (Boost.Beast)
+    │   ├── outbound_queue.{h,cpp}     Priority-ordered FIFO
+    │   └── message_router.{h,cpp}     Type-keyed dispatch
+
+    ├── util/                          Shared helpers
+    │   ├── glob_match.{h,cpp}         Pattern matching for exclude lists
+    │   └── file_hash.{h,cpp}          Streaming SHA-256 via OpenSSL EVP
+
+    ├── storage/                       Persistence
+    │   ├── sqlite_database.{h,cpp}    Raw SQLite wrapper
+    │   ├── migrations.{h,cpp}         Schema versioning (v2, v3, v4)
+    │   ├── file_repository.{h,cpp}    files table domain logic
+    │   └── state_repository.{h,cpp}   state table (key/value)
+
+    └── features/                      Actual modules
+        ├── filesystem_watcher/
+        │   └── filesystem_watcher_module.{h,cpp}
+        ├── inventory/
+        │   ├── inventory_module.{h,cpp}
+        │   └── inventory_scanner.{h,cpp}
+        ├── event_logger/
+        │   └── event_logger_module.{h,cpp}
+        ├── websocket_transport/
+        │   └── transport_module.{h,cpp}
+        └── agent_sync/
+            └── agent_sync_module.{h,cpp}
+```
 
 ---
 
@@ -253,9 +248,7 @@ sudo apt update
 sudo apt install -y \
     build-essential gcc-multilib g++-multilib \
     mingw-w64 ninja-build git file clangd \
-    libboost-dev \
-    libsystemd-dev libsystemd-dev:i386 \
-    libspdlog-dev nlohmann-json3-dev
+    libboost-dev libsystemd-dev libsystemd-dev:i386
 ```
 
 ### Build All Four Targets
@@ -265,7 +258,9 @@ cd ~/axiomdlp-agent
 ./scripts/build-all.sh
 ```
 
-First run: ~2 minutes. Subsequent runs: ~30 seconds (incremental).
+**First run:** downloads and compiles OpenSSL 3.3.2 for all four targets (~15–25 min). Subsequent runs: incremental (~30 seconds).
+
+The script auto-invokes `build-openssl.sh` if either Linux or Windows OpenSSL trees are missing.
 
 ### Presets
 
@@ -280,24 +275,38 @@ First run: ~2 minutes. Subsequent runs: ~30 seconds (incremental).
 
 | Library | Version | Purpose | Source |
 |---------|---------|---------|--------|
-| spdlog | 1.14.1 | Async logging | FetchContent + `.deps/` cache |
+| spdlog | 1.14.1 | Async logging | FetchContent + `.deps/` |
 | nlohmann/json | 3.11.3 | JSON parsing | System on Linux; FetchContent on Windows |
-| efsw | 1.7.2 | File watching | FetchContent + `.deps/` cache |
-| SQLite | 3.46.1 | Metadata storage | Amalgamation + `.deps/` cache |
-| Boost | 1.90 | WebSocket client | System headers, isolated include |
+| efsw | 1.7.2 | File watching | FetchContent + `.deps/` |
+| SQLite | 3.46.1 | Metadata storage | Amalgamation + `.deps/` |
+| Boost | 1.90 | HTTP + WebSocket | System headers, isolated include |
+| OpenSSL | 3.3.2 | TLS | Built from source for all 4 targets |
 | libsystemd | (system) | `sd_notify` | pkg-config (Linux only, optional) |
 
-### Build Isolation for Boost
+### OpenSSL build
 
-For cross-compilation, Boost is included through a symlink tree at `.deps/boost-include/boost/` that points at `/usr/include/boost`. This prevents host Linux headers from leaking into cross-compiled targets while keeping Boost available. The CMake code creates the isolated directory on first configure.
+`scripts/build-openssl.sh` downloads OpenSSL 3.3.2 once and compiles it four times:
+
+- `linux-x86_64` → `.deps/openssl-linux-x86_64/`
+- `linux-x86` with `-m32` → `.deps/openssl-linux-i686/`
+- `mingw64` → `.deps/openssl-mingw64/`
+- `mingw` with `i686-w64-mingw32-` prefix → `.deps/openssl-mingw32/`
+
+All static (`no-shared`), no docs, no apps. Each tree produces `libssl.a` and `libcrypto.a`.
+
+CMake creates `OpenSSL::SSL` and `OpenSSL::Crypto` imported targets manually (bypassing `find_package(OpenSSL)`, which has quirks on CMake 4.x for cross-compile and multilib builds).
+
+### Boost header isolation
+
+For cross-compilation, Boost is included through a symlink tree at `.deps/boost-include/boost/` pointing at `/usr/include/boost`. This prevents host Linux headers from leaking into cross-compiled targets.
 
 ---
 
-## 6. Core Framework
+## 6. Foundation Layer
 
-### `Application` — `src/core/application.{h,cpp}`
+### `Application` — `src/foundation/application.{h,cpp}`
 
-Owns the entire lifecycle. Responsibilities:
+Owns the entire lifecycle:
 
 1. Parse arguments (`--install`, `--uninstall`, `--foreground`, `--config`)
 2. Resolve config path with fallback chain
@@ -305,20 +314,19 @@ Owns the entire lifecycle. Responsibilities:
 4. Initialize logger
 5. Open SQLite database
 6. Apply migrations
-7. Create `FileStore` wrapper
+7. Create `FileStore` and `StateStore` wrappers
 8. Create `EventBus`
-9. Create `ModuleContext` (config + bus + store + database)
-10. Create `ModuleManager`
-11. Register modules
-12. Initialize all modules
-13. For install/uninstall: short-circuit before full init
-14. For normal run: create platform `IService`, wire manager, run
+9. Create `ModuleContext`
+10. Create `ModuleManager`, register 5 modules
+11. Initialize all modules
+12. For install/uninstall: short-circuit
+13. For normal run: create platform `IService`, wire manager, run
 
-**Shutdown sequence:** destroys all members in reverse dependency order **before** calling `Logger::shutdown()`. This ordering prevents the segfault that occurred when `Database::~Database()` tried to log through a dead spdlog singleton.
+**Shutdown sequence:** destroys all members in reverse dependency order **before** `Logger::shutdown()` to avoid the segfault that happened when `Database::~Database()` logged through a dead spdlog singleton.
 
-### `Config` — `src/core/config.{h,cpp}`
+### `Config` — `src/foundation/config.{h,cpp}`
 
-Fail-safe JSON loading with:
+Fail-safe JSON loading:
 
 - Nested structs mirroring the JSON structure
 - Every field with a safe default
@@ -329,21 +337,24 @@ Fail-safe JSON loading with:
 
 **Config path resolution:**
 
-1. Explicit `--config <path>` if provided
+1. `--config <path>` if provided
 2. `./config/agent.default.json` if it exists (dev workflow)
 3. Platform default (`/etc/axiomdlp/agent.json`, `C:\ProgramData\AxiomDLP\agent.json`)
 
-### `Logger` — `src/core/logger.{h,cpp}`
+### `Logger` — `src/foundation/logger.{h,cpp}`
 
 - spdlog async logger
 - 8192-slot queue, 1 background worker
 - Console sink (colored) + rotating file sink (5 MB × 3)
-- `overrun_oldest` policy: never blocks the caller
+- `overrun_oldest` policy — never blocks the caller
 - Format: `[timestamp] [level] [thread-id] message`
 - Flush on `warn` and above
-- Registered as the global default logger
 
-### `Event` — `src/core/event.{h,cpp}`
+---
+
+## 7. Events Layer
+
+### `Event` — `src/events/event.{h,cpp}`
 
 ```cpp
 struct Event {
@@ -358,43 +369,30 @@ struct Event {
 };
 ```
 
-ID generation is monotonic: nanoseconds since epoch + atomic counter. Two events created in the same nanosecond still get distinct IDs.
+ID generation is monotonic: nanoseconds since epoch + atomic counter.
 
 **Canonical event types:** `file_access`, `file_write`, `file_delete`, `usb_insert`, `usb_remove`, `clipboard_copy`, `print_job`, `process_spawn`, `scan_result`, `decision`.
 
-### `HealthStatus` — `src/core/health.h`
+### `EventBus` — `src/events/event_bus.{h,cpp}`
 
-```cpp
-enum class HealthLevel { Unknown, OK, Degraded, Failed };
+In-process synchronous publish/subscribe.
 
-struct HealthStatus {
-    HealthLevel level;
-    std::string message;
-    static HealthStatus ok(msg);
-    static HealthStatus degraded(msg);
-    static HealthStatus failed(msg);
-    static HealthStatus unknown(msg);
-};
-```
+**Threading:**
 
-Four levels, not two. `Degraded` covers "working but slow." `Unknown` covers "not yet checked."
+- All operations thread-safe (single `std::mutex`)
+- `publish` copies matching handlers under the lock, releases, then invokes
+- Handlers can safely call `subscribe`/`unsubscribe` during invocation
+- Each handler runs inside try/catch — one throwing subscriber doesn't stop others
 
-### `paths` — `src/core/paths.h` + platform implementations
+**Why synchronous:** simple, predictable, no queue. If a future milestone adds slow subscribers, the switch to async is contained inside `publish`.
 
-| Function | Linux | Windows |
-|----------|-------|---------|
-| `executable_path()` | `readlink("/proc/self/exe")` | `GetModuleFileNameA` |
-| `default_config_path()` | `/etc/axiomdlp/agent.json` | `%ProgramData%\AxiomDLP\agent.json` |
-| `default_log_dir()` | `/var/log/axiomdlp` | `%ProgramData%\AxiomDLP\logs` |
-| `default_data_dir()` | `/var/lib/axiomdlp` | `%ProgramData%\AxiomDLP` |
+**Why `shared_ptr<Event>`:** one event instance shared with all subscribers.
 
 ---
 
-## 7. Module System
+## 8. Module Framework
 
-### `IModule` — `src/interfaces/i_module.h`
-
-The contract every feature implements:
+### `IModule` — `src/modules/i_module.h`
 
 ```cpp
 class IModule {
@@ -413,9 +411,9 @@ public:
 
 **Why `void` on stop/shutdown:** best-effort. Errors logged internally, never propagated.
 
-### `ModuleBase` — `src/modules/module_base.{h,cpp}`
+### `ModuleBase` — `src/modules/module_base.h`
 
-Provides defaults:
+Header-only base class. Provides defaults:
 
 - `version()` returns `"1.0.0"`
 - `initialize()` stores `ctx_ = &context`, returns true
@@ -423,22 +421,21 @@ Provides defaults:
 - `health()` returns `HealthStatus::ok()`
 - Protected member `ModuleContext* ctx_`
 
-### `ModuleContext` — `src/core/module_context.h`
-
-Struct-of-references carrying shared dependencies:
+### `ModuleContext` — `src/modules/module_context.h`
 
 ```cpp
 struct ModuleContext {
     const Config& config;
     EventBus&     event_bus;
     FileStore&    file_store;
+    StateStore&   state_store;
     Database&     database;
 };
 ```
 
-Non-null by construction. Grows over time. Modules receive the whole context; they use only what they need.
+Non-null by construction. Grows over time.
 
-### `ModuleManager` — `src/core/module_manager.{h,cpp}`
+### `ModuleManager` — `src/modules/module_manager.{h,cpp}`
 
 Owns `std::vector<std::unique_ptr<IModule>>`.
 
@@ -451,201 +448,137 @@ Owns `std::vector<std::unique_ptr<IModule>>`.
 | `shutdown_all()` | **Reverse order** |
 | `health()` | Aggregates all modules |
 
-**Reverse order on stop/shutdown:** LIFO. The event logger stops first, filesystem watcher last, so the producer outlives the consumer.
+**Reverse order on stop/shutdown:** LIFO. Producer outlives consumer.
 
-**Fail-safe:** one module failing does not prevent others from running.
+**Known gap:** a module that fails `initialize()` still gets `start()` called on it. Fix pending — swap storage to a `{ module, initialized }` wrapper and guard each lifecycle call.
 
----
-
-## 8. Event Bus
-
-### `EventBus` — `src/core/event_bus.{h,cpp}`
-
-In-process synchronous publish/subscribe.
+### `HealthStatus` — `src/modules/health.h`
 
 ```cpp
-class EventBus {
-public:
-    using EventHandler = std::function<void(const EventPtr&)>;
-    SubscriptionId subscribe(const std::string& type, EventHandler);
-    SubscriptionId subscribe_all(EventHandler);
-    void unsubscribe(SubscriptionId);
-    void publish(EventPtr);
-    std::size_t subscriber_count() const;
+enum class HealthLevel { Unknown, OK, Degraded, Failed };
+
+struct HealthStatus {
+    HealthLevel level;
+    std::string message;
+    static HealthStatus ok(msg);
+    static HealthStatus degraded(msg);
+    static HealthStatus failed(msg);
+    static HealthStatus unknown(msg);
 };
 ```
 
-**Threading:**
-- All operations are thread-safe
-- A single `std::mutex` guards the subscriber list
-- `publish` copies matching handlers **under the lock**, then releases the lock, then invokes them
-- Handlers can safely call `subscribe`/`unsubscribe` during their own invocation
-- Each handler is called inside a try/catch — one throwing subscriber doesn't stop others
+---
 
-**Why synchronous:** simple, predictable, no queue to manage. The publisher thread does the work. If a future milestone adds slow subscribers, the switch to async is contained inside `publish`.
+## 9. Platform Layer
 
-**Why `shared_ptr<Event>`:** one event instance shared with all subscribers. No copies.
+### Interfaces
+
+| File | Purpose |
+|------|---------|
+| `platform/paths.h` | Executable path, config path, log dir, data dir |
+| `platform/service.h` | `IService` lifecycle, install/uninstall |
+| `platform/file_watcher.h` | `IFileWatcher` interface + `FileEvent` struct |
+
+### Linux implementations (`platform/linux/`)
+
+| File | Purpose |
+|------|---------|
+| `paths.cpp` | `readlink("/proc/self/exe")`, `/etc/axiomdlp/`, `/var/log/axiomdlp/`, `/var/lib/axiomdlp/` |
+| `service.cpp` | systemd service, `sd_notify`, signals, `systemctl` subprocess for install/uninstall |
+
+### Windows implementations (`platform/windows/`)
+
+| File | Purpose |
+|------|---------|
+| `paths.cpp` | `GetModuleFileNameA`, `SHGetKnownFolderPath`, `%ProgramData%\AxiomDLP\` |
+| `service.cpp` | SCM service, `ServiceMain`, control handler, `CreateService`/`DeleteService` |
+
+### Common implementations (`platform/common/`)
+
+| File | Purpose |
+|------|---------|
+| `efsw_file_watcher.cpp` | `IFileWatcher` backed by efsw. Only file that includes `<efsw/efsw.hpp>` |
 
 ---
 
-## 9. Filesystem Watcher Module
+## 10. Net Layer (HTTP and WebSocket)
 
-### Purpose
+### `HttpClient` — `src/net/http_client.{h,cpp}`
 
-Detect filesystem changes in **real time** and publish them as events.
+Synchronous HTTP/HTTPS client built on Boost.Beast.
 
-### Technology Stack
+- One-shot POST with JSON body and optional Bearer token
+- Supports `http://` and `https://`
+- TLS: SNI, certificate chain verification, hostname verification via OpenSSL's `X509_VERIFY_PARAM`
+- `verify_tls` parameter — default `true`; `false` for self-signed dev servers
+- Never throws; returns `{ status, body, error }`
 
-- `IFileWatcher` interface (`core/file_watcher.h`)
-- `EfswFileWatcher` implementation (`platform/common/efsw_file_watcher.cpp`)
-- efsw internally uses:
-  - **Linux:** inotify
-  - **Windows:** ReadDirectoryChangesW + I/O Completion Ports
+### `WebSocketClient` — `src/net/websocket_client.{h,cpp}`
 
-### Key Behaviors
+Asynchronous WebSocket client built on Boost.Beast + Boost.Asio.
 
-**1. Trailing-edge debouncing**
+- Runs on a dedicated `io_context` thread
+- Thread-safe `send(message, priority)` method
+- Callbacks for messages and state changes
+- Automatic reconnection with exponential backoff
+- Supports both `ws://` and `wss://`
+- TLS: SNI, certificate verification via `X509_VERIFY_PARAM`
+- `set_verify_tls(bool)` must be called before `start()`
+- Clean shutdown via `io_context::stop()`
+- Send/stop race fixed via `lifecycle_mutex`
 
-Kernel events for the same path within 300ms collapse into one published event.
+### `OutboundQueue` — `src/net/outbound_queue.{h,cpp}`
 
-**2. Priority-based merge**
+Bounded, priority-ordered FIFO.
 
-When two events for the same path land in the same window:
+Four priorities: `Critical`, `High`, `Normal`, `Low`. Bounded by both message count and total bytes. When full, drops oldest lowest-priority messages first. Wake on stop via `std::condition_variable`.
 
-| Event type | Priority |
-|-----------|----------|
-| `modified` | 4 |
-| `created` | 3 |
-| `moved` | 2 |
-| `deleted` | 1 |
+### `MessageRouter` — `src/net/message_router.{h,cpp}`
 
-A `deleted` event cannot clobber a `modified` event — the file's content is what we need to scan, and a deleted file can't be scanned.
-
-**3. Two-tier exclusion**
-
-- **Glob match:** `*/node_modules/*`, `*/.git/*`
-- **Directory prefix:** `/var/tmp` matches `/var/tmp/anything`
-
-**4. Self-exclusion**
-
-The agent's own log directory and data directory are **always** excluded. Without this, every log write triggers a filesystem event, which triggers another log write — an infinite loop.
-
-### Threading
-
-Three threads:
-
-| Thread | Purpose |
-|--------|---------|
-| Main | Service loop |
-| efsw | Kernel event → callback |
-| Flusher | 50ms loop draining pending events |
-
-The main thread is not blocked by events.
-
-### Async Watcher Setup
-
-The watcher setup runs on its own thread because efsw's recursive enumeration over large trees can take seconds. The service becomes responsive immediately; the watcher reports "initializing" until ready.
-
-### Files
-
-- `src/core/file_watcher.h` — interface + `FileEvent` struct
-- `src/platform/common/efsw_file_watcher.cpp` — the ONLY file that includes `<efsw/efsw.hpp>`
-- `src/modules/filesystem_watcher/filesystem_watcher_module.{h,cpp}` — the module
+Type-keyed dispatch for incoming JSON messages. Handlers registered by string type. Unknown types logged and ignored.
 
 ---
 
-## 10. Inventory Module
+## 11. Utility Layer
 
-### Purpose
+### `glob_match` — `src/util/glob_match.{h,cpp}`
 
-Maintain a complete, up-to-date metadata inventory of the filesystem.
+Glob pattern matching used for exclude lists:
 
-### Components
+- `*` matches zero or more characters
+- `?` matches exactly one character
+- `path_matches_pattern` additionally treats a pattern as a directory prefix
 
-- `InventoryModule` — schedules scans, owns the worker thread
-- `InventoryScanner` — does the tree walk and row insertion
+Extracted from duplicate copies in `filesystem_watcher_module.cpp` and `inventory_scanner.cpp`.
 
-### Key Behaviors
+### `file_hash` — `src/util/file_hash.{h,cpp}`
 
-**1. Recursive walk**
+Streaming SHA-256 built on OpenSSL's EVP API.
 
-Uses `std::filesystem::recursive_directory_iterator` with `skip_permission_denied`.
+- `compute_sha256(path)` — reads file in 1 MB chunks; memory use bounded regardless of file size
+- `sha256_hex(data, len)` — hash an in-memory buffer
+- Returns `{ hex_digest, bytes_read, error }`
 
-**2. Rich metadata capture**
-
-For each file:
-
-| Field | Source |
-|-------|--------|
-| `path`, `basename`, `dirname`, `extension` | Path decomposition |
-| `size` | `stat.st_size` |
-| `mtime_ns`, `ctime_ns`, `atime_ns` | `stat.st_*tim` |
-| `mode`, `uid`, `gid`, `nlink` | `stat` (POSIX only) |
-| `file_type` | `S_IS*` macros |
-| `category` | Extension lookup table |
-| `is_directory`, `is_symlink`, `is_hidden`, `is_executable` | Derived |
-
-**3. Batched inserts**
-
-Commits every 5,000 rows to bound WAL size and memory.
-
-**4. Graceful stop**
-
-Checks a stop flag every 256 files. Aborts within ~20ms.
-
-**5. Partial commit**
-
-A cancelled scan still persists its progress. Next scan resumes.
-
-**6. Upsert semantics**
-
-Keyed by `(dev, inode)` so re-running is idempotent. Currently `dev` is 0 and `inode` is a 64-bit hash of the path.
-
-**7. Category classification**
-
-Extension lookup table covering images, videos, audio, documents, archives, code, data, config, executables, and packages.
-
-### Performance
-
-~10,000–20,000 files per second on SSD.
-
-Real measurements:
-
-- Linux: 145,108 files in 13.9 seconds
-- Windows x86_64: 24,228 files in 9.4 seconds
-- Windows i686: 18,183 files in 8.7 seconds
-
-### Files
-
-- `src/modules/inventory/inventory_module.{h,cpp}`
-- `src/modules/inventory/inventory_scanner.{h,cpp}`
+`compute_sha256` opens with `fopen("rb")`, uses `EVP_DigestInit_ex`, `EVP_DigestUpdate`, `EVP_DigestFinal_ex`. Does not load the entire file into memory — a 100 MB file uses the same amount of memory as a 1 KB file.
 
 ---
 
-## 11. Storage Layer
+## 12. Storage Layer
 
 ### The Big Picture
 
-One SQLite file. Two tables.
+One SQLite file. Four tables.
 
 ```
-data/agent.db  (~80 MB on a typical machine)
-  ├── files      — one row per file
-  └── walks      — empty, reserved for scan history
+data/agent.db  (~80–200 MB depending on filesystem size)
+  ├── files      — one row per file (metadata + hash + scan state)
+  ├── state      — key/value for agent state (agent_id, etc.)
+  └── walks      — reserved for scan history (empty)
 ```
 
-Plus transient WAL and SHM files:
-
-```
-data/agent.db-wal     (write-ahead log, variable size)
-data/agent.db-shm     (shared memory, 32 KB)
-```
+Plus transient WAL and SHM files.
 
 ### Table: `files`
-
-One row per file on the machine.
-
-**Columns:**
 
 | Category | Columns |
 |----------|---------|
@@ -655,253 +588,238 @@ One row per file on the machine.
 | Permissions | `mode`, `uid`, `gid`, `nlink` |
 | Classification | `file_type`, `category` |
 | Flags | `is_directory`, `is_symlink`, `is_hidden`, `is_executable` |
-| Sensitivity (reserved) | `is_sensitive`, `sensitivity`, `scan_status` |
+| Scan result | `is_sensitive`, `sensitivity`, `scan_status` |
+| Scan metadata | `content_hash`, `last_scanned_at`, `scan_attempts`, `scan_error` |
 | Bookkeeping | `first_seen`, `last_seen`, `walk_id` |
 
-**Unique constraint:** `(dev, inode)` — upserts update existing rows rather than duplicating.
+**Unique constraint:** `(dev, inode)`.
 
-**Indexes:** `path`, `dirname`, `extension`, `category`, `mtime_ns DESC`, `size DESC`, `uid`, `walk_id`, `is_sensitive WHERE 1`.
+**Indexes:** `path`, `dirname`, `extension`, `category`, `mtime_ns DESC`, `size DESC`, `uid`, `walk_id`, `is_sensitive` (partial), `scan_status`, `content_hash`.
+
+### Table: `state`
+
+| Column | Purpose |
+|--------|---------|
+| `key` | Primary key |
+| `value` | String value |
+
+Used by `agent_sync` to persist `agent_id` across restarts. Future uses: last policy version, last successful heartbeat, etc.
 
 ### Table: `walks`
 
 Reserved for scan history. Currently empty.
 
-**Columns:** `id`, `started_at`, `finished_at`, `files_seen`, `files_new`, `files_changed`, `files_deleted`, `duration_ms`.
-
-The methods `FileStore::begin_walk()` and `finish_walk()` exist but aren't called yet. Adding two lines to the scanner would populate this table.
-
 ### Schema Versioning
 
-`PRAGMA user_version` tracks the schema version. Current: **2**.
+`PRAGMA user_version` tracks the schema version. Current: **4**.
 
-**v1:** Minimal files table.
-**v2:** Enriched files table (path parts, POSIX fields, category, flags).
+- **v1:** Minimal files table
+- **v2:** Enriched files table (path parts, POSIX fields, category, flags)
+- **v3:** Key/value `state` table
+- **v4:** Content-scanning metadata (`content_hash`, `last_scanned_at`, `scan_attempts`, `scan_error`) + indexes
 
-Migrations apply automatically at startup. Missing file → create. Any version → latest.
+Migrations apply automatically at startup.
 
-### The `Database` Wrapper
+### `Database` — `src/storage/sqlite_database.{h,cpp}`
 
-Thin SQLite wrapper:
+Thin SQLite wrapper. `open`, `close`, `exec`, `begin_transaction`, `commit`, `rollback`, `handle()`, `last_error()`.
 
-```cpp
-class Database {
-    bool open(const std::string& path);
-    void close();
-    bool exec(const std::string& sql);
-    bool begin_transaction();
-    bool commit();
-    bool rollback();
-    sqlite3* handle() const;
-};
-```
+**Pragmas on open:** `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5000`.
 
-**Pragmas on open:**
-- `journal_mode=WAL` — concurrent readers + one writer
-- `synchronous=NORMAL` — don't fsync every transaction
-- `foreign_keys=ON`
-- `busy_timeout=5000`
+**No logging in `close()`** — the destructor may run after the logger is torn down.
 
-**No logging in `close()`** — the destructor may run after the logger is torn down, so logging there is a landmine.
+### `FileStore` — `src/storage/file_repository.{h,cpp}`
 
-### The `FileStore` Wrapper
-
-Domain-specific wrapper on top of `Database`. Knows the schema.
+Domain-specific wrapper for the `files` table.
 
 | Method | Purpose |
 |--------|---------|
-| `initialize_schema()` | Verify tables exist |
-| `upsert_file(row, walk_id)` | Insert or update by (dev, inode) |
+| `initialize_schema()` | Verify table exists |
+| `upsert_file(row, walk_id)` | Insert or update by `(dev, inode)` |
+| `fetch_pending_for_scan(limit)` | Next batch of files with `scan_status = 'pending'` and non-empty hash |
+| `update_scan_result(hash, sensitive, sensitivity)` | Write back a scan verdict |
+| `record_scan_error(hash, error)` | Increment `scan_attempts`, store error |
 | `query(q)` | Flexible filtered query |
 | `stats()` | Aggregated totals |
 | `category_breakdown()` | Counts per category |
 | `top_directories(limit)` | Top dirs by file count |
-| `begin_walk()` / `finish_walk()` | Scan bookkeeping (unused) |
-| `mark_random_files_sensitive(n)` | Test helper (currently unused) |
-| `query_sensitive_after(id, limit)` | Test helper (currently unused) |
+| `begin_walk()` / `finish_walk()` | Scan bookkeeping (currently unused) |
 
-### Files
+**Important behavior:** `scan_status` is only reset to `'pending'` when `content_hash` actually changed. A file whose mtime was touched but whose content is the same stays `'scanned'`.
 
-- `src/storage/database.{h,cpp}`
-- `src/storage/migrations.{h,cpp}`
-- `src/storage/file_store.{h,cpp}`
+### `StateStore` — `src/storage/state_repository.{h,cpp}`
+
+Key/value store backed by the `state` table. `initialize_schema`, `set`, `get`, `remove`. Used by `agent_sync` for `agent_id`.
 
 ---
 
-## 12. Transport Module
+## 13. Feature Modules
 
-### Purpose
+### `filesystem_watcher` — `src/features/filesystem_watcher/`
 
-Maintain a persistent WebSocket connection to the AxiomDLP Core server.
+Real-time filesystem events. Uses `IFileWatcher` (efsw backend).
 
-### Current Scope
+- **Trailing-edge debouncing** — 300ms window collapses bursts
+- **Priority-based merge** — `modified (4) > created (3) > moved (2) > deleted (1)`; a `deleted` event cannot clobber a `modified` event for the same path
+- **Two-tier exclusion** — glob match + directory prefix
+- **Self-exclusion** — the agent's own log and data directories are automatically excluded (fixes log feedback loop)
+- **Async watcher setup** — efsw's recursive enumeration runs on a dedicated thread
+- **Three threads:** main service, efsw, flusher (50ms tick)
 
-**Connect only.** No heartbeats, no shipping, no cursor, no state.
+### `inventory` — `src/features/inventory/`
 
-The module was stripped down to a minimal version so we could verify the connection layer across platforms before building the data layer on top.
+Periodic full filesystem scan.
 
-### Components
+**`InventoryModule`** — schedules scans on an interval (default 900s), owns the worker thread.
 
-**`WebSocketClient`** — the actual client.
+**`InventoryScanner`** — walks the tree with `std::filesystem::recursive_directory_iterator`.
 
-- Built on Boost.Beast + Boost.Asio async I/O
-- Runs on a single dedicated `io_context` thread
-- Thread-safe `send(message, priority)` method
-- Callbacks for messages and state changes
-- Automatic reconnection with exponential backoff
-- Clean shutdown via `io_context::stop()`
+Behaviors:
 
-**`OutboundQueue`** — priority-ordered FIFO.
+- **Rich metadata capture** — path decomposition, size, mtime/ctime/atime in nanoseconds, POSIX permissions (Linux), file type, category
+- **SHA-256 hashing** — for files whose category is in `scannable_categories` and whose size is ≤ `max_file_size_bytes`
+- **Explicit status assignment** — files get `scan_status` of `'pending'` (eligible), `'not_applicable'` (wrong category), or `'skipped_too_large'` (size over limit)
+- **Batched inserts** — commit every 5,000 rows
+- **Graceful stop** — checks stop flag every 256 files; aborts within ~20ms
+- **Partial commit** — cancelled scans still persist progress
 
-Four priorities: `Critical`, `High`, `Normal`, `Low`. Dequeued in priority order, FIFO within each. Bounded by both message count and total bytes. When full, drops oldest lowest-priority messages first.
+Categories (from extension lookup table): `image`, `video`, `audio`, `document`, `archive`, `code`, `data`, `config`, `executable`, `package`, `other`.
 
-**`MessageRouter`** — string-keyed dispatch.
+### `event_logger` — `src/features/event_logger/`
 
-Incoming JSON messages have a `"type"` field. `MessageRouter` invokes the registered handler for that type. Unknown types are logged and ignored. Adding a new server message type is a registration call from wherever the handler lives, not a change to the transport.
+Subscribes to all events on the bus and logs them. Pure consumer. Its only purpose is observability.
 
-**`TransportModule`** — the `IModule` that wires it all together.
+### `websocket_transport` — `src/features/websocket_transport/`
 
-- `initialize()`: reads config
-- `start()`: creates WebSocketClient, starts it, stores router
-- `stop()`: stops WebSocketClient, resets router
-- `shutdown()`: logs
-- `health()`: reports connection state
+Owns the WebSocket connection to the core server. Delegates the actual I/O to `net/websocket_client` and message dispatch to `net/message_router`.
 
-### Configuration
+Currently disabled by default — no server to connect to.
+
+Supports both `ws://` and `wss://`, with `verify_tls` config.
+
+### `agent_sync` — `src/features/agent_sync/`
+
+The HTTP channel between the agent and the Core server. Handles two operations:
+
+1. **Enrollment** — `POST /api/v1/agent/register` (once at startup)
+   - Sends `hostname`, `os`, `agent_version`
+   - Receives `agent_id`, `user_id`, `organization_id`
+   - Persists `agent_id` in the state table
+
+2. **Heartbeat** — `POST /api/v1/agent/heartbeat` (every 30s)
+   - Sends `agent_id`, `agent_version`
+   - On 200: nothing to do (logs at DEBUG)
+   - On 401: token revoked → log error, stop
+   - On 403: agent revoked → log error, stop
+   - On 404: agent deleted server-side → clear local `agent_id`, re-enroll
+
+**Self-healing:** on restart, if `agent_id` exists in the state table, it goes straight to heartbeating.
+
+**Bearer token:** uses the `axdlp_user_...` token from config.
+
+**Threading:** one background thread running the sync loop with interruptible sleep.
+
+**Config:**
 
 ```json
-"transport": {
+"agent_sync": {
   "enabled": true,
-  "server_url": "ws://127.0.0.1:8765",
-  "reconnect_backoff_seconds": 5,
-  "reconnect_backoff_max_seconds": 60
+  "http_base_url": "http://127.0.0.1:3000",
+  "api_token": "axdlp_user_...",
+  "heartbeat_interval_seconds": 30,
+  "verify_tls": true
 }
 ```
 
-Four fields. Nothing about heartbeats or shipping.
+---
 
-### Verified Behavior
+## 14. TLS / OpenSSL Integration
 
-**Connection establishment** on Linux x86_64:
+### Why
 
-```
-[22:53:57.819] WebSocketClient: connecting to 127.0.0.1:8765
-[22:53:57.820] WebSocketClient: connected              ← 1ms
-```
+HTTP and WebSocket traffic to the server must not travel in plaintext — the `axdlp_user_...` token would be visible on the wire. TLS also prevents an attacker from impersonating the server.
 
-**Connection establishment** on Windows x86_64 over LAN:
+### How
 
-```
-[23:17:02.673] WebSocketClient: connecting to 192.168.100.38:8765
-[23:17:02.677] WebSocketClient: connected              ← 4ms
-```
+- OpenSSL 3.3.2 is built from source for all four targets (Linux x86_64/i686, Windows x86_64/i686) by `scripts/build-openssl.sh`
+- All trees are static (`no-shared`); the agent binary links `libssl.a` and `libcrypto.a` directly
+- `ldd` on the Linux binary shows no `libssl.so` dependency — it's baked in
 
-**Connection establishment** on Windows i686 over LAN:
+### Certificate verification
 
-```
-[23:17:21.223] WebSocketClient: connecting to 192.168.100.38:8765
-[23:17:21.236] WebSocketClient: connected              ← 13ms
-```
+Both `HttpClient` and `WebSocketClient` verify:
 
-**Server-side confirmation** (Kali mock server):
+1. **Chain** — the certificate must be signed by a CA in the system trust store
+2. **Hostname** — the certificate's CN or SAN must match the requested host
 
-```
-[+] client connected: ('192.168.100.92', 49944)
-[-] client disconnected: ('192.168.100.92', 49944)
-```
+Implemented via OpenSSL's `X509_VERIFY_PARAM_set1_host()`, which works on every OpenSSL version (Boost's `host_name_verification` helper doesn't exist in Boost 1.90).
 
-### Files
+### `verify_tls` config flag
 
-- `src/modules/transport/transport_module.{h,cpp}`
-- `src/modules/transport/websocket_client.{h,cpp}`
-- `src/modules/transport/outbound_queue.{h,cpp}`
-- `src/modules/transport/message_router.{h,cpp}`
+Every endpoint is verified by default. Set `verify_tls: false` only for a self-signed dev server; the code logs a `WARN` on every call when verification is off.
 
-### Files NOT Currently Used
+### SNI
 
-- `scripts/mock_server.py` — for testing, not shipped
+Both clients set the SNI hostname via `SSL_set_tlsext_host_name()` before the handshake — required by virtually every modern server (Apache, nginx, all cloud providers).
 
 ---
 
-## 13. Local Visualization
+## 15. Configuration System
 
-A standalone Python script and HTML page render the database as an interactive dashboard.
-
-### `scripts/viz_server.py`
-
-Standard-library HTTP server, no dependencies. Reads `data/agent.db` in read-only mode.
-
-| Endpoint | Returns |
-|----------|---------|
-| `GET /` | The HTML dashboard |
-| `GET /api/stats` | Totals |
-| `GET /api/categories` | File count and bytes per category |
-| `GET /api/extensions` | Top 25 extensions |
-| `GET /api/top-dirs` | Top-level directories |
-| `GET /api/files` | Paginated file list with filters |
-
-### `scripts/viz.html`
-
-Dark-themed dashboard using Chart.js.
-
-### Running
-
-```bash
-python3 scripts/viz_server.py
-```
-
-Then open `http://127.0.0.1:8080/`.
-
----
-
-## 14. Configuration System
-
-### Full Schema (Linux)
+### Linux config (`config/agent.default.json`)
 
 ```json
 {
-  "logging": {
-    "dir": "logs",
-    "file": "agent.log",
-    "level": "info"
-  },
-  "storage": {
-    "db_path": "data/agent.db"
-  },
+  "logging": { "dir": "logs", "file": "agent.log", "level": "info" },
+  "storage": { "db_path": "data/agent.db" },
   "modules": {
     "filesystem_watcher": {
       "enabled": true,
       "watch_paths": ["/home", "/tmp", "/var/tmp", "/media", "/mnt", "/opt", "/srv"],
       "exclude_paths": ["*/node_modules/*", "*/.git/*", "*/__pycache__/*", "*/.cache/*", "*/logs/*"],
-      "debounce_ms": 300,
-      "max_file_size_mb": 100
+      "debounce_ms": 300
     },
     "inventory": {
       "enabled": true,
       "watch_paths": ["/home", "/etc", "/opt", "/root", "/tmp", "/var/tmp"],
-      "exclude_paths": ["*/.git/*", "*/node_modules/*", "*/.cache/*", ...],
-      "interval_seconds": 900
+      "exclude_paths": ["*/.git/*", "*/node_modules/*", "*/.cache/*", "*/__pycache__/*",
+                        "*/build/*", "*/dist/*", "*/target/*", "*/.gradle/*", "*/.m2/*",
+                        "*/.npm/*", "*/.cargo/*", "/var/lib/docker/*", "/var/lib/containers/*",
+                        "/proc/*", "/sys/*", "/dev/*", "/snap/*", "/var/log/*"],
+      "interval_seconds": 900,
+      "compute_hashes": true,
+      "max_file_size_bytes": 104857600,
+      "scannable_categories": ["document", "code", "data", "config"]
     },
     "transport": {
-      "enabled": true,
+      "enabled": false,
       "server_url": "ws://127.0.0.1:8765",
       "reconnect_backoff_seconds": 5,
-      "reconnect_backoff_max_seconds": 60
+      "reconnect_backoff_max_seconds": 60,
+      "verify_tls": true
+    },
+    "agent_sync": {
+      "enabled": true,
+      "http_base_url": "http://127.0.0.1:3000",
+      "api_token": "",
+      "heartbeat_interval_seconds": 30,
+      "verify_tls": true
     }
   }
 }
 ```
 
-### Windows Differences
+### Windows differences (`config/agent.default_win.json`)
 
-- `filesystem_watcher.watch_paths`: `["%USERPROFILE%"]`
-- `inventory.watch_paths`: `["%USERPROFILE%", "%PUBLIC%", "%ProgramData%", "%ProgramFiles%", "%SystemRoot%"]`
-- More aggressive exclude patterns for Windows caches
+- `watch_paths`: `%USERPROFILE%`, `%PUBLIC%`, `%ProgramData%`, `%ProgramFiles%`, `%SystemRoot%`
+- More aggressive exclude patterns for Windows caches, WinSxS, System32, Installer, etc.
+- `http_base_url` and `server_url` point at the LAN server (`192.168.1.42`) instead of `127.0.0.1`
 
-### Environment Variable Expansion
+### Environment variable expansion
 
 String values support `%VAR%` (Windows) and `${VAR}` (POSIX). Undefined variables are left as literal text so misconfigurations are visible in the log.
 
-### Fail-Safe Behavior
+### Fail-safe behavior
 
 | Scenario | Behavior |
 |----------|----------|
@@ -915,426 +833,450 @@ String values support `%VAR%` (Windows) and `${VAR}` (POSIX). Undefined variable
 
 ---
 
-## 15. The Data Model
+## 16. The Data Model
 
-### What's in `files` After a Scan
+### What's in `files` after an inventory
 
-Every file on the machine. Rich metadata. All `is_sensitive = 0`.
+Every regular file under the watch paths, with metadata. Categories filter what's eligible for hashing.
 
 **Real query examples:**
 
 ```sql
 -- Total files
 SELECT COUNT(*) FROM files;
--- 145108
 
--- Total bytes of regular files
-SELECT SUM(size) FROM files WHERE is_directory = 0;
--- 45213909729  (~45 GB)
+-- Files that need scanning
+SELECT COUNT(*) FROM files WHERE scan_status = 'pending';
 
--- Category distribution
-SELECT category, COUNT(*) FROM files WHERE is_directory = 0 GROUP BY category;
--- code     | 75851
--- other    | 42996
--- image    |  7958
--- document |  4054
--- ...
+-- Files skipped due to size
+SELECT COUNT(*) FROM files WHERE scan_status = 'skipped_too_large';
 
--- Top extensions
-SELECT extension, COUNT(*) FROM files GROUP BY extension ORDER BY COUNT(*) DESC LIMIT 10;
--- go       | 29458
--- yaml     | 14052
--- py       | 12587
--- ...
+-- Files that will never be scanned (wrong category)
+SELECT COUNT(*) FROM files WHERE scan_status = 'not_applicable';
+
+-- Files that have been scanned (currently 0 — no scanner yet)
+SELECT COUNT(*) FROM files WHERE scan_status = 'scanned';
 ```
 
-### What's Not in `files` Yet
+### What's populated
 
-- Real `dev`/`inode` — currently hash of path
-- Real `is_sensitive` — always 0 until the server-side scanner exists
-- Real `walk_id` — always 1
+| Field | Source |
+|-------|--------|
+| All path/metadata fields | `stat()` during inventory walk |
+| `content_hash` | SHA-256 of file content (for eligible files) |
+| `scan_status` | `'pending'` (eligible), `'not_applicable'` (wrong category), `'skipped_too_large'` (over limit) |
+| `is_sensitive` | Always 0 until the content scanner runs |
+| `sensitivity` | Empty until scanner runs |
+| `scan_attempts` | 0 until scanner runs |
+| `last_scanned_at` | 0 until scanner runs |
 
-### Future Data Flow
+### Future data flow
 
 ```
-1. Inventory scan writes metadata to `files` (all is_sensitive=0)
+1. Inventory writes metadata + hash, scan_status = 'pending'
 
-2. Content extraction ships file contents to server (future)
+2. Content scanner (future):
+   - Query: SELECT * FROM files WHERE scan_status = 'pending' LIMIT 50
+   - Read each file, verify content_hash matches
+   - Batch POST to /api/v1/agent/scan/batch
+   - Server runs PII detection, returns per-file verdicts
+   - Agent updates: is_sensitive, sensitivity, scan_status = 'scanned'
 
-3. Server scans content, decides "this file is sensitive"
-
-4. Server sends back verdict to agent (future)
-
-5. Agent runs:
-   UPDATE files SET is_sensitive=1, sensitivity='credit_card', 
-                    scan_status='scanned' WHERE id=?
-
-6. Now the file is marked. Visualization shows it. 
-   Server can request it be shipped elsewhere.
+3. Enforcement (future): acts on is_sensitive = 1 files
 ```
 
-**The local agent never does the detection.** It just walks and reports. Detection happens on the server.
+The agent never does detection locally (for now). Detection happens on the server.
 
 ---
 
-## 16. The Complete Bug History
+## 17. The Complete Bug History
 
-Every bug below was found, diagnosed, and fixed during development. Understanding them explains why the code looks the way it does.
+Every bug found and fixed during development. Understanding them explains why the code looks the way it does.
 
 ### Bug 1 — Log Feedback Loop
 
 **Symptom:** Dozens of `[event] type=file_write path=.../logs/agent.log` per minute.
 
-**Cause:** The filesystem watcher watched `/home`, which contains `logs/`. Every log write triggered a new event, which the logger logged, which was a new write. Infinite loop at ~3 Hz.
+**Cause:** The watcher watched `/home`, which contains `logs/`. Every log write triggered a new event, which was logged, which was a new write.
 
-**Fix:** `build_excludes()` unconditionally adds the log directory to the exclusion list.
+**Fix:** `build_excludes()` unconditionally adds the log directory and data directory to the exclusion list.
 
 ### Bug 2 — Data Directory Feedback Loop
 
-**Symptom:** `[event] type=file_write path=.../data/agent.db` during every scan.
+Same pattern. SQLite writes to `data/` were generating events.
 
-**Cause:** Same pattern. SQLite writes to `data/` were generating events.
-
-**Fix:** Same — the data directory is now implicitly excluded.
+**Fix:** Same — the data directory is implicitly excluded.
 
 ### Bug 3 — Shutdown Segfault
 
-**Symptom:** `Segmentation fault` at the very end of shutdown.
+**Symptom:** Segmentation fault at the very end of shutdown.
 
-**Cause:** `Application::shutdown()` called `Logger::shutdown()` **before** the member `unique_ptr`s were destroyed. When `Database::~Database()` later ran, it logged through a dead spdlog singleton.
+**Cause:** `Application::shutdown()` called `Logger::shutdown()` before destroying the member `unique_ptr`s. When `Database::~Database()` later ran, it logged through a dead spdlog singleton.
 
-**Fix:** Reset all `unique_ptr` members in reverse dependency order **before** calling `Logger::shutdown()`. Also: no logging in `Database::close()`.
+**Fix:** Reset all `unique_ptr` members in reverse dependency order **before** `Logger::shutdown()`. No logging in `Database::close()`.
 
 ### Bug 4 — Dev/Inode Collision
 
 **Symptom:** 155,697 files walked, 1 row in the database.
 
-**Cause:** `FileRow::dev` and `FileRow::inode` were never populated. Every insert had `(0, 0)` as its unique key. The `ON CONFLICT` clause updated the same row 155,697 times.
+**Cause:** `dev` and `inode` were never populated. Every insert had `(0, 0)` as its unique key. The `ON CONFLICT` clause updated the same row 155,697 times.
 
-**Fix:** `inode` is populated with a 64-bit hash of the path.
+**Fix:** `inode` is a 64-bit hash of the path.
 
 ### Bug 5 — SQLite Cross-Compile Failure
 
-**Symptom:** `file in wrong format` when linking the i686 Linux target.
+**Symptom:** `file in wrong format` on i686 Linux.
 
-**Cause:** `find_package(SQLite3)` found the host's x86_64 system library and tried to link it into a 32-bit binary.
+**Cause:** `find_package(SQLite3)` found the host's x86_64 library.
 
-**Fix:** The system library is no longer used. Every target uses the amalgamation, which compiles for whatever architecture is being targeted.
+**Fix:** System library no longer used. Every target uses the amalgamation.
 
 ### Bug 6 — CMake `file(DOWNLOAD)` Silent Failure
 
-**Symptom:** 0-byte downloaded files. Hundreds of `unterminated #if` errors from the compiler.
+**Symptom:** 0-byte files. Hundreds of `unterminated #if` errors.
 
-**Cause:** CMake's built-in downloader silently produces empty files when the request fails.
+**Cause:** CMake's built-in downloader silently produces empty files on failure.
 
-**Fix:** The download uses `curl` via `execute_process`, which reports real exit codes. A size check catches truncation before extraction.
+**Fix:** Download via `curl` with `execute_process`, real exit codes, size check before extraction.
 
-### Bug 7 — Missing C Language in project()
+### Bug 7 — Missing C Language in `project()`
 
 **Symptom:** `CMAKE_C_COMPILE_OBJECT not set` on i686.
 
-**Cause:** `project()` declared `LANGUAGES CXX` only. When the SQLite amalgamation (a `.c` file) was added, CMake's partial auto-enablement didn't read the toolchain file.
+**Cause:** `project()` declared `LANGUAGES CXX` only. When the SQLite amalgamation (`.c`) was added, CMake's auto-enable didn't read the toolchain.
 
 **Fix:** `project(... LANGUAGES C CXX)`.
 
 ### Bug 8 — Walker Not Interruptible
 
-**Symptom:** Ctrl+C during a scan → 13 seconds of frozen terminal.
+**Symptom:** Ctrl+C during a scan froze the terminal for 13 seconds.
 
-**Cause:** The scanner looped through every file without checking a stop flag. `join()` blocked until the entire scan finished.
-
-**Fix:** The scanner checks a stop flag every 256 iterations. Abort latency is ~20ms.
+**Fix:** Scanner checks a stop flag every 256 iterations. Abort latency ~20ms.
 
 ### Bug 9 — INVOCATION_ID Misreporting
 
 **Symptom:** `starting (systemd service mode)` when run from a terminal.
 
-**Cause:** The mode detector checked `INVOCATION_ID` without verifying the process was actually managed by systemd.
-
-**Fix:** Detect via `INVOCATION_ID` and only call `sd_notify` when it's genuinely set.
+**Fix:** Detect via `INVOCATION_ID` and only call `sd_notify` when set.
 
 ### Bug 10 — Debounce Losing `modified` to `deleted`
 
 **Symptom:** Files created, modified, then deleted within one debounce window emitted only `file_delete`.
 
-**Cause:** The pending-event merge unconditionally overwrote the stored event.
-
-**Fix:** A priority table prevents lower-priority events from clobbering higher ones.
+**Fix:** Priority table prevents lower-priority events from clobbering higher ones.
 
 ### Bug 11 — Cursor Started at MAX(id)
 
-**Symptom:** Transport always shipped zero files. Logs showed `starting from file id 240131` climbing with each run.
+**Symptom:** Transport always shipped zero files.
 
-**Cause:** The shipper initialized its cursor to `MAX(id)` (240,131), which is higher than every sensitive row. Its query `WHERE id > 240131` matched nothing.
+**Cause:** Cursor initialized to `MAX(id)` which was higher than every sensitive row.
 
-**Fix:** Cursor starts at 0. Persisted in a state table so restarts resume correctly.
+**Fix:** Cursor starts at 0.
 
 ### Bug 12 — Heartbeat Timer Advanced Without Sending
 
 **Symptom:** No heartbeat within test runs.
 
-**Cause:** `next_send = now + interval` was outside the connected check. If the first tick fired before the WebSocket was up, the timer would advance by a full interval, delaying the first heartbeat.
+**Cause:** Timer advance was outside the connected check. If the first tick fired before WebSocket connected, timer advanced by a full interval.
 
-**Fix:** Move the timer advance inside the connected check. Fire immediately on connect.
+**Fix:** Timer advance moved inside the connected check.
 
 ### Bug 13 — Send/Stop Race on io_context
 
 **Symptom:** Potential crash on shutdown if a `send()` was in flight.
 
-**Cause:** `send()` checked `impl_->ioc` and then dereferenced it. `stop()` could destroy `ioc` in between.
-
 **Fix:** A mutex serializes `send()` and `stop()` on `WebSocketClient::Impl`.
 
 ### Bug 14 — Missing `<string_view>` Include
 
-**Symptom:** None yet — but fragile.
-
-**Cause:** `message_router.h` used `std::string_view` but relied on `<nlohmann/json.hpp>` to include it transitively.
-
-**Fix:** Added explicit `#include <string_view>`.
+**Fix:** Explicit `#include <string_view>` added to `message_router.h`.
 
 ### Bug 15 — Async Watcher Setup Blocked Startup
 
 **Symptom:** Service took 6 seconds to become responsive on large trees.
 
-**Cause:** efsw's recursive enumeration ran synchronously inside `start()`, blocking the module manager and the service loop.
+**Fix:** Watcher setup runs on a dedicated thread. Service responsive immediately.
 
-**Fix:** Watcher setup runs on a dedicated thread. Service becomes responsive immediately. Health reports "initializing" until ready.
+### Bug 16 — `std::ignore` vs `void` Return
 
-### Cosmetic — Mixed Path Separators on Windows
+**Symptom:** `No viable overloaded '='` when trying to silence a `[[nodiscard]]` warning on `expires_after()`.
 
-**Symptom:** Paths like `C:\Users\kali\Downloads\data\/agent.db-wal`.
+**Cause:** `expires_after()` returns `void` on this Boost version, so `std::ignore =` can't bind. And `(void)` cast doesn't satisfy clang-tidy's `bugprone-unused-return-value`.
 
-**Cause:** efsw returns a directory ending with `\`, and the code appends `/`. Windows accepts both, so nothing breaks.
+**Fix:** Plain call with `NOLINTNEXTLINE(bugprone-unused-return-value)` comment.
 
-**Status:** Not fixed. Cosmetic only. Would be a one-line change in `efsw_file_watcher.cpp`.
+### Bug 17 — `host_name_verification` Doesn't Exist in Boost 1.90
+
+**Symptom:** `No member named 'host_name_verification' in namespace 'boost::asio::ssl'`.
+
+**Fix:** Use OpenSSL's `X509_VERIFY_PARAM_set1_host()` directly.
+
+### Bug 18 — OpenSSL `lib/` vs `lib64/`
+
+**Symptom:** `OpenSSL for MinGW not found` even though the build succeeded.
+
+**Cause:** OpenSSL's Configure installs to `lib64/` for x86_64 and `lib/` for i686. CMake only checked `lib/`.
+
+**Fix:** Check both directories.
+
+### Bug 19 — CMake 4.x `find_package(OpenSSL)` Ignores Pre-Set Paths
+
+**Symptom:** `Could NOT find OpenSSL` despite `OPENSSL_CRYPTO_LIBRARY` being set.
+
+**Fix:** Skip `find_package` on Windows. Create `OpenSSL::SSL` and `OpenSSL::Crypto` as imported targets directly.
+
+### Bug 20 — i686 Linux Picked x86_64 OpenSSL
+
+**Symptom:** `file in wrong format` linking i686 agent.
+
+**Cause:** `find_package(OpenSSL)` defaults to `/usr/lib/x86_64-linux-gnu/` even on `-m32` builds.
+
+**Fix:** Explicitly set `OPENSSL_SSL_LIBRARY` and `OPENSSL_CRYPTO_LIBRARY` per pointer size.
+
+### Bug 21 — Duplicated `glob_match` in Two Modules
+
+**Symptom:** Same function copy-pasted into two feature modules.
+
+**Fix:** Extracted to `src/util/glob_match.{h,cpp}`. Both modules include it.
+
+### Bug 22 — `.cpp` Includes Pointed at Old Directories After Refactor
+
+**Symptom:** `No member named 'scannable_categories' in 'InventoryModuleConfig'` and similar.
+
+**Cause:** After tree reorganization, includes still referenced `modules/agent_sync/` instead of `features/agent_sync/`, etc.
+
+**Fix:** Rewrote all includes.
+
+### Bug 23 — AgentSync Initialized Failed But Still Started
+
+**Symptom:** `agent_sync module: api_token is empty` followed by `agent_sync module: started` and a stale `agent_id` heartbeating with an empty token.
+
+**Cause:** `ModuleManager` doesn't remember which modules failed `initialize()`.
+
+**Status:** Not fixed. Tracked in known limitations.
 
 ---
 
-## 17. Runtime Evidence
+## 18. Runtime Evidence
 
-### Linux x86_64 Startup
+### Linux x86_64 startup (current state)
 
 ```
 [info] AxiomDLP Agent v0.1.0
 [info] Config loaded from: config/agent.default.json
 [info] Database: opened 'data/agent.db'
-[info] Migrations: schema version 0 -> 2
-[info] Migrations: applying v2 (enriched files table)
-[info] Migrations: v2 applied
+[info] Migrations: schema version 4 -> 4
 [info] ModuleManager: registering module 'filesystem_watcher' v1.0.0
 [info] ModuleManager: registering module 'inventory' v1.0.0
 [info] ModuleManager: registering module 'event_logger' v1.0.0
 [info] ModuleManager: registering module 'transport' v1.0.0
-[info] filesystem_watcher module: excluding own log directory '/home/kali/axiomdlp-agent/logs'
-[info] filesystem_watcher module: excluding own data directory '/home/kali/axiomdlp-agent/data'
+[info] ModuleManager: registering module 'agent_sync' v1.0.0
 [info] filesystem_watcher module: initialized with 7 watch path(s), 9 exclude pattern(s), debounce 300 ms
 [info] inventory module: initialized (scan every 900 s)
-[info] transport module: initialized (server: ws://127.0.0.1:8765)
+[info] transport module: disabled in config
+[info] agent_sync module: initialized (server=http://127.0.0.1:3000, heartbeat_interval=30s, verify_tls=true)
 [info] axiomdlp-agent starting (foreground mode)
-[info] EfswFileWatcher: started, watching 7 path(s) (0 missing, 0 not a directory, 0 addWatch failures)
-[info] WebSocketClient: connected
-[info] InventoryScanner: finished (145108 files, 13945 ms)
+[info] EfswFileWatcher: started, watching 7 path(s)
+[info] agent_sync: loaded agent_id=1 from local state
+[info] InventoryScanner: starting scan over 6 root(s)
+[info] InventoryScanner: finished (145803 files, 32156 ms)
+[info] agent_sync: enrolled (agent_id=1, user_id=1, org_id=2)
+[debug] agent_sync: heartbeat ok (agent_id=1)
 ```
 
-### Linux i686 Startup
+### Cross-platform connection tests
 
-Same sequence, identical behavior. Full compatibility.
+| Platform | WS connect time |
+|---|---|
+| Linux x86_64 | 1 ms (localhost) |
+| Windows x86_64 | 4 ms (LAN) |
+| Windows i686 | 13 ms (LAN) |
 
-### Windows x86_64 Startup
-
-```
-[info] Config loaded from: config/agent.default.json
-[info] Database: opened 'data/agent.db'
-[info] Migrations: schema version 2 -> 2
-[info] filesystem_watcher module: initialized with 1 watch path(s), 9 exclude pattern(s), debounce 300 ms
-[info] transport module: initialized (server: ws://192.168.100.38:8765)
-[info] not launched by SCM; running in foreground
-[info] WebSocketClient: connecting to 192.168.100.38:8765
-[info] WebSocketClient: connected
-[info] transport module: state = connected
-[info] EfswFileWatcher: started, watching 1 path(s) (0 missing, 0 not a directory, 0 addWatch failures)
-[info] InventoryScanner: finished (24228 files, 8692 ms)
-```
-
-### Network Test — VM to Host
-
-Windows VM (192.168.100.92) → Kali host (192.168.100.38):
+### Clean shutdown
 
 ```
-Mock server: [+] client connected: ('192.168.100.92', 49944)
-Windows:     WebSocketClient: connected
-```
-
-Both sides agree. The connection is established.
-
-### Clean Shutdown
-
-```
-[info] axiomdlp-agent received stop request
-[info] ModuleManager: stopping 4 module(s)
+[info] received stop request
+[info] ModuleManager: stopping 5 module(s)
+[info] ModuleManager: stopping 'agent_sync' → stopped
 [info] ModuleManager: stopping 'transport'
-[info] WebSocketClient: I/O thread exiting
-[info] transport module: state = disconnected
-[info] transport module: stopped
 [info] ModuleManager: stopping 'event_logger'
-[info] event_logger: unsubscribed
 [info] ModuleManager: stopping 'inventory'
-[info] InventoryScanner: stop requested, aborting scan early
-[info] InventoryScanner: cancelled after 142280 files (14019 ms)
-[info] inventory module: stopped
-[info] ModuleManager: stopping 'filesystem_watcher'
-[info] EfswFileWatcher: stopped
-[info] filesystem_watcher module: stopped
+[info] InventoryScanner: cancelled after 47987 files (6276 ms)
+[info] ModuleManager: stopping 'filesystem_watcher' → stopped
+[info] ModuleManager: shutting down 5 module(s)
 [info] Service returned rc=0
 [info] Application shutting down
 ```
 
-No crash. No hang. No warning about destroyed objects. ~200ms total shutdown.
+---
+
+## 19. Known Limitations
+
+### 19.1 ModuleManager Doesn't Skip Failed Modules
+
+A module that returns `false` from `initialize()` still gets `start()` called on it. The fix is a `{ module, initialized }` wrapper. Tracked, not urgent.
+
+### 19.2 No Process or User Attribution
+
+Events carry a path but not the process that touched the file. `Event::user_id`, `process_name`, `pid` are declared but never populated. Requires fanotify (Linux) or Minifilter (Windows).
+
+### 19.3 inotify Queue Overflow
+
+On busy systems, inotify can overflow silently. The periodic inventory scan catches anything the watcher missed.
+
+### 19.4 No Network Filesystem Support
+
+inotify doesn't work on NFS or SMB mounts. The watcher succeeds at `inotify_add_watch()` but never fires.
+
+### 19.5 Windows Ctrl+C Not Handled
+
+In Windows foreground mode, Ctrl+C doesn't trigger clean shutdown. No `SetConsoleCtrlHandler` installed.
+
+### 19.6 Windows Path Case Sensitivity
+
+The glob matcher is case-sensitive. `C:\Windows\*` won't match `c:\windows\...`.
+
+### 19.7 Dev/Inode Are Placeholders
+
+`dev` is always 0. `inode` is a hash of the path, not a real inode. Renames look like delete + create.
+
+### 19.8 No Content Scanning Yet
+
+The agent hashes files but never sends them for inspection. `is_sensitive` is always 0.
+
+### 19.9 No Heartbeats Over WebSocket
+
+The `transport` module connects but doesn't send anything. Heartbeat uses HTTP via `agent_sync`.
+
+### 19.10 `walks` Table Unused
+
+The schema exists; the scanner doesn't populate it.
+
+### 19.11 Mixed Path Separators on Windows
+
+`C:\Users\kali\Downloads\data\/agent.db-wal` — cosmetic only. One-line fix in `efsw_file_watcher.cpp`.
+
+### 19.12 `agent_sync` Runs Even With Empty Token
+
+If `api_token` is empty, `initialize()` returns `false`, but `ModuleManager` starts the module anyway. It uses a stale `agent_id` from SQLite and heartbeats with an empty Bearer header.
+
+### 19.13 `transport` Logs Connection Refused Every 5s
+
+The default config has `transport.enabled: true` pointing at a nonexistent server. Until either a mock server runs or the module is disabled, the log fills with warnings.
+
+### 19.14 OpenSSL Build Requires ~20 Minutes
+
+`scripts/build-openssl.sh` compiles OpenSSL 3.3.2 from source for all four targets. One-time. Subsequent builds reuse the cached trees.
 
 ---
 
-## 18. Known Limitations
+## 20. What Does Not Exist Yet
 
-### 18.1 No Process or User Attribution
+| Feature | Notes |
+|---------|-------|
+| **Content scanner module** | Read pending files, POST batches to server, write verdicts. Infrastructure (hash, scan_status) is ready. |
+| **Server scan endpoint** | `POST /api/v1/agent/scan/batch` — not implemented on the Go side |
+| **Event upload to server** | Events currently only go to the log. Need `POST /api/v1/agent/events`. |
+| **Policy download** | Fetch policy bundle, cache in SQLite, apply to decisions |
+| **Policy engine** | Turn scan results into decisions |
+| **User-mode enforcement** | Block file operations based on policy |
+| **IPC + tray helper** | User-facing notifications |
+| **Kernel enforcement** | Windows Minifilter / Linux eBPF / fanotify |
+| **Auto-update** | Signed manifests, atomic swap |
+| **Code signing** | Authenticode / GPG |
+| **Packaging** | `.deb`, `.rpm`, MSI installers |
+| **WebSocket push from server** | Server→agent commands, policy updates |
 
-Events carry a path but not the process that touched the file. `Event::user_id`, `process_name`, and `pid` are declared but never populated. Kernel-level integration (fanotify or Minifilter) is required for this.
-
-### 18.2 inotify Queue Overflow
-
-On busy systems, the kernel's inotify queue can overflow, silently dropping events. The periodic inventory scan catches anything the watcher missed.
-
-### 18.3 No Network Filesystem Support
-
-inotify doesn't work on NFS or SMB mounts. The watcher will succeed at `inotify_add_watch()` but never receive events.
-
-### 18.4 Windows Ctrl+C Not Handled
-
-In Windows foreground mode, Ctrl+C doesn't trigger a clean shutdown. There's no `SetConsoleCtrlHandler` installed yet. The user closes the terminal or uses Task Manager.
-
-### 18.5 Schema Versioning Is Monolithic
-
-v2 drops and recreates everything. Future versions would need incremental migrations.
-
-### 18.6 Windows Path Case Sensitivity
-
-The glob matcher is case-sensitive. Patterns like `C:\Windows\*` won't match a path spelled `c:\windows\...`.
-
-### 18.7 Dev and Inode Are Placeholders
-
-`dev` is always 0. `inode` is a hash of the path, not a real inode. This means renames look like delete + create.
-
-### 18.8 No Content Scanning
-
-The agent doesn't read file contents. Nothing is ever marked `is_sensitive = 1` unless the mock generator runs.
-
-### 18.9 No Heartbeats or Shipping
-
-The transport connects but does nothing with the connection. No heartbeats, no data.
-
-### 18.10 `walks` Table Unused
-
-The schema exists but the scanner doesn't populate it. Reserved for future scan history.
-
-### 18.11 Mixed Path Separators on Windows
-
-`C:\Users\kali\Downloads\data\/agent.db-wal` — cosmetic only.
+The pipeline is built. The decision-making layer (content scanning, policy, enforcement) is next.
 
 ---
 
-## 19. What Does Not Exist Yet
-
-| Feature | Milestone | Notes |
-|---------|-----------|-------|
-| Heartbeats over WebSocket | — | Transport currently connects only |
-| Data shipping to server | — | Cursor + shipper were removed |
-| Content extraction | — | For PDFs, DOCX, images |
-| Local regex scanner | — | Deferred to server side |
-| Remote PII scanner | — | Deferred to server side |
-| Policy engine | — | Depends on scan results |
-| User-mode enforcement | — | Depends on policy |
-| IPC + tray helper | — | For user-facing notifications |
-| Kernel enforcement (minifilter / eBPF) | — | Deepest enforcement layer |
-| Auto-update | — | Signed manifests, atomic swap |
-| Code signing | — | Authenticode / GPG |
-| Packaging (.deb, .rpm, MSI) | — | Enterprise deployment |
-
-The pieces exist, the pipeline is proven. What's missing is the *decision-making* layer — everything from "understand what's in a file" upward.
-
----
-
-## 20. Lessons Learned
+## 21. Lessons Learned
 
 ### On Architecture
 
-**Module interfaces must be narrow.** The `IModule` interface has 7 methods. Every module implements them. The service loop never changes. This is why we could add `filesystem_watcher`, `inventory`, `event_logger`, and `transport` without touching the core.
+**Layered directories earn their keep.** `foundation/`, `events/`, `modules/`, `platform/`, `net/`, `storage/`, `features/` — each has a clear role. A new contributor can find anything in seconds.
 
-**The event bus decouples producers from consumers.** Filesystem watcher publishes `file_write` events. Event logger subscribes. Neither knows the other exists. Adding the scanner later won't touch either.
+**Framework and features must be separate.** `modules/` defines the framework; `features/` contains the modules. Mixing them makes both harder to reason about.
 
-**Fail-safe at every layer matters.** Bad config → defaults. Missing paths → logged, skip. Failed module → other modules continue. Malformed JSON → ignored. Every layer treats errors as informational, not fatal.
+**The module interface must stay narrow.** Seven methods. Every module implements them. The service loop never changes. This is why we could add `agent_sync` without touching the core.
+
+**The event bus decouples producers from consumers.** The watcher publishes. The logger subscribes. Neither knows the other exists.
+
+**Fail-safe at every layer matters.** Bad config → defaults. Missing paths → logged, skip. Malformed JSON → ignored. Errors are informational, not fatal.
 
 ### On Cross-Platform Engineering
 
-**Four targets from one host is achievable but requires discipline.** The Windows binaries are fully static. The i686 binaries cross-compile cleanly. None of this required running a Windows machine to develop.
+**Four targets from one host is achievable but requires discipline.** Windows binaries are fully static. i686 binaries cross-compile cleanly. No Windows machine required to develop.
 
-**Toolchain isolation is critical.** The `CMAKE_FIND_ROOT_PATH_MODE_*` variables prevent host libraries from leaking into cross-compiled targets. The Boost header isolation trick solves the same problem for header-only dependencies.
+**Toolchain isolation is critical.** `CMAKE_FIND_ROOT_PATH_MODE_*` prevents host libraries from leaking into cross-compiled targets. The Boost header symlink solves the same problem for headers.
 
-**WAL mode on SQLite saves you.** With concurrent readers (the transport) and writers (the scanner), the WAL mechanism keeps everything consistent without explicit locking.
+**Static dependencies prevent runtime surprises.** The Windows binaries have no external DLL requirements. The Linux binaries link only libc and libsystemd.
+
+**WAL mode on SQLite saves you.** Concurrent readers + one writer stays consistent without explicit locking.
+
+**Don't trust `find_package` for cross-compile.** CMake's `find_package(OpenSSL)` and `find_package(SQLite3)` both pick host libraries on multilib builds. Specify paths explicitly.
 
 ### On Concurrency
 
-**Race conditions are found by use, not by inspection.** The send/stop race was present in the code for hours and never manifested. It would have manifested eventually under load.
+**Race conditions are found by use, not by inspection.** The send/stop race existed for hours before surfacing.
 
-**A simple mutex is often enough.** The send/stop race is fixed by one mutex on one method pair. Complex lock-free structures weren't needed.
+**A simple mutex is often enough.** The race is fixed by one mutex on one method pair.
 
-**Bounds are essential.** The outbound queue is bounded by both count and bytes. Without bounds, a network partition would grow the queue until the process runs out of memory.
+**Bounds are essential.** The outbound queue is bounded by both count and bytes. Without bounds, a network partition grows the queue until OOM.
 
-### On Timing
+**Async setup must not block startup.** efsw's recursive enumeration runs on its own thread. Otherwise, a big tree freezes the agent for 6 seconds.
 
-**Tests must run long enough to observe the thing being tested.** Multiple test runs failed to observe heartbeats because they ran for 50 seconds with a 60-second interval. The fix wasn't code — it was running for 90+ seconds.
+### On TLS
 
-**Timer logic must be precise.** The heartbeat timer advanced even when no send happened. This is a subtle bug that only shows up when testing edge cases (like a WebSocket that takes 1ms to connect, or the first tick of a loop).
+**Static OpenSSL is the right choice for a fleet.** Runtime `.so` dependencies break on locked-down systems. Baking OpenSSL into the binary eliminates an entire class of deployment problem.
+
+**Certificate verification must be the default.** A product that logs a WARN every time verification is off will make the operator reconsider disabling it.
+
+**Cross-compiling OpenSSL is annoying but one-time.** The build script does it once; every subsequent build reuses the tree.
 
 ### On Debugging
 
-**Read the actual error.** The CMake `file(DOWNLOAD)` produced 0-byte files silently. The error only surfaced as "unterminated #if" from the compiler. The root cause was in a completely different layer.
+**Read the actual error.** CMake's `file(DOWNLOAD)` produced 0-byte files silently. The error surfaced as "unterminated #if" from the compiler.
 
-**Log at the right level.** `SPDLOG_DEBUG` is invisible by default. If a message matters during normal operation, log it at `INFO`. Heartbeat sent is a normal operation.
+**Log at the right level.** Heartbeat success at DEBUG (silent by default). Heartbeat failure at ERROR (always visible).
 
-**Run for long enough to see the periodic behavior.** Heartbeat, ship loop, and reconnect backoff all operate on multi-second timescales. Tests that run for 5 seconds won't observe them.
+**Run for long enough to see periodic behavior.** Heartbeat, ship loop, reconnect backoff — all multi-second. Tests must run 90+ seconds to observe them.
 
 ### On the Project
 
-**The foundation is genuinely valuable.** Cross-platform build, service lifecycle, logging, config, module system, event bus — these are the same infrastructure every serious background service needs. Building them well once pays dividends forever.
+**The foundation is genuinely valuable.** Cross-platform build, service lifecycle, logging, config, module system, event bus, TLS — the same infrastructure every serious background service needs.
 
-**The DLP logic is the easy part.** Regex patterns, policy rules, enforcement actions — these are straightforward once you have:
-- A way to see filesystem events (✓)
-- A way to walk the filesystem (✓)
-- A way to store metadata (✓)
-- A way to talk to a server (✓)
+**The DLP logic is the easy part.** Regex patterns, policy rules, enforcement actions — straightforward once you have:
+- Real-time filesystem events ✓
+- Full metadata inventory ✓
+- SHA-256 content hashes ✓
+- HTTP + TLS to the server ✓
+- WebSocket + TLS for push ✓
 
-The infrastructure took 80% of the effort. The scanner and policy engine will be fast to build.
+The infrastructure took 90% of the effort.
 
-**Ship small, verify often.** The current state was reached through incremental additions, each verified before the next was started. This is why nothing is broken now.
+**Ship small, verify often.** The current state was reached through incremental additions, each verified before the next. This is why nothing is broken.
 
 ---
 
 ## Summary
 
-The AxiomDLP Endpoint Agent is a **production-quality cross-platform service foundation** with:
+The AxiomDLP Endpoint Agent is a **cross-platform, TLS-capable, hashing-enabled service foundation** with:
 
 - **Four verified build targets** — Linux x86_64, Linux i686, Windows x86_64, Windows i686
-- **Three working data-producing modules** — filesystem watcher, inventory, event logger
-- **One working connection module** — transport (WebSocket to server)
-- **A rich SQLite database** — 145,000+ file rows with full metadata
-- **A local visualization dashboard** — charts, tables, search
-- **A complete bug-fix history** — 15 bugs found, diagnosed, and fixed
+- **Five working modules** — filesystem_watcher, inventory, event_logger, websocket_transport, agent_sync
+- **HTTP + HTTPS** — enrollment, heartbeat, certificate verification
+- **WebSocket + WSS** — persistent connection for future push (currently disabled)
+- **Static OpenSSL 3.3.2** — linked into every binary, no runtime `.so`
+- **SHA-256 file fingerprinting** — every eligible file hashed during inventory
+- **Scan metadata** — `content_hash`, `scan_status`, `last_scanned_at`, `scan_attempts`
+- **A clean layered source tree** — foundation, events, modules, platform, net, util, storage, features
+- **A complete bug-fix history** — 23 bugs found, diagnosed, fixed (or tracked)
 - **Full cross-platform parity** — same behavior on every platform
 
-**What it does today:** Watches the filesystem, maintains a complete inventory, and connects to a server.
+**What it does today:** Watches the filesystem in real time, maintains a complete inventory, hashes every eligible file, and talks to the server over HTTP and WebSocket with TLS.
 
-**What it will do:** Scan content, decide policy, enforce actions, and coordinate with a fleet.
+**What it will do:** Scan content, decide policy, enforce actions, coordinate with a fleet.
 
-The pipeline is built. The decision layer is not. That's the next milestone.
-
----
+The pipeline is built. The decision layer is the next milestone.
