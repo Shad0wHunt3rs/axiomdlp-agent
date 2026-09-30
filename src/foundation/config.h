@@ -1,6 +1,10 @@
 // src/foundation/config.h
 //
 // Centralized configuration loading for the AxiomDLP Agent.
+//
+// All server identity and connection information lives in a single
+// top-level `server` section. Modules that talk to the Core read from
+// there. TLS verification is ALWAYS enabled for https:// and wss://.
 
 #pragma once
 
@@ -25,6 +29,30 @@ struct LoggingConfig {
 // ----------------------------------------------------------------
 struct StorageConfig {
     std::string db_path = "data/agent.db";
+};
+
+// ----------------------------------------------------------------
+// Section: server
+//
+// Single source of truth for how the agent talks to the Core.
+// Both agent_sync (HTTP) and transport (WebSocket) use these values.
+// content_scanner also uses them for the scan/batch endpoint.
+// ----------------------------------------------------------------
+struct ServerConfig {
+    // Base URL of the Core, e.g. "http://127.0.0.1:3000" or
+    // "https://core.example.com". Used by every module that talks
+    // to the Core. Trailing slashes are stripped.
+    std::string base_url = "http://127.0.0.1:3000";
+
+    // Bearer token issued at registration: "axdlp_user_...".
+    std::string api_token;
+
+    // Heartbeat period used by agent_sync.
+    int heartbeat_interval_seconds = 30;
+
+    // WebSocket reconnect policy used by transport.
+    int reconnect_backoff_seconds     = 5;
+    int reconnect_backoff_max_seconds = 60;
 };
 
 // ----------------------------------------------------------------
@@ -56,68 +84,47 @@ struct InventoryModuleConfig {
 
 // ----------------------------------------------------------------
 // Section: modules.transport (WebSocket)
+//
+// Only two fields remain here: whether transport is on, and an
+// optional explicit URL override. URL, token, and reconnect policy
+// come from the top-level `server` section.
 // ----------------------------------------------------------------
 struct TransportModuleConfig {
-    bool        enabled    = false;
-    std::string server_url = "ws://127.0.0.1:8765";
-
-    int  reconnect_backoff_seconds     = 5;
-    int  reconnect_backoff_max_seconds = 60;
-    bool verify_tls                    = true;
+    bool        enabled = true;
+    // Empty = derive from server.base_url by swapping http->ws,
+    // https->wss, and appending /api/v1/agent/ws.
+    std::string server_url;
 };
 
 // ----------------------------------------------------------------
-// Section: modules.agent_sync
+// Section: modules.agent_sync (HTTP)
+//
+// Just a toggle. URL, token, and interval come from `server`.
 // ----------------------------------------------------------------
 struct AgentSyncModuleConfig {
-    bool        enabled = true;
-
-    std::string http_base_url = "http://127.0.0.1:3000";
-    std::string api_token;
-
-    int  heartbeat_interval_seconds = 30;
-    bool verify_tls = true;
+    bool enabled = true;
 };
 
 // ----------------------------------------------------------------
 // Section: modules.content_scanner
 //
-// Reads text files, splits them into overlapping chunks, sends the
-// chunks to the server, and writes the merged verdict back to the
-// files table.
-//
-// Only files whose extension is in `text_extensions` are scanned.
-// PDFs, DOCX, XLSX and other rich documents require an extraction
-// pipeline that is not implemented yet.
+// URL and token come from `server`. Everything here is scanner
+// behaviour.
 // ----------------------------------------------------------------
 struct ContentScannerModuleConfig {
     bool enabled = true;
 
-    // Maximum number of chunks per HTTP POST.
-    int batch_size = 50;
+    int         batch_size            = 50;
+    std::size_t batch_max_bytes       = 50 * 1024 * 1024;   // 50 MB
+    int         scan_interval_seconds = 30;
 
-    // Maximum total JSON payload size per POST.
-    std::size_t batch_max_bytes = 50 * 1024 * 1024;   // 50 MB
-
-    // Sleep between scan cycles when there is nothing to do.
-    int scan_interval_seconds = 30;
-
-    // Chunking parameters. Overlap must be large enough to cover any
-    // PII pattern that could straddle a chunk boundary. 256 bytes
-    // covers every common pattern (credit cards, SSNs, IBANs, keys).
     std::size_t chunk_size_bytes    = 1024 * 1024;   // 1 MB
     std::size_t chunk_overlap_bytes = 256;
 
-    // Largest file we will read and scan. Matches the inventory limit.
-    std::size_t max_file_bytes = 100 * 1024 * 1024;   // 100 MB
+    std::size_t max_file_bytes          = 100 * 1024 * 1024;   // 100 MB
+    int         max_retries             = 3;
+    int         request_timeout_seconds = 300;
 
-    // Stop retrying a file after this many failures.
-    int max_retries = 3;
-
-    // HTTP timeout for one POST.
-    int request_timeout_seconds = 300;
-
-    // Only files with these extensions are scanned by this module.
     std::vector<std::string> text_extensions = {
         "txt", "md", "log", "csv", "tsv",
         "json", "yaml", "yml", "toml", "xml",
@@ -147,6 +154,7 @@ struct ModulesConfig {
 struct Config {
     LoggingConfig logging;
     StorageConfig storage;
+    ServerConfig  server;
     ModulesConfig modules;
 
     std::vector<std::string> load_warnings;

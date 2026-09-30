@@ -2,77 +2,109 @@
   "logging": {
     "dir": "logs",
     "file": "agent.log",
-    "level": "info"
+    "level": "debug"
   },
 
   "storage": {
     "db_path": "data/agent.db"
   },
 
+  "server": {
+    "base_url": "http://127.0.0.1:3000",
+    "api_token": "axdlp_user_94AAvy822RED5OwXChOd4c6tiIRH6MkCVvF6UqkS",
+    "heartbeat_interval_seconds": 60,
+    "reconnect_backoff_seconds": 10,
+    "reconnect_backoff_max_seconds": 300
+  },
+
   "modules": {
     "filesystem_watcher": {
-      "enabled": true,
+      "enabled": false,
       "watch_paths": [
-        "/home/kali/Downloads"
+        "/home",
+        "/tmp",
+        "/var/tmp",
+        "/media",
+        "/mnt",
+        "/opt",
+        "/srv"
       ],
       "exclude_paths": [
         "*/node_modules/*",
         "*/.git/*",
         "*/__pycache__/*",
         "*/.cache/*",
-        "*/logs/*"
+        "*/logs/*",
+        "/var/tmp/systemd-private-*",
+        "/tmp/systemd-private-*"
       ],
       "debounce_ms": 300
     },
 
     "inventory": {
-      "enabled": true,
+      "enabled": false,
       "watch_paths": [
-        "/home/kali/Downloads"
+        "/home",
+        "/etc",
+        "/opt",
+        "/root",
+        "/tmp",
+        "/var/tmp"
       ],
       "exclude_paths": [
         "*/.git/*",
         "*/node_modules/*",
         "*/.cache/*",
-        "*/__pycache__/*"
+        "*/__pycache__/*",
+        "*/build/*",
+        "*/dist/*",
+        "*/target/*",
+        "*/.gradle/*",
+        "*/.m2/*",
+        "*/.npm/*",
+        "*/.cargo/*",
+        "/var/lib/docker/*",
+        "/var/lib/containers/*",
+        "/proc/*",
+        "/sys/*",
+        "/dev/*",
+        "/snap/*",
+        "/var/log/*"
       ],
-      "interval_seconds": 300,
+      "interval_seconds": 900,
       "compute_hashes": true,
       "max_file_size_bytes": 104857600,
       "scannable_categories": ["document", "code", "data", "config"]
     },
 
     "transport": {
-      "enabled": false,
-      "server_url": "ws://127.0.0.1:8765",
-      "reconnect_backoff_seconds": 5,
-      "reconnect_backoff_max_seconds": 60,
-      "verify_tls": true
+      "enabled": true,
+      "server_url": ""
     },
 
     "agent_sync": {
-      "enabled": true,
-      "http_base_url": "http://127.0.0.1:3000",
-      "api_token": "axdlp_user_E6lf51aixaiCqbgfjoj6u43vAZuyuxiX1YNBrqjX",
-      "heartbeat_interval_seconds": 30,
-      "verify_tls": true
+      "enabled": true
     },
 
     "content_scanner": {
-      "enabled": true,
-      "batch_size": 10,
+      "enabled": false,
+      "batch_size": 50,
       "batch_max_bytes": 52428800,
-      "scan_interval_seconds": 15,
+      "scan_interval_seconds": 30,
       "chunk_size_bytes": 1048576,
       "chunk_overlap_bytes": 256,
       "max_file_bytes": 104857600,
       "max_retries": 3,
       "request_timeout_seconds": 300,
       "text_extensions": [
-        "txt", "md", "log",
-        "csv", "tsv",
+        "txt", "md", "log", "csv", "tsv",
         "json", "yaml", "yml", "toml", "xml",
-        "env", "properties", "conf", "cfg", "ini"
+        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx",
+        "py", "js", "ts", "jsx", "tsx",
+        "go", "rs", "java", "kt", "scala", "cs", "swift",
+        "rb", "php", "pl", "lua", "sql", "sh", "bash", "zsh", "ps1",
+        "html", "css", "scss", "less",
+        "conf", "cfg", "ini", "env", "properties"
       ]
     }
   }

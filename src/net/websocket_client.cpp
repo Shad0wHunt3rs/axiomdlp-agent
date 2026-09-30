@@ -1,10 +1,20 @@
-// src/modules/transport/websocket_client.cpp
+// src/net/websocket_client.cpp
 //
-// Built on Boost.Beast + Boost.Asio, using the asynchronous API.
-// Supports ws:// (plain TCP) and wss:// (TLS via OpenSSL).
+// Builds on Boost.Beast + Boost.Asio, asynchronous API.
 //
-// All I/O runs on a dedicated io_context thread. On stop(),
-// io_context::stop() cancels every pending operation.
+// Liveness is handled by Beast's own keep-alive pings. There is NO
+// application-level read deadline.
+//
+// Reconnect uses exponential backoff with ±20% jitter.
+// Close codes are preserved and interpreted.
+//
+// On stop(), a graceful 1000 Normal close frame is written before the
+// socket is torn down, so the server sees a clean close instead of a
+// 1006 abnormal closure.
+//
+// Every call whose return type may be non-void in some Boost versions
+// is wrapped in an explicit `(void)` cast to silence clang-tidy's
+// bugprone-unused-return-value check.
 
 #include "net/websocket_client.h"
 
@@ -17,6 +27,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
+#include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/system/error_code.hpp>
@@ -32,7 +43,10 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
+#include <thread>
+#include <utility>
 
 namespace beast     = boost::beast;
 namespace websocket = beast::websocket;
@@ -44,11 +58,9 @@ using namespace std::chrono_literals;
 
 namespace axiom::core {
 
-// ----------------------------------------------------------------
-// URL parsing
-// ----------------------------------------------------------------
-
 namespace {
+
+// ---- URL parsing --------------------------------------------------
 
 bool parse_ws_url(const std::string& url,
                   std::string& scheme,
@@ -88,26 +100,55 @@ bool is_shutdown_error(const sys::error_code& ec) {
         || ec == net::error::operation_not_supported;
 }
 
+// Attach Authorization and User-Agent to the WebSocket handshake.
+template <typename WsStream>
+void attach_handshake_headers(WsStream& ws, const std::string& token) {
+    (void)ws.set_option(websocket::stream_base::decorator(
+        [token](websocket::request_type& req) {
+            req.set(beast::http::field::user_agent, "axiomdlp-agent/0.1");
+            if (!token.empty()) {
+                req.set(beast::http::field::authorization,
+                        "Bearer " + token);
+            }
+        }));
+}
+
+// Interpret a close code from the WebSocket peer.
+// Returns true if the client should attempt to reconnect.
+bool should_reconnect_on_close(websocket::close_code code) {
+    using cc = websocket::close_code;
+    switch (code) {
+        case cc::normal:           return true;
+        case cc::going_away:       return true;
+        case cc::protocol_error:   return false;
+        case cc::unknown_data:     return false;
+        case cc::bad_payload:      return false;
+        case cc::policy_error:     return false;  // auth revoked: STOP
+        case cc::too_big:          return true;
+        case cc::needs_extension:  return false;
+        case cc::internal_error:   return true;
+        case cc::service_restart:  return true;
+        case cc::try_again_later:  return true;
+        default:                   return true;
+    }
+}
+
 } // namespace
 
-// ----------------------------------------------------------------
-// Stream type aliases
-// ----------------------------------------------------------------
+// ---- Stream aliases ------------------------------------------------
 
 using WsPlain = websocket::stream<beast::tcp_stream>;
 using WsTls   = websocket::stream<beast::ssl_stream<beast::tcp_stream>>;
 
-// ----------------------------------------------------------------
-// Impl
-// ----------------------------------------------------------------
+// ---- Impl ----------------------------------------------------------
 
 struct WebSocketClient::Impl {
     std::string url;
+    std::string bearer_token;
     int initial_backoff_s = 5;
     int max_backoff_s     = 300;
     std::size_t queue_max_messages = 1000;
     std::size_t queue_max_bytes    = 10 * 1024 * 1024;
-    bool verify_tls = true;
 
     std::atomic<State> state{State::Disconnected};
     std::atomic<bool>  running{false};
@@ -123,16 +164,11 @@ struct WebSocketClient::Impl {
     StateCallback   on_state_change;
 
     std::unique_ptr<OutboundQueue> queue;
-
     std::thread io_thread;
 
     std::unique_ptr<net::io_context> ioc;
+    std::unique_ptr<ssl::context>    ssl_ctx;
 
-    // TLS context. Declared before the streams so reverse-order
-    // destruction destroys the streams first, then the context.
-    std::unique_ptr<ssl::context> ssl_ctx;
-
-    // Exactly one of these is non-null while connected.
     std::unique_ptr<WsPlain> ws_plain;
     std::unique_ptr<WsTls>   ws_tls;
 
@@ -142,13 +178,12 @@ struct WebSocketClient::Impl {
     beast::flat_buffer read_buffer;
     std::shared_ptr<std::string> current_write;
 
-    // Serializes send() and stop().
     std::mutex lifecycle_mutex;
+
+    std::mt19937 rng{std::random_device{}()};
 };
 
-// ----------------------------------------------------------------
-// Construction / destruction
-// ----------------------------------------------------------------
+// ---- Construction --------------------------------------------------
 
 WebSocketClient::WebSocketClient()
     : impl_(std::make_unique<Impl>()) {}
@@ -157,9 +192,11 @@ WebSocketClient::~WebSocketClient() {
     stop();
 }
 
-// ----------------------------------------------------------------
-// Configuration
-// ----------------------------------------------------------------
+// ---- Configuration -------------------------------------------------
+
+void WebSocketClient::set_bearer_token(std::string token) {
+    impl_->bearer_token = std::move(token);
+}
 
 void WebSocketClient::set_backoff(int initial_seconds, int max_seconds) {
     impl_->initial_backoff_s = initial_seconds;
@@ -171,10 +208,6 @@ void WebSocketClient::set_queue_limits(std::size_t max_messages,
                                        std::size_t max_bytes) {
     impl_->queue_max_messages = max_messages;
     impl_->queue_max_bytes    = max_bytes;
-}
-
-void WebSocketClient::set_verify_tls(bool verify) {
-    impl_->verify_tls = verify;
 }
 
 void WebSocketClient::set_on_message(MessageCallback cb) {
@@ -193,10 +226,6 @@ bool WebSocketClient::is_running() const {
     return impl_->running.load();
 }
 
-// ----------------------------------------------------------------
-// State change
-// ----------------------------------------------------------------
-
 void WebSocketClient::set_state(State s) {
     const State old = impl_->state.exchange(s);
     if (old != s && impl_->on_state_change) {
@@ -204,9 +233,7 @@ void WebSocketClient::set_state(State s) {
     }
 }
 
-// ----------------------------------------------------------------
-// Lifecycle
-// ----------------------------------------------------------------
+// ---- Lifecycle -----------------------------------------------------
 
 bool WebSocketClient::start(const std::string& url) {
     if (impl_->running.load()) {
@@ -231,7 +258,7 @@ bool WebSocketClient::start(const std::string& url) {
 
     impl_->io_thread = std::thread([this] {
         SPDLOG_INFO("WebSocketClient: I/O thread starting");
-        net::post(*impl_->ioc, [this] { start_connect(); });
+        (void)net::post(*impl_->ioc, [this] { start_connect(); });
         impl_->ioc->run();
         SPDLOG_INFO("WebSocketClient: I/O thread exiting");
         set_state(State::Disconnected);
@@ -243,21 +270,54 @@ bool WebSocketClient::start(const std::string& url) {
 void WebSocketClient::stop() {
     std::lock_guard<std::mutex> lock(impl_->lifecycle_mutex);
 
-    if (!impl_->running.exchange(false)) {
-        return;
+    if (!impl_->running.exchange(false)) return;
+
+    if (impl_->queue) impl_->queue->stop();
+
+    // If we were connected, send a proper 1000 Normal close frame
+    // before tearing down, so the server sees a clean close instead
+    // of a 1006 abnormal closure.
+    if (impl_->ioc && impl_->state.load() == State::Connected) {
+        (void)net::post(*impl_->ioc, [this] {
+            boost::system::error_code ec;
+
+            // Cancel any pending read/write so close() can proceed.
+            if (impl_->ws_plain) {
+                (void)beast::get_lowest_layer(*impl_->ws_plain)
+                    .socket().cancel(ec);
+            } else if (impl_->ws_tls) {
+                (void)beast::get_lowest_layer(*impl_->ws_tls)
+                    .socket().cancel(ec);
+            }
+            ec.clear();
+
+            // Tighten timeouts so the close handshake can't hang.
+            websocket::stream_base::timeout opt;
+            opt.handshake_timeout = 2s;
+            opt.idle_timeout      = 2s;
+            opt.keep_alive_pings  = false;
+
+            if (impl_->ws_plain) {
+                (void)impl_->ws_plain->set_option(opt);
+                impl_->ws_plain->close(websocket::close_code::normal, ec);
+            } else if (impl_->ws_tls) {
+                (void)impl_->ws_tls->set_option(opt);
+                impl_->ws_tls->close(websocket::close_code::normal, ec);
+            }
+
+            if (ec && ec != websocket::error::closed) {
+                SPDLOG_DEBUG("WebSocketClient: close handshake incomplete: {}",
+                             ec.message());
+            } else {
+                SPDLOG_INFO("WebSocketClient: sent graceful close (code=1000)");
+            }
+        });
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
 
-    if (impl_->queue) {
-        impl_->queue->stop();
-    }
-
-    if (impl_->ioc) {
-        impl_->ioc->stop();
-    }
-
-    if (impl_->io_thread.joinable()) {
-        impl_->io_thread.join();
-    }
+    if (impl_->ioc) impl_->ioc->stop();
+    if (impl_->io_thread.joinable()) impl_->io_thread.join();
 
     impl_->reconnect_timer.reset();
     impl_->resolver.reset();
@@ -265,6 +325,8 @@ void WebSocketClient::stop() {
     impl_->ws_tls.reset();
     impl_->ssl_ctx.reset();
     impl_->ioc.reset();
+    impl_->write_in_flight.store(false);
+    impl_->current_write.reset();
 
     set_state(State::Disconnected);
 }
@@ -279,31 +341,29 @@ bool WebSocketClient::send(std::string message, OutboundQueue::Priority priority
     const bool ok = impl_->queue->push(priority, std::move(message));
 
     if (ok) {
-        net::post(*impl_->ioc, [this] { start_write(); });
+        (void)net::post(*impl_->ioc, [this] { start_write(); });
     }
 
     return ok;
 }
 
-// ----------------------------------------------------------------
-// Close helpers
-// ----------------------------------------------------------------
-
 void WebSocketClient::close_streams() {
     boost::system::error_code ignored;
     if (impl_->ws_plain) {
-        beast::get_lowest_layer(*impl_->ws_plain).socket().close(ignored);
+        (void)beast::get_lowest_layer(*impl_->ws_plain)
+            .socket().close(ignored);
         impl_->ws_plain.reset();
     }
     if (impl_->ws_tls) {
-        beast::get_lowest_layer(*impl_->ws_tls).socket().close(ignored);
+        (void)beast::get_lowest_layer(*impl_->ws_tls)
+            .socket().close(ignored);
         impl_->ws_tls.reset();
     }
+    impl_->write_in_flight.store(false);
+    impl_->current_write.reset();
 }
 
-// ----------------------------------------------------------------
-// Async state machine — connect
-// ----------------------------------------------------------------
+// ---- Connect -------------------------------------------------------
 
 void WebSocketClient::start_connect() {
     if (!impl_->running.load()) return;
@@ -315,14 +375,14 @@ void WebSocketClient::start_connect() {
 
     impl_->resolver = std::make_unique<tcp::resolver>(*impl_->ioc);
 
-    impl_->resolver->async_resolve(
+    (void)impl_->resolver->async_resolve(
         impl_->host, impl_->port,
         [this](sys::error_code ec, tcp::resolver::results_type results) {
             if (is_shutdown_error(ec)) return;
             if (ec) { on_connect_error(ec); return; }
 
             if (impl_->is_tls) {
-                // ---------- TLS path ----------
+                // -------- TLS --------
                 impl_->ssl_ctx = std::make_unique<ssl::context>(
                     ssl::context::tls_client);
                 impl_->ssl_ctx->set_default_verify_paths();
@@ -330,8 +390,8 @@ void WebSocketClient::start_connect() {
                 impl_->ws_tls = std::make_unique<WsTls>(
                     *impl_->ioc, *impl_->ssl_ctx);
 
-                // SNI — required by virtually every modern server.
                 SSL* ssl_handle = impl_->ws_tls->next_layer().native_handle();
+
                 if (!SSL_set_tlsext_host_name(ssl_handle,
                                               impl_->host.c_str())) {
                     on_connect_error(make_error_code(
@@ -339,56 +399,50 @@ void WebSocketClient::start_connect() {
                     return;
                 }
 
-                // Hostname verification via OpenSSL's X509_VERIFY_PARAM.
-                if (impl_->verify_tls) {
-                    impl_->ws_tls->next_layer().set_verify_mode(ssl::verify_peer);
+                impl_->ws_tls->next_layer().set_verify_mode(ssl::verify_peer);
 
-                    X509_VERIFY_PARAM* param = SSL_get0_param(ssl_handle);
-                    X509_VERIFY_PARAM_set_hostflags(
-                        param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-
-                    if (X509_VERIFY_PARAM_set1_host(param,
-                                                    impl_->host.c_str(),
-                                                    impl_->host.size()) != 1) {
-                        on_connect_error(make_error_code(
-                            boost::system::errc::invalid_argument));
-                        return;
-                    }
-                } else {
-                    impl_->ws_tls->next_layer().set_verify_mode(ssl::verify_none);
-                    SPDLOG_WARN("WebSocketClient: TLS verification DISABLED for {}",
-                                impl_->host);
+                X509_VERIFY_PARAM* param = SSL_get0_param(ssl_handle);
+                X509_VERIFY_PARAM_set_hostflags(
+                    param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+                if (X509_VERIFY_PARAM_set1_host(param,
+                                                impl_->host.c_str(),
+                                                impl_->host.size()) != 1) {
+                    on_connect_error(make_error_code(
+                        boost::system::errc::invalid_argument));
+                    return;
                 }
 
-                // The return value of expires_after is either void or a
-                // cancel count depending on the Boost version. We don't
-                // use it — we just want the timer set.
-                // NOLINTNEXTLINE(bugprone-unused-return-value)
-                beast::get_lowest_layer(*impl_->ws_tls).expires_after(15s);
+                attach_handshake_headers(*impl_->ws_tls, impl_->bearer_token);
 
-                beast::get_lowest_layer(*impl_->ws_tls).async_connect(
+                (void)beast::get_lowest_layer(*impl_->ws_tls)
+                    .expires_after(15s);
+
+                (void)beast::get_lowest_layer(*impl_->ws_tls).async_connect(
                     results,
                     [this](sys::error_code ec, const tcp::endpoint&) {
                         if (is_shutdown_error(ec)) return;
                         if (ec) { on_connect_error(ec); return; }
 
-                        impl_->ws_tls->next_layer().async_handshake(
+                        (void)impl_->ws_tls->next_layer().async_handshake(
                             ssl::stream_base::client,
                             [this](sys::error_code ec) {
                                 if (is_shutdown_error(ec)) return;
                                 if (ec) { on_connect_error(ec); return; }
 
-                                beast::get_lowest_layer(*impl_->ws_tls)
+                                (void)beast::get_lowest_layer(*impl_->ws_tls)
                                     .expires_never();
 
-                                impl_->ws_tls->set_option(
+                                websocket::stream_base::timeout opt =
                                     websocket::stream_base::timeout::suggested(
-                                        beast::role_type::client));
+                                        beast::role_type::client);
+                                opt.idle_timeout     = 90s;
+                                opt.keep_alive_pings = true;
+                                (void)impl_->ws_tls->set_option(opt);
 
                                 const std::string host_header =
                                     impl_->host + ":" + impl_->port;
 
-                                impl_->ws_tls->async_handshake(
+                                (void)impl_->ws_tls->async_handshake(
                                     host_header, impl_->path,
                                     [this](sys::error_code ec) {
                                         if (is_shutdown_error(ec)) return;
@@ -404,29 +458,34 @@ void WebSocketClient::start_connect() {
                     });
 
             } else {
-                // ---------- Plain path ----------
+                // -------- Plain --------
                 impl_->ws_plain = std::make_unique<WsPlain>(*impl_->ioc);
 
-                // NOLINTNEXTLINE(bugprone-unused-return-value)
-                beast::get_lowest_layer(*impl_->ws_plain).expires_after(15s);
+                attach_handshake_headers(*impl_->ws_plain, impl_->bearer_token);
 
-                beast::get_lowest_layer(*impl_->ws_plain).async_connect(
+                (void)beast::get_lowest_layer(*impl_->ws_plain)
+                    .expires_after(15s);
+
+                (void)beast::get_lowest_layer(*impl_->ws_plain).async_connect(
                     results,
                     [this](sys::error_code ec, const tcp::endpoint&) {
                         if (is_shutdown_error(ec)) return;
                         if (ec) { on_connect_error(ec); return; }
 
-                        beast::get_lowest_layer(*impl_->ws_plain)
+                        (void)beast::get_lowest_layer(*impl_->ws_plain)
                             .expires_never();
 
-                        impl_->ws_plain->set_option(
+                        websocket::stream_base::timeout opt =
                             websocket::stream_base::timeout::suggested(
-                                beast::role_type::client));
+                                beast::role_type::client);
+                        opt.idle_timeout     = 90s;
+                        opt.keep_alive_pings = true;
+                        (void)impl_->ws_plain->set_option(opt);
 
                         const std::string host_header =
                             impl_->host + ":" + impl_->port;
 
-                        impl_->ws_plain->async_handshake(
+                        (void)impl_->ws_plain->async_handshake(
                             host_header, impl_->path,
                             [this](sys::error_code ec) {
                                 if (is_shutdown_error(ec)) return;
@@ -443,9 +502,7 @@ void WebSocketClient::start_connect() {
         });
 }
 
-// ----------------------------------------------------------------
-// Async read/write
-// ----------------------------------------------------------------
+// ---- Read/Write ----------------------------------------------------
 
 void WebSocketClient::start_read() {
     if (!impl_->running.load()) return;
@@ -454,17 +511,13 @@ void WebSocketClient::start_read() {
     impl_->read_buffer.consume(impl_->read_buffer.size());
 
     if (impl_->ws_tls) {
-        // NOLINTNEXTLINE(bugprone-unused-return-value)
-        beast::get_lowest_layer(*impl_->ws_tls).expires_after(60s);
-        impl_->ws_tls->async_read(
+        (void)impl_->ws_tls->async_read(
             impl_->read_buffer,
             [this](sys::error_code ec, std::size_t bytes) {
                 on_read_complete(ec, bytes);
             });
     } else if (impl_->ws_plain) {
-        // NOLINTNEXTLINE(bugprone-unused-return-value)
-        beast::get_lowest_layer(*impl_->ws_plain).expires_after(60s);
-        impl_->ws_plain->async_read(
+        (void)impl_->ws_plain->async_read(
             impl_->read_buffer,
             [this](sys::error_code ec, std::size_t bytes) {
                 on_read_complete(ec, bytes);
@@ -476,15 +529,8 @@ void WebSocketClient::on_read_complete(const sys::error_code& ec,
                                        std::size_t /*bytes*/) {
     if (is_shutdown_error(ec)) return;
 
-    if (ec == beast::error::timeout) {
-        if (impl_->running.load() && impl_->state.load() == State::Connected) {
-            start_read();
-        }
-        return;
-    }
-
     if (ec) {
-        on_disconnect(ec);
+        on_disconnect(ec, true);
         return;
     }
 
@@ -517,17 +563,13 @@ void WebSocketClient::start_write() {
     impl_->current_write = std::make_shared<std::string>(std::move(out));
 
     if (impl_->ws_tls) {
-        // NOLINTNEXTLINE(bugprone-unused-return-value)
-        beast::get_lowest_layer(*impl_->ws_tls).expires_after(30s);
-        impl_->ws_tls->async_write(
+        (void)impl_->ws_tls->async_write(
             net::buffer(*impl_->current_write),
             [this](sys::error_code ec, [[maybe_unused]] std::size_t bytes) {
                 on_write_complete(ec);
             });
     } else if (impl_->ws_plain) {
-        // NOLINTNEXTLINE(bugprone-unused-return-value)
-        beast::get_lowest_layer(*impl_->ws_plain).expires_after(30s);
-        impl_->ws_plain->async_write(
+        (void)impl_->ws_plain->async_write(
             net::buffer(*impl_->current_write),
             [this](sys::error_code ec, [[maybe_unused]] std::size_t bytes) {
                 on_write_complete(ec);
@@ -542,34 +584,88 @@ void WebSocketClient::on_write_complete(const sys::error_code& ec) {
     impl_->write_in_flight.store(false);
 
     if (is_shutdown_error(ec)) return;
-    if (ec) { on_disconnect(ec); return; }
+    if (ec) { on_disconnect(ec, true); return; }
 
     if (impl_->running.load() && impl_->state.load() == State::Connected) {
         start_write();
     }
 }
 
-// ----------------------------------------------------------------
-// Error handling
-// ----------------------------------------------------------------
+// ---- Error handling -----------------------------------------------
 
 void WebSocketClient::on_connect_error(sys::error_code ec) {
     if (is_shutdown_error(ec)) return;
 
-    SPDLOG_WARN("WebSocketClient: connect error: {}", ec.message());
-    close_streams();
-    schedule_reconnect();
-}
+    // Boost.Beast does not expose a portable `handshake_declined`
+    // error code across versions. The message is stable, so match on
+    // it and emit a more actionable warning when we see it.
+    const std::string msg = ec.message();
+    const bool is_declined =
+        msg.find("declined")   != std::string::npos ||
+        msg.find("handshake")  != std::string::npos;
 
-void WebSocketClient::on_disconnect(sys::error_code ec) {
-    if (is_shutdown_error(ec)) return;
-
-    if (ec != websocket::error::closed) {
-        SPDLOG_WARN("WebSocketClient: connection lost: {}", ec.message());
+    if (is_declined) {
+        SPDLOG_WARN("WebSocketClient: connect error: {} — "
+                    "the server rejected the WebSocket upgrade. "
+                    "This usually means the API token is invalid or revoked, "
+                    "or the WebSocket endpoint is disabled on the server.",
+                    msg);
+    } else {
+        SPDLOG_WARN("WebSocketClient: connect error: {}", msg);
     }
 
     close_streams();
     schedule_reconnect();
+}
+
+void WebSocketClient::on_disconnect(sys::error_code ec, bool allow_reconnect) {
+    if (is_shutdown_error(ec)) return;
+
+    websocket::close_code code = websocket::close_code::none;
+    std::string            reason;
+
+    // close_reason::code is std::uint16_t in some Boost versions and
+    // close_code in others. static_cast handles both safely.
+    if (impl_->ws_plain) {
+        auto cr = impl_->ws_plain->reason();
+        code   = static_cast<websocket::close_code>(cr.code);
+        reason = cr.reason.c_str();
+    } else if (impl_->ws_tls) {
+        auto cr = impl_->ws_tls->reason();
+        code   = static_cast<websocket::close_code>(cr.code);
+        reason = cr.reason.c_str();
+    }
+
+    if (ec == websocket::error::closed) {
+        SPDLOG_INFO("WebSocketClient: server closed connection "
+                    "(code={}, reason='{}')",
+                    static_cast<unsigned>(code), reason);
+    } else {
+        SPDLOG_WARN("WebSocketClient: connection lost: {}", ec.message());
+    }
+
+    close_streams();
+
+    if (!allow_reconnect || !should_reconnect_on_close(code)) {
+        SPDLOG_ERROR("WebSocketClient: close code {} is not retryable — "
+                     "stopping permanently "
+                     "(server likely revoked this agent's token)",
+                     static_cast<unsigned>(code));
+        impl_->running.store(false);
+        if (impl_->ioc) impl_->ioc->stop();
+        return;
+    }
+
+    schedule_reconnect();
+}
+
+// ---- Reconnect with jitter ----------------------------------------
+
+int WebSocketClient::next_backoff_with_jitter() {
+    const int base = impl_->current_backoff_s;
+    const int jit  = std::max(1, base / 5); // ±20%
+    std::uniform_int_distribution<int> dist(-jit, jit);
+    return std::max(1, base + dist(impl_->rng));
 }
 
 void WebSocketClient::schedule_reconnect() {
@@ -577,23 +673,20 @@ void WebSocketClient::schedule_reconnect() {
 
     set_state(State::Reconnecting);
 
-    const int delay_s = impl_->current_backoff_s;
-    SPDLOG_INFO("WebSocketClient: reconnecting in {}s", delay_s);
+    const int delay_s = next_backoff_with_jitter();
+    SPDLOG_INFO("WebSocketClient: reconnecting in {}s "
+                "(base={}s, max={}s)",
+                delay_s, impl_->current_backoff_s, impl_->max_backoff_s);
 
     if (!impl_->reconnect_timer) {
         impl_->reconnect_timer =
             std::make_unique<net::steady_timer>(*impl_->ioc);
     }
 
-    const std::size_t cancelled =
-        impl_->reconnect_timer->expires_after(std::chrono::seconds(delay_s));
+    (void)impl_->reconnect_timer
+        ->expires_after(std::chrono::seconds(delay_s));
 
-    if (cancelled > 0) {
-        SPDLOG_DEBUG("WebSocketClient: cancelled {} pending reconnect wait(s)",
-                     cancelled);
-    }
-
-    impl_->reconnect_timer->async_wait([this](sys::error_code ec) {
+    (void)impl_->reconnect_timer->async_wait([this](sys::error_code ec) {
         if (is_shutdown_error(ec)) return;
         if (!impl_->running.load()) return;
 

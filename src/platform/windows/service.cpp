@@ -15,12 +15,13 @@ namespace axiom::core {
 
 namespace {
 
-std::atomic<bool> g_stop{false};
+std::atomic<bool>     g_stop{false};
 SERVICE_STATUS_HANDLE g_status_handle = nullptr;
 SERVICE_STATUS        g_status{};
 std::string           g_name;
 
-ModuleManager* g_module_manager = nullptr;
+ModuleManager*      g_module_manager = nullptr;
+ShutdownController* g_shutdown       = nullptr;
 
 void report(DWORD state, DWORD exit_code = 0, DWORD wait_hint = 0) {
     g_status.dwCurrentState  = state;
@@ -36,7 +37,11 @@ DWORD WINAPI ctrl_handler(DWORD control, DWORD, LPVOID, LPVOID) {
     case SERVICE_CONTROL_STOP:
     case SERVICE_CONTROL_SHUTDOWN:
         report(SERVICE_STOP_PENDING, 0, 3000);
-        g_stop.store(true, std::memory_order_relaxed);
+        if (g_shutdown) {
+            g_shutdown->request(ShutdownReason::UserRequested);
+        } else {
+            g_stop.store(true, std::memory_order_relaxed);
+        }
         return NO_ERROR;
     case SERVICE_CONTROL_INTERROGATE:
         return NO_ERROR;
@@ -46,32 +51,32 @@ DWORD WINAPI ctrl_handler(DWORD control, DWORD, LPVOID, LPVOID) {
 }
 
 void WINAPI service_main(DWORD, LPSTR*) {
-    g_status_handle = RegisterServiceCtrlHandlerExA(g_name.c_str(), ctrl_handler, nullptr);
-    if (!g_status_handle) {
-        return;
-    }
+    g_status_handle = RegisterServiceCtrlHandlerExA(
+        g_name.c_str(), ctrl_handler, nullptr);
+    if (!g_status_handle) return;
 
     g_status.dwServiceType      = SERVICE_WIN32_OWN_PROCESS;
     g_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
 
     report(SERVICE_START_PENDING, 0, 3000);
 
-    // Start modules before reporting running.
     if (g_module_manager) {
         g_module_manager->start_all();
     }
 
     report(SERVICE_RUNNING);
-
     SPDLOG_INFO("{} running (Windows service mode)", g_name);
 
-    while (!g_stop.load(std::memory_order_relaxed)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    if (g_shutdown) {
+        g_shutdown->wait();
+    } else {
+        while (!g_stop.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
     }
 
     SPDLOG_INFO("{} stopping (Windows service mode)", g_name);
 
-    // Stop modules before reporting stopped.
     if (g_module_manager) {
         g_module_manager->stop_all();
         g_module_manager->shutdown_all();
@@ -82,16 +87,17 @@ void WINAPI service_main(DWORD, LPSTR*) {
 
 } // namespace
 
-// ----------------------------------------------------------------
-// The Windows service implementation.
-// ----------------------------------------------------------------
-
 class WindowsService final : public IService {
 public:
     explicit WindowsService(std::string name) : name_(std::move(name)) {}
 
     void set_module_manager(ModuleManager* mgr) override {
         g_module_manager = mgr;
+    }
+
+    void set_shutdown_controller(ShutdownController* sc) override {
+        shutdown_  = sc;
+        g_shutdown = sc;
     }
 
     int run() override {
@@ -115,8 +121,12 @@ public:
         return 0;
     }
 
-    void request_stop() override {
-        g_stop.store(true, std::memory_order_relaxed);
+    void request_stop(ShutdownReason reason) override {
+        if (shutdown_) {
+            shutdown_->request(reason);
+        } else {
+            g_stop.store(true, std::memory_order_relaxed);
+        }
     }
 
 private:
@@ -127,8 +137,12 @@ private:
 
         SPDLOG_INFO("{} running (Windows foreground mode)", name_);
 
-        while (!g_stop.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        if (shutdown_) {
+            shutdown_->wait();
+        } else {
+            while (!g_stop.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
         }
 
         if (g_module_manager) {
@@ -140,12 +154,9 @@ private:
         return 0;
     }
 
-    std::string name_;
+    std::string         name_;
+    ShutdownController* shutdown_ = nullptr;
 };
-
-// ----------------------------------------------------------------
-// Factory + platform metadata.
-// ----------------------------------------------------------------
 
 std::unique_ptr<IService> make_service(const std::string& service_name) {
     return std::make_unique<WindowsService>(service_name);
@@ -154,10 +165,6 @@ std::unique_ptr<IService> make_service(const std::string& service_name) {
 std::string default_service_name() {
     return "AxiomDLPAgent";
 }
-
-// ----------------------------------------------------------------
-// Install.
-// ----------------------------------------------------------------
 
 int install_service(const std::string& binary_path,
                     const std::string& service_name) {
@@ -179,7 +186,8 @@ int install_service(const std::string& binary_path,
         const DWORD err = GetLastError();
         if (err == ERROR_SERVICE_EXISTS) {
             SPDLOG_WARN("service {} already installed", service_name);
-            svc = OpenServiceA(scm, service_name.c_str(), SERVICE_START | SERVICE_QUERY_STATUS);
+            svc = OpenServiceA(scm, service_name.c_str(),
+                               SERVICE_START | SERVICE_QUERY_STATUS);
             if (!svc) {
                 CloseServiceHandle(scm);
                 return 1;
@@ -218,10 +226,6 @@ int install_service(const std::string& binary_path,
     return 0;
 }
 
-// ----------------------------------------------------------------
-// Uninstall.
-// ----------------------------------------------------------------
-
 int uninstall_service(const std::string& service_name) {
     SC_HANDLE scm = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (!scm) {
@@ -248,7 +252,6 @@ int uninstall_service(const std::string& service_name) {
     SERVICE_STATUS status{};
     if (ControlService(svc, SERVICE_CONTROL_STOP, &status)) {
         SPDLOG_INFO("stop requested for {}", service_name);
-
         for (int i = 0; i < 100; ++i) {
             if (!QueryServiceStatus(svc, &status)) break;
             if (status.dwCurrentState == SERVICE_STOPPED) {

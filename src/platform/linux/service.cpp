@@ -10,11 +10,10 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
-#include <cstdlib>   // getenv
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -30,21 +29,20 @@ namespace axiom::core {
 
 namespace {
 
-std::atomic<bool> g_stop{false};
+// Signal handlers may only touch async-signal-safe state. We keep a
+// simple atomic flag and let the main loop translate it into a
+// ShutdownController::request().
+std::atomic<bool> g_signal_received{false};
 
 extern "C" void on_signal(int /*sig*/) {
-    g_stop.store(true, std::memory_order_relaxed);
+    g_signal_received.store(true, std::memory_order_relaxed);
 }
 
-// ----------------------------------------------------------------
-// Helpers for install / uninstall.
-// ----------------------------------------------------------------
+// ----- install / uninstall helpers ---------------------------------
 
 bool is_safe_service_name(const std::string& name) {
     if (name.empty()) return false;
-    // Reject path traversal outright.
     if (name.find("..") != std::string::npos) return false;
-    // No leading or trailing dot.
     if (name.front() == '.' || name.back() == '.') return false;
     for (char c : name) {
         const bool ok =
@@ -57,9 +55,6 @@ bool is_safe_service_name(const std::string& name) {
     return true;
 }
 
-// Probe well-known systemctl locations first, then fall back to $PATH.
-// execvp searches $PATH, which is unreliable in minimal containers
-// and under systemd's hardened default environment.
 std::string find_systemctl() {
     const char* candidates[] = {
         "/usr/bin/systemctl",
@@ -71,10 +66,9 @@ std::string find_systemctl() {
             return p;
         }
     }
-    return "systemctl";   // rely on $PATH as a last resort
+    return "systemctl";
 }
 
-// Run a program with an argument vector - no shell involved.
 bool run_program(const std::string& program,
                  const std::vector<std::string>& args) {
     std::vector<char*> argv;
@@ -112,16 +106,16 @@ bool run_program(const std::string& program,
 
 } // namespace
 
-// ----------------------------------------------------------------
-// The Linux service implementation.
-// ----------------------------------------------------------------
-
 class LinuxService final : public IService {
 public:
     explicit LinuxService(std::string name) : name_(std::move(name)) {}
 
     void set_module_manager(ModuleManager* mgr) override {
         module_manager_ = mgr;
+    }
+
+    void set_shutdown_controller(ShutdownController* sc) override {
+        shutdown_ = sc;
     }
 
     int run() override {
@@ -134,9 +128,6 @@ public:
         ::sigaction(SIGINT,  &sa, nullptr);
         std::signal(SIGHUP, SIG_IGN);
 
-        // Detect how we were launched. INVOCATION_ID is set by systemd
-        // for every unit it manages, so it's a more reliable signal than
-        // NOTIFY_SOCKET (which is only set for Type=notify units).
         const bool under_systemd = (::getenv("INVOCATION_ID") != nullptr);
 
         SPDLOG_INFO("{} starting ({})",
@@ -144,14 +135,11 @@ public:
                     under_systemd ? "systemd service mode"
                                   : "foreground mode");
 
-        // 2. Start modules BEFORE signaling readiness.
+        // 2. Start modules.
         if (module_manager_) {
             module_manager_->start_all();
         }
 
-        // 3. Tell systemd we are ready, but only if systemd is actually
-        //    listening. Otherwise sd_notify is a no-op and the log line
-        //    would be misleading.
 #ifdef HAVE_SYSTEMD
         if (under_systemd) {
             sd_notify(0, "READY=1");
@@ -161,14 +149,23 @@ public:
         }
 #endif
 
-        // 4. Main loop.
-        while (!g_stop.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        // 3. Wait for shutdown. Either a signal or a module's
+        //    ShutdownController::request() will unblock this loop.
+        while (!shutdown_->is_requested()) {
+            if (g_signal_received.load(std::memory_order_relaxed)) {
+                shutdown_->request(ShutdownReason::UserRequested);
+                break;
+            }
+            // Wake up every 200ms to check the signal flag. The
+            // controller also wakes the loop immediately when a module
+            // requests shutdown.
+            (void)shutdown_->wait_for(std::chrono::milliseconds(200));
         }
 
-        SPDLOG_INFO("{} received stop request", name_);
+        SPDLOG_INFO("{} received stop request (reason={})",
+                    name_, to_string(shutdown_->reason()));
 
-        // 5. Stop modules BEFORE signaling stopping.
+        // 4. Stop modules in reverse order.
         if (module_manager_) {
             module_manager_->stop_all();
             module_manager_->shutdown_all();
@@ -183,18 +180,17 @@ public:
         return 0;
     }
 
-    void request_stop() override {
-        g_stop.store(true, std::memory_order_relaxed);
+    void request_stop(ShutdownReason reason) override {
+        if (shutdown_) {
+            shutdown_->request(reason);
+        }
     }
 
 private:
-    std::string name_;
-    ModuleManager* module_manager_ = nullptr;
+    std::string         name_;
+    ModuleManager*      module_manager_ = nullptr;
+    ShutdownController* shutdown_       = nullptr;
 };
-
-// ----------------------------------------------------------------
-// Factory + platform metadata.
-// ----------------------------------------------------------------
 
 std::unique_ptr<IService> make_service(const std::string& service_name) {
     return std::make_unique<LinuxService>(service_name);
@@ -203,10 +199,6 @@ std::unique_ptr<IService> make_service(const std::string& service_name) {
 std::string default_service_name() {
     return "axiomdlp-agent";
 }
-
-// ----------------------------------------------------------------
-// Install.
-// ----------------------------------------------------------------
 
 int install_service(const std::string& binary_path,
                     const std::string& service_name) {
@@ -261,10 +253,6 @@ int install_service(const std::string& binary_path,
 
     return 0;
 }
-
-// ----------------------------------------------------------------
-// Uninstall.
-// ----------------------------------------------------------------
 
 int uninstall_service(const std::string& service_name) {
     if (!is_safe_service_name(service_name)) {

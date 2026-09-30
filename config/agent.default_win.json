@@ -9,6 +9,14 @@
     "db_path": "data/agent.db"
   },
 
+  "server": {
+    "base_url": "http://192.168.1.42:3000",
+    "api_token": "",
+    "heartbeat_interval_seconds": 60,
+    "reconnect_backoff_seconds": 10,
+    "reconnect_backoff_max_seconds": 300
+  },
+
   "modules": {
     "filesystem_watcher": {
       "enabled": true,
@@ -64,19 +72,12 @@
     },
 
     "transport": {
-      "enabled": false,
-      "server_url": "ws://192.168.1.42:8765",
-      "reconnect_backoff_seconds": 5,
-      "reconnect_backoff_max_seconds": 60,
-      "verify_tls": true
+      "enabled": true,
+      "server_url": ""
     },
 
     "agent_sync": {
-      "enabled": true,
-      "http_base_url": "http://192.168.1.42:3000",
-      "api_token": "",
-      "heartbeat_interval_seconds": 30,
-      "verify_tls": true
+      "enabled": true
     },
 
     "content_scanner": {

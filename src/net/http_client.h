@@ -5,9 +5,8 @@
 //   - Synchronous (blocking) API, called from background threads.
 //   - Supports http:// and https://.
 //   - Sends JSON bodies with an optional Bearer token.
-//   - TLS uses OpenSSL via Boost.Asio's SSL stream.
-//   - Certificate verification is on by default. Set verify_tls=false
-//     only for development servers with self-signed certs.
+//   - TLS verification is ALWAYS enabled when the URL is https://.
+//     There is no opt-out: certificate chain and hostname must match.
 //   - Never throws. All errors are reported via the Response struct.
 
 #pragma once
@@ -43,12 +42,10 @@ public:
     // json_body    — raw JSON string
     // bearer_token — optional; sent as "Authorization: Bearer <token>"
     // timeout_secs — total time budget
-    // verify_tls   — verify server certificate on https:// (recommended)
     Response post_json(const std::string& url,
                        const std::string& json_body,
                        const std::string& bearer_token = "",
-                       int                timeout_secs = 10,
-                       bool               verify_tls   = true);
+                       int                timeout_secs = 10);
 
 private:
     struct Impl;

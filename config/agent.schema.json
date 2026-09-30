@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://axiomdlp.example.com/schemas/agent.schema.json",
   "title": "AxiomDLP Agent Configuration",
-  "description": "Configuration file for the AxiomDLP endpoint agent.",
+  "description": "Configuration file for the AxiomDLP endpoint agent. TLS is always verified for https:// and wss:// URLs.",
   "type": "object",
 
   "properties": {
@@ -26,6 +26,42 @@
       "description": "Local persistence configuration.",
       "properties": {
         "db_path": { "type": "string", "default": "data/agent.db" }
+      },
+      "additionalProperties": false
+    },
+
+    "server": {
+      "type": "object",
+      "description": "Identity and connection information for the Core server. Shared by agent_sync, transport, and content_scanner.",
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "default": "http://127.0.0.1:3000",
+          "description": "Base URL of the Core, e.g. http://127.0.0.1:3000 or https://core.example.com. TLS is always verified on https://."
+        },
+        "api_token": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token issued at registration: axdlp_user_... Required if any server-facing module is enabled."
+        },
+        "heartbeat_interval_seconds": {
+          "type": "integer",
+          "minimum": 5,
+          "default": 60,
+          "description": "Heartbeat period used by agent_sync. Enterprise norm: 30-60 s."
+        },
+        "reconnect_backoff_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "Initial reconnect delay used by transport (WebSocket). Enterprise norm: 5-10 s."
+        },
+        "reconnect_backoff_max_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 300,
+          "description": "Maximum reconnect delay used by transport (WebSocket). Enterprise norm: 300-600 s."
+        }
       },
       "additionalProperties": false
     },
@@ -105,29 +141,16 @@
 
         "transport": {
           "type": "object",
-          "description": "WebSocket push channel to the core server.",
+          "description": "WebSocket channel to the Core. URL, token, and reconnect policy come from the top-level 'server' section.",
           "properties": {
             "enabled": {
               "type": "boolean",
-              "default": false
+              "default": true
             },
             "server_url": {
               "type": "string",
-              "default": "ws://127.0.0.1:8765"
-            },
-            "reconnect_backoff_seconds": {
-              "type": "integer",
-              "minimum": 1,
-              "default": 5
-            },
-            "reconnect_backoff_max_seconds": {
-              "type": "integer",
-              "minimum": 1,
-              "default": 60
-            },
-            "verify_tls": {
-              "type": "boolean",
-              "default": true
+              "default": "",
+              "description": "Optional explicit ws:// or wss:// URL. If empty, derived from server.base_url + /api/v1/agent/ws."
             }
           },
           "additionalProperties": false
@@ -135,26 +158,9 @@
 
         "agent_sync": {
           "type": "object",
-          "description": "HTTP enrollment + heartbeat to the core server.",
+          "description": "HTTP enrollment + heartbeat. URL, token, and interval come from the top-level 'server' section.",
           "properties": {
             "enabled": {
-              "type": "boolean",
-              "default": true
-            },
-            "http_base_url": {
-              "type": "string",
-              "default": "http://127.0.0.1:3000"
-            },
-            "api_token": {
-              "type": "string",
-              "default": ""
-            },
-            "heartbeat_interval_seconds": {
-              "type": "integer",
-              "minimum": 5,
-              "default": 30
-            },
-            "verify_tls": {
               "type": "boolean",
               "default": true
             }
@@ -164,7 +170,7 @@
 
         "content_scanner": {
           "type": "object",
-          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection, and writes the merged verdict back to the local files table.",
+          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection, and writes the merged verdict back to the local files table. URL and token come from the top-level 'server' section.",
           "properties": {
             "enabled": {
               "type": "boolean",

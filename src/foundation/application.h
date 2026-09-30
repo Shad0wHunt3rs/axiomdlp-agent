@@ -1,8 +1,9 @@
-// src/core/application.h
+// src/foundation/application.h
 
 #pragma once
 
 #include "foundation/config.h"
+#include "foundation/shutdown.h"
 #include "events/event_bus.h"
 #include "modules/module_context.h"
 #include "modules/module_manager.h"
@@ -38,6 +39,10 @@ private:
 
     Options opts_;
     Config  config_;
+
+    // Created before any module so everyone can see and request a
+    // shutdown. Lifetime is the entire Application lifetime.
+    std::unique_ptr<ShutdownController> shutdown_controller_;
 
     std::unique_ptr<Database>   database_;
     std::unique_ptr<FileStore>  file_store_;

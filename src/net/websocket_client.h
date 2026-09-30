@@ -1,11 +1,13 @@
 // src/net/websocket_client.h
 //
-// WebSocketClient manages a persistent WebSocket connection to the
-// AxiomDLP Core server. Supports both ws:// (plain) and wss:// (TLS).
+// Persistent WebSocket client for AxiomDLP Core. Supports ws:// and wss://.
+// TLS is always verified on wss://.
 //
-// Built on Boost.Beast + Boost.Asio, using the asynchronous API. All
-// I/O runs on a dedicated io_context thread. stop() cancels every
-// pending operation and joins the thread.
+// Liveness is handled by Beast's own keep-alive pings. There is NO
+// application-level read deadline: a WebSocket can be idle for hours
+// and remain valid, so a per-read timer is incorrect.
+//
+// Reconnect uses exponential backoff with ±20% jitter.
 
 #pragma once
 
@@ -39,25 +41,17 @@ public:
     WebSocketClient(const WebSocketClient&) = delete;
     WebSocketClient& operator=(const WebSocketClient&) = delete;
 
-    // Start the I/O thread. Returns false only if the URL is malformed
-    // or the thread cannot be created. Connection failures are retried
-    // in the background.
-    bool start(const std::string& url);
+    // Bearer token sent on the handshake. Call before start().
+    void set_bearer_token(std::string token);
 
-    // Stop the I/O thread and close the connection. Blocks until the
-    // thread exits. Safe to call multiple times.
+    bool start(const std::string& url);
     void stop();
 
-    // Enqueue a message for delivery. Thread-safe.
     bool send(std::string message,
               OutboundQueue::Priority priority = OutboundQueue::Priority::Normal);
 
     void set_backoff(int initial_seconds, int max_seconds);
     void set_queue_limits(std::size_t max_messages, std::size_t max_bytes);
-
-    // Verify the TLS certificate on wss:// connections.
-    // Must be called before start().
-    void set_verify_tls(bool verify);
 
     void set_on_message(MessageCallback cb);
     void set_on_state_change(StateCallback cb);
@@ -68,7 +62,6 @@ public:
 private:
     void set_state(State s);
 
-    // Async state machine — all run on the io_context thread.
     void start_connect();
     void start_read();
     void start_write();
@@ -76,9 +69,10 @@ private:
     void on_read_complete(const boost::system::error_code& ec, std::size_t bytes);
     void on_write_complete(const boost::system::error_code& ec);
     void on_connect_error(boost::system::error_code ec);
-    void on_disconnect(boost::system::error_code ec);
+    void on_disconnect(boost::system::error_code ec, bool allow_reconnect);
     void schedule_reconnect();
     void close_streams();
+    int  next_backoff_with_jitter();
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

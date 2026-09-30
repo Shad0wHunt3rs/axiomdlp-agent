@@ -102,8 +102,7 @@ HttpClient::~HttpClient() = default;
 HttpClient::Response HttpClient::post_json(const std::string& url,
                                            const std::string& json_body,
                                            const std::string& bearer_token,
-                                           int                timeout_secs,
-                                           bool               verify_tls) {
+                                           int                timeout_secs) {
     Response resp;
 
     const ParsedUrl parsed = parse_url(url);
@@ -115,7 +114,6 @@ HttpClient::Response HttpClient::post_json(const std::string& url,
     try {
         net::io_context ioc;
 
-        // Build the request once. Same shape for HTTP and HTTPS.
         http::request<http::string_body> req{http::verb::post, parsed.target, 11};
 
         const bool default_port =
@@ -142,40 +140,31 @@ HttpClient::Response HttpClient::post_json(const std::string& url,
         const auto results = resolver.resolve(parsed.host, parsed.port);
 
         if (parsed.is_https()) {
-            // -------------------- HTTPS --------------------
+            // -------------------- HTTPS (TLS always verified) --------------------
             ssl::context ctx{ssl::context::tls_client};
             ctx.set_default_verify_paths();
 
             beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
 
-            // SNI — required by virtually every modern server.
+            // SNI.
             if (!SSL_set_tlsext_host_name(stream.native_handle(),
                                           parsed.host.c_str())) {
                 resp.error = "failed to set SNI hostname";
                 return resp;
             }
 
-            if (verify_tls) {
-                // Verify the certificate chain against the system trust store.
-                stream.set_verify_mode(ssl::verify_peer);
+            // Always verify chain.
+            stream.set_verify_mode(ssl::verify_peer);
 
-                // Verify the hostname matches the certificate's CN or SAN.
-                // Uses OpenSSL's X509_VERIFY_PARAM directly, which works on
-                // every OpenSSL version (Boost's host_name_verification
-                // helper does not exist in all Boost releases).
-                X509_VERIFY_PARAM* param = SSL_get0_param(stream.native_handle());
-                X509_VERIFY_PARAM_set_hostflags(
-                    param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-                if (X509_VERIFY_PARAM_set1_host(param,
-                                                parsed.host.c_str(),
-                                                parsed.host.size()) != 1) {
-                    resp.error = "failed to configure hostname verification";
-                    return resp;
-                }
-            } else {
-                stream.set_verify_mode(ssl::verify_none);
-                SPDLOG_WARN("HttpClient: TLS verification DISABLED for {}",
-                            parsed.host);
+            // Always verify hostname via X509_VERIFY_PARAM.
+            X509_VERIFY_PARAM* param = SSL_get0_param(stream.native_handle());
+            X509_VERIFY_PARAM_set_hostflags(
+                param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+            if (X509_VERIFY_PARAM_set1_host(param,
+                                            parsed.host.c_str(),
+                                            parsed.host.size()) != 1) {
+                resp.error = "failed to configure hostname verification";
+                return resp;
             }
 
             beast::get_lowest_layer(stream).expires_after(
@@ -192,10 +181,6 @@ HttpClient::Response HttpClient::post_json(const std::string& url,
 
             resp.status = res.result_int();
             resp.body   = std::move(res.body());
-
-            // No explicit TLS shutdown. The ssl_stream destructor closes
-            // the session cleanly, and the read above has already consumed
-            // the full response body.
 
         } else {
             // -------------------- HTTP --------------------

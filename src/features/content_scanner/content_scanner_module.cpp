@@ -25,7 +25,6 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Sleep in small ticks so stop_requested_ is honored promptly.
 void interruptible_sleep(std::atomic<bool>& stop_flag,
                          std::chrono::seconds total) {
     constexpr auto tick = 100ms;
@@ -56,7 +55,6 @@ struct ReadResult {
     bool ok() const { return error.empty(); }
 };
 
-// Read up to `max_bytes` from the file, in one shot.
 ReadResult read_file_bounded(const std::string& path, std::size_t max_bytes) {
     ReadResult r;
 
@@ -98,12 +96,6 @@ ReadResult read_file_bounded(const std::string& path, std::size_t max_bytes) {
     return r;
 }
 
-// Compute non-overlapping-start ranges for chunks that overlap by
-// `overlap` bytes. The final chunk may be shorter than chunk_size.
-//
-// Example: size=10, chunk_size=4, overlap=1
-//   Chunks: [0,4), [3,7), [6,10)
-//   Each consecutive pair overlaps by 1 byte.
 std::vector<std::pair<std::size_t, std::size_t>>
 compute_chunk_ranges(std::size_t size,
                      std::size_t chunk_size,
@@ -141,7 +133,7 @@ bool ContentScannerModule::initialize(ModuleContext& context) {
     ModuleBase::initialize(context);
 
     const auto& scan_cfg = ctx_->config.modules.content_scanner;
-    const auto& sync_cfg = ctx_->config.modules.agent_sync;
+    const auto& srv_cfg  = ctx_->config.server;
 
     enabled_             = scan_cfg.enabled;
     batch_size_          = scan_cfg.batch_size;
@@ -154,9 +146,8 @@ bool ContentScannerModule::initialize(ModuleContext& context) {
     request_timeout_sec_ = scan_cfg.request_timeout_seconds;
     text_extensions_     = scan_cfg.text_extensions;
 
-    http_base_url_ = sync_cfg.http_base_url;
-    api_token_     = sync_cfg.api_token;
-    verify_tls_    = sync_cfg.verify_tls;
+    http_base_url_ = srv_cfg.base_url;
+    api_token_     = srv_cfg.api_token;
 
     if (!enabled_) {
         SPDLOG_INFO("content_scanner module: disabled in config");
@@ -164,8 +155,8 @@ bool ContentScannerModule::initialize(ModuleContext& context) {
     }
 
     if (http_base_url_.empty() || api_token_.empty()) {
-        SPDLOG_ERROR("content_scanner module: agent_sync must be enabled "
-                     "with a valid http_base_url and api_token");
+        SPDLOG_ERROR("content_scanner module: server.base_url and "
+                     "server.api_token must be set");
         return false;
     }
 
@@ -233,7 +224,6 @@ HealthStatus ContentScannerModule::health() const {
 // ----------------------------------------------------------------
 
 void ContentScannerModule::sync_loop() {
-    // Short delay so inventory has time to populate some rows.
     interruptible_sleep(stop_requested_, std::chrono::seconds(5));
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
@@ -265,19 +255,16 @@ void ContentScannerModule::process_one_cycle() {
 
         prepare_file(row, chunks, progress);
 
-        // Send the current batch if it's already full.
         if (chunks.size() >= static_cast<std::size_t>(batch_size_)) {
             send_chunks_in_batches(chunks, progress);
             chunks.clear();
         }
     }
 
-    // Send whatever remains.
     if (!chunks.empty()) {
         send_chunks_in_batches(chunks, progress);
     }
 
-    // Write verdicts to the DB for files whose chunks all came back.
     commit_completed_files(progress);
 }
 
@@ -290,7 +277,6 @@ bool ContentScannerModule::prepare_file(
         std::vector<Chunk>& out_chunks,
         std::map<std::string, FileProgress>& progress) {
 
-    // Extension filter.
     if (!ext_in_list(row.extension, text_extensions_)) {
         ctx_->file_store.mark_not_applicable(row.path);
         ++total_skipped_;
@@ -315,11 +301,8 @@ bool ContentScannerModule::prepare_file(
         return false;
     }
 
-    // Hash the content we actually read.
     std::string new_hash = util::sha256_hex(read.data.data(), read.data.size());
 
-    // Dedup: if a prior verdict exists for this exact content, apply it
-    // and skip the HTTP call.
     if (auto cached = ctx_->file_store.find_scan_verdict_by_hash(new_hash)) {
         ctx_->file_store.update_scan_result_by_path(
             row.path, new_hash, cached->sensitive, cached->sensitivity);
@@ -333,7 +316,6 @@ bool ContentScannerModule::prepare_file(
     auto ranges = compute_chunk_ranges(read.data.size(), chunk_size_, chunk_overlap_);
 
     if (ranges.empty()) {
-        // Empty file: nothing to scan, but it's still "done".
         ctx_->file_store.update_scan_result_by_path(row.path, new_hash, false, "");
         ++total_scanned_;
         return false;
@@ -372,8 +354,6 @@ void ContentScannerModule::send_chunks_in_batches(
     while (i < chunks.size()) {
         if (stop_requested_.load(std::memory_order_relaxed)) return;
 
-        // Build one batch: take chunks from index i until either
-        // batch_size is reached or batch_max_bytes would be exceeded.
         json batch_chunks = json::array();
         std::size_t batch_bytes = 0;
         std::size_t j = i;
@@ -383,14 +363,12 @@ void ContentScannerModule::send_chunks_in_batches(
 
             const auto& c = chunks[j];
 
-            // Estimate JSON payload contribution of this chunk.
-            // Base64 length = 4 * ceil(len / 3) ≈ 1.37 * len.
             const std::size_t encoded_len = 4 * ((c.content.size() + 2) / 3);
-            const std::size_t estimate    = encoded_len + 512;   // metadata overhead
+            const std::size_t estimate    = encoded_len + 512;
 
             if (!batch_chunks.empty() &&
                 batch_bytes + estimate > batch_max_bytes_) {
-                break;   // this chunk goes in the next batch
+                break;
             }
 
             batch_chunks.push_back({
@@ -416,9 +394,8 @@ void ContentScannerModule::send_chunks_in_batches(
                     url, payload["chunks"].size(), batch_bytes / 1024);
 
         const auto resp = http_->post_json(url, payload.dump(), api_token_,
-                                           request_timeout_sec_, verify_tls_);
+                                           request_timeout_sec_);
 
-        // Clear the raw content of chunks that were just sent.
         for (std::size_t k = i; k < j; ++k) {
             std::fill(chunks[k].content.begin(), chunks[k].content.end(), 0);
             chunks[k].content.clear();
@@ -427,7 +404,7 @@ void ContentScannerModule::send_chunks_in_batches(
 
         if (!resp.error.empty()) {
             SPDLOG_WARN("content_scanner: transport error: {}", resp.error);
-            return;   // chunks stay pending; retried next cycle
+            return;
         }
 
         if (resp.status == 401 || resp.status == 403) {
@@ -474,7 +451,6 @@ void ContentScannerModule::merge_batch_response(
             if (it == progress.end()) continue;
 
             if (r.contains("error")) {
-                // Chunk failed; don't count it. The file will be retried.
                 continue;
             }
 
@@ -506,7 +482,7 @@ void ContentScannerModule::commit_completed_files(
     for (auto& [hash, fp] : progress) {
         if (fp.chunks_returned < fp.chunks_expected) {
             ++incomplete;
-            continue;   // retried next cycle
+            continue;
         }
 
         ctx_->file_store.update_scan_result_by_path(

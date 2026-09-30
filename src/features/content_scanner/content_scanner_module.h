@@ -11,9 +11,7 @@
 // returned successfully. If any chunk fails, the file stays 'pending'
 // and is retried from scratch next cycle.
 //
-// A file whose content hash matches a previously scanned file does
-// not trigger any HTTP call — the previous verdict is copied over.
-// This makes moves and copies of already-scanned files free.
+// TLS verification is ALWAYS enabled when the URL is https://.
 
 #pragma once
 
@@ -31,7 +29,7 @@
 namespace axiom::core {
 
 class  HttpClient;
-struct FileRow;   // defined in storage/file_repository.h
+struct FileRow;
 
 class ContentScannerModule final : public ModuleBase {
 public:
@@ -47,7 +45,6 @@ public:
     HealthStatus health() const override;
 
 private:
-    // One chunk of one file.
     struct Chunk {
         std::string       file_hash;
         std::string       path;
@@ -56,7 +53,6 @@ private:
         std::vector<char> content;
     };
 
-    // Per-file aggregation of chunk verdicts.
     struct FileProgress {
         std::string   path;
         std::uint32_t chunks_expected = 0;
@@ -68,28 +64,21 @@ private:
     void sync_loop();
     void process_one_cycle();
 
-    // Read a file, verify its hash, and either apply a cached verdict
-    // or produce a list of chunks to send.
     bool prepare_file(const FileRow& row,
                       std::vector<Chunk>& out_chunks,
                       std::map<std::string, FileProgress>& progress);
 
-    // Send chunks in batches respecting batch_size and batch_max_bytes.
     void send_chunks_in_batches(std::vector<Chunk>& chunks,
                                 std::map<std::string, FileProgress>& progress);
 
-    // Parse one batch response and merge into `progress`.
     void merge_batch_response(const std::string& response_body,
                               std::map<std::string, FileProgress>& progress);
 
-    // Update the DB for every file whose chunks all came back.
     void commit_completed_files(std::map<std::string, FileProgress>& progress);
 
-    // Config.
     bool        enabled_             = true;
     std::string http_base_url_;
     std::string api_token_;
-    bool        verify_tls_          = true;
 
     int         batch_size_          = 50;
     std::size_t batch_max_bytes_     = 50 * 1024 * 1024;
@@ -102,7 +91,6 @@ private:
 
     std::vector<std::string> text_extensions_;
 
-    // Runtime.
     std::unique_ptr<HttpClient> http_;
     std::thread                 sync_thread_;
     std::atomic<bool>           stop_requested_{false};
