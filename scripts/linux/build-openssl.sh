@@ -13,7 +13,7 @@
 set -euo pipefail
 
 OPENSSL_VERSION="3.3.2"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS="$ROOT/.deps"
 SRC="$DEPS/openssl-src"
 TARBALL="$DEPS/openssl.tar.gz"

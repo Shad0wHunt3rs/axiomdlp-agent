@@ -29,7 +29,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $projectRoot
 
 Write-Host "=== AxiomDLP Agent — Windows MSVC build ===" -ForegroundColor Cyan
@@ -42,7 +42,7 @@ if (-not $env:VCPKG_ROOT) {
 VCPKG_ROOT is not set.
 
 Run the one-time setup first:
-    .\scripts\setup-windows-msvc.ps1
+    .\scripts\win\setup-windows-msvc.ps1
 
 Then re-open your shell.
 "@

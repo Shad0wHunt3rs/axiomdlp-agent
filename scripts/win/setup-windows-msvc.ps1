@@ -81,4 +81,4 @@ Write-Host "`n[3/3] Setting VCPKG_ROOT=$vcpkgRoot for current user..." -Foregrou
 $env:VCPKG_ROOT = $vcpkgRoot
 
 Write-Host "`n=== Setup complete ===" -ForegroundColor Cyan
-Write-Host "Re-open your shell, then run: .\scripts\build-windows-msvc.ps1" -ForegroundColor Cyan
+Write-Host "Re-open your shell, then run: .\scripts\win\build-windows-msvc.ps1" -ForegroundColor Cyan

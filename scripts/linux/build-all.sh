@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# scripts/build-all.sh — Linux-only build entrypoint.
+# scripts/linux/build-all.sh — Linux-only build entrypoint.
 #
 # Windows builds are done natively on Windows via
-#   scripts/build-windows-msvc.ps1   (MSVC + vcpkg)
+#   scripts/win/build-windows-msvc.ps1   (MSVC + vcpkg)
 # See docs/windows-msvc-build.md.
 #
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS_DIR="${ROOT}/.deps"
 
 if [ ! -d "${DEPS_DIR}/nlohmann_json-src" ]; then
@@ -33,7 +33,7 @@ if ! openssl_target_ready "${DEPS_DIR}/openssl-linux-x86_64" || \
     echo "==============================================="
     echo "OpenSSL not fully built; building (one-time)..."
     echo "==============================================="
-    "${ROOT}/scripts/build-openssl.sh"
+    "${ROOT}/scripts/linux/build-openssl.sh"
     echo
 else
     echo "OpenSSL: already built for all Linux targets, skipping."
@@ -66,4 +66,4 @@ for target in "${TARGETS[@]}"; do
 done
 
 echo
-echo "For Windows: clone on a Windows box and run scripts\\build-windows-msvc.ps1"
+echo "For Windows: clone on a Windows box and run scripts\\win\\build-windows-msvc.ps1"

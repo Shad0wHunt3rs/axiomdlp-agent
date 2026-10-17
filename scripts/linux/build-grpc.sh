@@ -25,7 +25,7 @@
 set -euo pipefail
 
 GRPC_VERSION="v1.62.0"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS="$ROOT/.deps"
 SRC="$DEPS/grpc-src"
 BUILD_DIR="$DEPS/grpc-build"
