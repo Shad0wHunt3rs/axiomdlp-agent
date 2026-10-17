@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.24)
 project(axiomdlp-agent VERSION 0.1.0 LANGUAGES C CXX)
 
 # ----------------------------------------------------------------
+# Build-time options
+# ----------------------------------------------------------------
+option(AXIOM_ENABLE_GRPC
+       "Enable gRPC transport module (requires 'grpc' and 'protobuf' in vcpkg.json)" OFF)
+
+# ----------------------------------------------------------------
 # Shared source cache for FetchContent dependencies
 # ----------------------------------------------------------------
 set(AXIOM_DEPS_DIR "${CMAKE_SOURCE_DIR}/.deps" CACHE PATH "Shared FetchContent source cache")
@@ -190,14 +196,14 @@ endif()
 find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------
-# gRPC + Protobuf (optional, enables grpc_transport module)
+# gRPC + Protobuf (OPTIONAL — gated by AXIOM_ENABLE_GRPC)
 #
-# Windows (MSVC): provided by vcpkg — add "grpc" + "protobuf"
-#                 to vcpkg.json (already done).
-# Linux (GCC):    build with scripts/linux/build-grpc.sh, then wire
-#                 up .deps/grpc-linux-* in the else() branch below.
-#                 Currently disabled on Linux so the module is
-#                 MSVC/Windows-only for now.
+# Disabled by default because 'grpc' and 'protobuf' are NOT in
+# vcpkg.json. To enable later:
+#   1. Add "protobuf" and "grpc" to vcpkg.json
+#   2. Configure with:  cmake --preset windows-x64-msvc-release -DAXIOM_ENABLE_GRPC=ON
+#
+# On Linux, .deps/grpc-linux-* wiring would go in the else() branch.
 # ----------------------------------------------------------------
 set(AXIOM_HAVE_GRPC OFF)
 set(AXIOM_GRPC_SOURCES "")
@@ -206,7 +212,7 @@ set(AXIOM_PROTO_SRC "")
 set(AXIOM_PROTO_HDR "")
 set(AXIOM_PROTO_GEN_DIR "")
 
-if(AXIOM_USE_VCPKG_DEPS)
+if(AXIOM_USE_VCPKG_DEPS AND AXIOM_ENABLE_GRPC)
     find_package(Protobuf CONFIG REQUIRED)
     find_package(gRPC CONFIG REQUIRED)
 
@@ -244,12 +250,15 @@ if(AXIOM_USE_VCPKG_DEPS)
 
     add_custom_target(axiom_grpc_gen DEPENDS ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR})
 
-    message(STATUS "gRPC (from vcpkg)")
+    message(STATUS "gRPC (from vcpkg): ${gRPC_VERSION}")
     message(STATUS "Protobuf (from vcpkg): ${Protobuf_VERSION}")
 else()
-    message(STATUS "gRPC: not enabled on this platform — grpc_transport excluded")
+    if(NOT AXIOM_ENABLE_GRPC)
+        message(STATUS "gRPC: disabled (AXIOM_ENABLE_GRPC=OFF)")
+    else()
+        message(STATUS "gRPC: requested but vcpkg not in use — grpc_transport excluded")
+    endif()
 endif()
-
 
 # ----------------------------------------------------------------
 # OpenSSL
@@ -521,6 +530,7 @@ if(MSVC)
         /W4
         /permissive-
         /Zc:__cplusplus
+        /bigobj
     )
 else()
     target_compile_options(axiomdlp-agent PRIVATE -Wall -Wextra -Wpedantic)
