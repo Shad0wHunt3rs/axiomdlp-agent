@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+#
+# scripts/build-all.sh — Linux-only build entrypoint.
+#
+# Windows builds are done natively on Windows via
+#   scripts/build-windows-msvc.ps1   (MSVC + vcpkg)
+# See docs/windows-msvc-build.md.
+#
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,21 +24,19 @@ fi
 
 openssl_target_ready() {
     local dir="$1"
-    { [ -f "${dir}/lib/libssl.a"    ] && [ -f "${dir}/lib/libcrypto.a"    ]; } || \
-    { [ -f "${dir}/lib64/libssl.a"  ] && [ -f "${dir}/lib64/libcrypto.a"  ]; }
+    { [ -f "${dir}/lib/libssl.a"   ] && [ -f "${dir}/lib/libcrypto.a"   ]; } || \
+    { [ -f "${dir}/lib64/libssl.a" ] && [ -f "${dir}/lib64/libcrypto.a" ]; }
 }
 
 if ! openssl_target_ready "${DEPS_DIR}/openssl-linux-x86_64" || \
-   ! openssl_target_ready "${DEPS_DIR}/openssl-linux-i686"   || \
-   ! openssl_target_ready "${DEPS_DIR}/openssl-mingw64"      || \
-   ! openssl_target_ready "${DEPS_DIR}/openssl-mingw32"; then
+   ! openssl_target_ready "${DEPS_DIR}/openssl-linux-i686"; then
     echo "==============================================="
     echo "OpenSSL not fully built; building (one-time)..."
     echo "==============================================="
     "${ROOT}/scripts/build-openssl.sh"
     echo
 else
-    echo "OpenSSL: already built for all targets, skipping."
+    echo "OpenSSL: already built for all Linux targets, skipping."
     echo
 fi
 
@@ -40,8 +45,6 @@ BUILD_TYPE="${1:-release}"
 TARGETS=(
     linux-x86_64
     linux-i686
-    windows-x86_64
-    windows-i686
 )
 
 for target in "${TARGETS[@]}"; do
@@ -55,14 +58,12 @@ done
 
 echo
 echo "==============================================="
-echo "All builds complete. Artifacts:"
+echo "All Linux builds complete. Artifacts:"
 echo "==============================================="
 
 for target in "${TARGETS[@]}"; do
-    if [[ "$target" == windows-* ]]; then
-        f="build/${target}-${BUILD_TYPE}/axiomdlp-agent.exe"
-    else
-        f="build/${target}-${BUILD_TYPE}/axiomdlp-agent"
-    fi
-    file "$f"
+    file "build/${target}-${BUILD_TYPE}/axiomdlp-agent"
 done
+
+echo
+echo "For Windows: clone on a Windows box and run scripts\\build-windows-msvc.ps1"

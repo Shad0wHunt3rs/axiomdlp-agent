@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # scripts/build-openssl.sh
 #
-# Builds OpenSSL statically for all four agent targets.
+# Builds OpenSSL statically for both Linux agent targets.
+# Windows OpenSSL is supplied by vcpkg on the Windows side.
 # Output goes to:
 #   .deps/openssl-linux-x86_64/
 #   .deps/openssl-linux-i686/
-#   .deps/openssl-mingw64/
-#   .deps/openssl-mingw32/
 #
 # Run once. Re-run only if you bump OPENSSL_VERSION.
 # Takes 15-25 minutes total.
@@ -80,12 +79,8 @@ build_one() {
 # ---------- Build all four ----------
 build_one "linux-x86_64"       "$DEPS/openssl-linux-x86_64"
 build_one "linux-x86"          "$DEPS/openssl-linux-i686"   -m32
-build_one "mingw64"            "$DEPS/openssl-mingw64"      --cross-compile-prefix=x86_64-w64-mingw32-
-build_one "mingw"              "$DEPS/openssl-mingw32"      --cross-compile-prefix=i686-w64-mingw32-
 
 echo
-echo "Done. All four OpenSSL trees are ready:"
+echo "Done. Both Linux OpenSSL trees are ready:"
 echo "  $DEPS/openssl-linux-x86_64"
 echo "  $DEPS/openssl-linux-i686"
-echo "  $DEPS/openssl-mingw64"
-echo "  $DEPS/openssl-mingw32"

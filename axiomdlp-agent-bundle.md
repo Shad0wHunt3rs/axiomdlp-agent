@@ -1,6 +1,6 @@
 # AxiomDLP Agent — Source Bundle
 
-- **Generated:** 2026-10-17 08:01:25 UTC
+- **Generated:** 2026-10-17 08:22:32 UTC
 - **Root:** `/home/kali/axiomdlp-agent`
 
 This bundle contains **only the project's own source code** —
@@ -43,10 +43,12 @@ If you need any of them, ask the user — do not guess.
 ./docs/modules.md
 ./docs/policy_format.md
 ./done.md
+./.github
+./.github/workflows
+./.github/workflows/windows-msvc.yml
 ./.gitignore
 ./LICENSE
 ./make-bundle.sh
-./migration.md
 ./next.md
 ./packaging
 ./packaging/linux
@@ -58,8 +60,10 @@ If you need any of them, ask the user — do not guess.
 ./scripts/build-all.sh
 ./scripts/build-grpc.sh
 ./scripts/build-openssl.sh
+./scripts/build-windows-msvc.ps1
 ./scripts/merge-compile-commands.sh
 ./scripts/mock_server.py
+./scripts/setup-windows-msvc.ps1
 ./scripts/viz.html
 ./scripts/viz_server.py
 ./src
@@ -142,6 +146,8 @@ If you need any of them, ask the user — do not guess.
 ./src/util/file_hash.h
 ./src/util/glob_match.cpp
 ./src/util/glob_match.h
+./vcpkg-configuration.json
+./vcpkg.json
 ```
 
 ---
@@ -184,6 +190,30 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ----------------------------------------------------------------
+# Dependency acquisition strategy
+#
+#   MSVC (Windows, native)   -> vcpkg manifest mode
+#   MINGW (Windows, cross)   -> existing .deps/ cross-built trees
+#   UNIX (Linux)             -> existing .deps/ native trees
+# ----------------------------------------------------------------
+if(MSVC)
+    set(AXIOM_USE_VCPKG_DEPS ON)
+    message(STATUS "Build strategy: MSVC + vcpkg (Windows native)")
+    if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY
+            "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING
+            "Use static CRT to match MinGW's -static-libstdc++")
+    endif()
+else()
+    set(AXIOM_USE_VCPKG_DEPS OFF)
+    if(WIN32)
+        message(STATUS "Build strategy: MinGW cross-compile (.deps/)")
+    else()
+        message(STATUS "Build strategy: GCC native (.deps/)")
+    endif()
+endif()
+
+# ----------------------------------------------------------------
 # Detect target triple
 # ----------------------------------------------------------------
 if(WIN32)
@@ -210,268 +240,254 @@ message(STATUS "Dependency source cache: ${AXIOM_DEPS_DIR}")
 # ----------------------------------------------------------------
 include(FetchContent)
 
-# --- nlohmann/json (header-only; prefer system) ---
-find_package(nlohmann_json QUIET)
-
-if(NOT nlohmann_json_FOUND)
-    message(STATUS "System nlohmann_json not found; fetching via FetchContent")
-    set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
-    set(JSON_Install    OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        nlohmann_json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG        v3.11.3
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(nlohmann_json)
+# --- nlohmann/json (header-only) ---
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(nlohmann_json CONFIG REQUIRED)
+    message(STATUS "nlohmann_json (from vcpkg): ${nlohmann_json_VERSION}")
 else()
-    message(STATUS "Using system nlohmann_json (${nlohmann_json_VERSION})")
+    find_package(nlohmann_json QUIET)
+    if(NOT nlohmann_json_FOUND)
+        message(STATUS "System nlohmann_json not found; fetching via FetchContent")
+        set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+        set(JSON_Install    OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(
+            nlohmann_json
+            GIT_REPOSITORY https://github.com/nlohmann/json.git
+            GIT_TAG        v3.11.3
+            GIT_SHALLOW    TRUE
+        )
+        FetchContent_MakeAvailable(nlohmann_json)
+    else()
+        message(STATUS "Using system nlohmann_json (${nlohmann_json_VERSION})")
+    endif()
 endif()
 
-# --- spdlog (compiled; always FetchContent for cross-compile) ---
-set(SPDLOG_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
-set(SPDLOG_BUILD_EXAMPLE  OFF CACHE BOOL "" FORCE)
-set(SPDLOG_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-set(SPDLOG_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
-set(SPDLOG_INSTALL        OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(
-    spdlog
-    GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG        v1.14.1
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(spdlog)
+# --- spdlog ---
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(spdlog CONFIG REQUIRED)
+    message(STATUS "spdlog (from vcpkg): ${spdlog_VERSION}")
+else()
+    set(SPDLOG_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_EXAMPLE  OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_INSTALL        OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG        v1.14.1
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(spdlog)
+endif()
 
 # --- efsw (file system watcher) ---
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(BUILD_STATIC_LIBS ON  CACHE BOOL "" FORCE)
-set(EFSW_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
-set(EFSW_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(
-    efsw
-    GIT_REPOSITORY https://github.com/SpartanJ/efsw.git
-    GIT_TAG        1.7.2
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(efsw)
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(efsw CONFIG REQUIRED)
+    if(TARGET efsw::efsw)
+        set(AXIOM_EFSW_TARGET efsw::efsw)
+    else()
+        set(AXIOM_EFSW_TARGET efsw)
+    endif()
+    message(STATUS "efsw (from vcpkg)")
+else()
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(BUILD_STATIC_LIBS ON  CACHE BOOL "" FORCE)
+    set(EFSW_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
+    set(EFSW_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        efsw
+        GIT_REPOSITORY https://github.com/SpartanJ/efsw.git
+        GIT_TAG        1.7.2
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(efsw)
+    set(AXIOM_EFSW_TARGET efsw-static)
+endif()
 
 # ----------------------------------------------------------------
-# Boost (Beast + Asio + System) — headers only
-#
-# We do NOT use find_package(Boost). For cross-compiled targets it
-# searches the target's system include paths, where Boost is not
-# installed.
-#
-# We also must NOT add /usr/include directly to the target's include
-# path, because that would expose the host's Linux system headers to
-# cross-compiled targets. Those headers conflict with MinGW's own
-# headers for libc (stdlib.h, stdint.h, time.h, wchar.h, ...) and
-# cause hundreds of cascading type errors.
-#
-# The fix: create an isolated directory containing ONLY the boost/
-# subtree (via a symlink), and use that as the include path. Cross
-# targets see Boost but nothing else from the host's /usr/include.
-#
-# Boost.Beast provides both the WebSocket client (used by the
-# transport module) and the HTTP client (used by the agent_sync
-# and content_scanner modules). No external HTTP library is needed.
+# Boost (Beast + Asio + System)
 # ----------------------------------------------------------------
 set(AXIOM_BOOST_ROOT "" CACHE PATH "Override Boost header root")
 
-if(NOT AXIOM_BOOST_ROOT)
-    foreach(candidate "/usr/include" "/usr/local/include")
-        if(EXISTS "${candidate}/boost/beast.hpp")
-            set(AXIOM_BOOST_ROOT "${candidate}")
-            break()
-        endif()
-    endforeach()
-endif()
-
-if(NOT AXIOM_BOOST_ROOT OR NOT EXISTS "${AXIOM_BOOST_ROOT}/boost/beast.hpp")
-    message(FATAL_ERROR
-        "Boost headers not found. Install them with:\n"
-        "    sudo apt install -y libboost-dev\n"
-        "Then verify that /usr/include/boost/beast.hpp exists.")
-endif()
-
-set(AXIOM_BOOST_ISOLATED_DIR "${AXIOM_DEPS_DIR}/boost-include")
-
-if(NOT EXISTS "${AXIOM_BOOST_ISOLATED_DIR}/boost/beast.hpp")
-    message(STATUS "Creating isolated Boost include directory at ${AXIOM_BOOST_ISOLATED_DIR}")
-    file(MAKE_DIRECTORY "${AXIOM_BOOST_ISOLATED_DIR}")
-    file(CREATE_LINK
-         "${AXIOM_BOOST_ROOT}/boost"
-         "${AXIOM_BOOST_ISOLATED_DIR}/boost"
-         SYMBOLIC)
-endif()
-
-file(STRINGS "${AXIOM_BOOST_ROOT}/boost/version.hpp"
-     _boost_version_line
-     REGEX "#define BOOST_LIB_VERSION ")
-
-if(_boost_version_line MATCHES "\"([0-9_]+)\"")
-    set(_boost_version_raw "${CMAKE_MATCH_1}")
-    string(REPLACE "_" "." _boost_version "${_boost_version_raw}")
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(Boost CONFIG REQUIRED)
+    set(AXIOM_BOOST_INCLUDE_DIRS "")
+    message(STATUS "Boost: from vcpkg (CONFIG mode)")
 else()
-    set(_boost_version "unknown")
+    if(NOT AXIOM_BOOST_ROOT)
+        foreach(candidate "/usr/include" "/usr/local/include")
+            if(EXISTS "${candidate}/boost/beast.hpp")
+                set(AXIOM_BOOST_ROOT "${candidate}")
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(NOT AXIOM_BOOST_ROOT OR NOT EXISTS "${AXIOM_BOOST_ROOT}/boost/beast.hpp")
+        message(FATAL_ERROR
+            "Boost headers not found. Install them with:\n"
+            "    sudo apt install -y libboost-dev\n"
+            "Then verify that /usr/include/boost/beast.hpp exists.")
+    endif()
+    set(AXIOM_BOOST_ISOLATED_DIR "${AXIOM_DEPS_DIR}/boost-include")
+    if(NOT EXISTS "${AXIOM_BOOST_ISOLATED_DIR}/boost/beast.hpp")
+        message(STATUS "Creating isolated Boost include directory at ${AXIOM_BOOST_ISOLATED_DIR}")
+        file(MAKE_DIRECTORY "${AXIOM_BOOST_ISOLATED_DIR}")
+        file(CREATE_LINK
+             "${AXIOM_BOOST_ROOT}/boost"
+             "${AXIOM_BOOST_ISOLATED_DIR}/boost"
+             SYMBOLIC)
+    endif()
+    file(STRINGS "${AXIOM_BOOST_ROOT}/boost/version.hpp"
+         _boost_version_line
+         REGEX "#define BOOST_LIB_VERSION ")
+    if(_boost_version_line MATCHES "\"([0-9_]+)\"")
+        set(_boost_version_raw "${CMAKE_MATCH_1}")
+        string(REPLACE "_" "." _boost_version "${_boost_version_raw}")
+    else()
+        set(_boost_version "unknown")
+    endif()
+    message(STATUS "Boost headers (isolated): ${AXIOM_BOOST_ISOLATED_DIR}/boost (version ${_boost_version})")
+    set(AXIOM_BOOST_INCLUDE_DIRS "${AXIOM_BOOST_ISOLATED_DIR}")
 endif()
-
-message(STATUS "Boost headers (isolated): ${AXIOM_BOOST_ISOLATED_DIR}/boost (version ${_boost_version})")
 
 find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------
-# OpenSSL — TLS support for agent_sync, transport, content_scanner.
-#
-# All four targets use statically built OpenSSL from .deps/.
-# Imported targets are created manually because CMake 4.x's
-# find_package(OpenSSL) ignores pre-set library paths on
-# cross-compile targets and on multilib native builds.
+# OpenSSL
 # ----------------------------------------------------------------
-if(WIN32)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw64")
-    else()
-        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw32")
-    endif()
-elseif(UNIX AND NOT APPLE)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-x86_64")
-    else()
-        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-i686")
-    endif()
-endif()
-
-if(EXISTS "${AXIOM_OPENSSL_DIR}/lib/libssl.a")
-    set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib")
-elseif(EXISTS "${AXIOM_OPENSSL_DIR}/lib64/libssl.a")
-    set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib64")
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(OpenSSL REQUIRED)
+    message(STATUS "OpenSSL (from vcpkg): ${OPENSSL_VERSION}")
 else()
-    message(FATAL_ERROR
-        "OpenSSL not found in ${AXIOM_OPENSSL_DIR}.\n"
-        "Run ./scripts/build-openssl.sh first.")
+    if(WIN32)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw64")
+        else()
+            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw32")
+        endif()
+    elseif(UNIX AND NOT APPLE)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-x86_64")
+        else()
+            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-i686")
+        endif()
+    endif()
+    if(EXISTS "${AXIOM_OPENSSL_DIR}/lib/libssl.a")
+        set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib")
+    elseif(EXISTS "${AXIOM_OPENSSL_DIR}/lib64/libssl.a")
+        set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib64")
+    else()
+        message(FATAL_ERROR
+            "OpenSSL not found in ${AXIOM_OPENSSL_DIR}.\n"
+            "Run ./scripts/build-openssl.sh first.")
+    endif()
+    set(AXIOM_OPENSSL_INCLUDE_DIR "${AXIOM_OPENSSL_DIR}/include")
+    if(NOT EXISTS "${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/ssl.h")
+        message(FATAL_ERROR
+            "OpenSSL headers not found at ${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/.")
+    endif()
+    if(NOT TARGET OpenSSL::SSL)
+        add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)
+        set_target_properties(OpenSSL::SSL PROPERTIES
+            IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"
+            INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}"
+            INTERFACE_LINK_LIBRARIES      "OpenSSL::Crypto")
+    endif()
+    if(NOT TARGET OpenSSL::Crypto)
+        add_library(OpenSSL::Crypto STATIC IMPORTED GLOBAL)
+        set_target_properties(OpenSSL::Crypto PROPERTIES
+            IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
+            INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}")
+    endif()
+    message(STATUS "OpenSSL (imported from .deps)")
+    message(STATUS "  include: ${AXIOM_OPENSSL_INCLUDE_DIR}")
+    message(STATUS "  ssl:     ${AXIOM_OPENSSL_LIB_DIR}/libssl.a")
+    message(STATUS "  crypto:  ${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a")
 endif()
-
-set(AXIOM_OPENSSL_INCLUDE_DIR "${AXIOM_OPENSSL_DIR}/include")
-
-if(NOT EXISTS "${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/ssl.h")
-    message(FATAL_ERROR
-        "OpenSSL headers not found at ${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/.")
-endif()
-
-if(NOT TARGET OpenSSL::SSL)
-    add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)
-    set_target_properties(OpenSSL::SSL PROPERTIES
-        IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}"
-        INTERFACE_LINK_LIBRARIES      "OpenSSL::Crypto")
-endif()
-
-if(NOT TARGET OpenSSL::Crypto)
-    add_library(OpenSSL::Crypto STATIC IMPORTED GLOBAL)
-    set_target_properties(OpenSSL::Crypto PROPERTIES
-        IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}")
-endif()
-
-message(STATUS "OpenSSL (imported from .deps)")
-message(STATUS "  include: ${AXIOM_OPENSSL_INCLUDE_DIR}")
-message(STATUS "  ssl:     ${AXIOM_OPENSSL_LIB_DIR}/libssl.a")
-message(STATUS "  crypto:  ${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a")
 
 # ----------------------------------------------------------------
-# SQLite3 amalgamation
+# SQLite3
 # ----------------------------------------------------------------
-set(AXIOM_SQLITE_DIR "${AXIOM_DEPS_DIR}/sqlite3-src")
-set(AXIOM_SQLITE_C   "${AXIOM_SQLITE_DIR}/sqlite3.c")
-set(AXIOM_SQLITE_ZIP "${AXIOM_DEPS_DIR}/sqlite3.zip")
-set(AXIOM_SQLITE_URL "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip")
-set(AXIOM_SQLITE_MIN_BYTES 5000000)
-
-set(AXIOM_SQLITE_CACHE_OK OFF)
-
-if(EXISTS "${AXIOM_SQLITE_C}")
-    file(SIZE "${AXIOM_SQLITE_C}" cache_size)
-    if(cache_size GREATER_EQUAL ${AXIOM_SQLITE_MIN_BYTES})
-        set(AXIOM_SQLITE_CACHE_OK ON)
-    else()
-        message(STATUS "SQLite cache truncated (${cache_size} bytes); re-downloading")
-        file(REMOVE_RECURSE "${AXIOM_SQLITE_DIR}")
-    endif()
-endif()
-
-if(NOT AXIOM_SQLITE_CACHE_OK)
-    message(STATUS "Downloading SQLite amalgamation")
-
-    file(REMOVE "${AXIOM_SQLITE_ZIP}")
-
-    find_program(AXIOM_CURL_BIN NAMES curl)
-    find_program(AXIOM_WGET_BIN NAMES wget)
-
-    if(AXIOM_CURL_BIN)
-        execute_process(
-            COMMAND "${AXIOM_CURL_BIN}" -fL --retry 3 --retry-delay 2
-                    -o "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
-            RESULT_VARIABLE dl_result
-            ERROR_VARIABLE  dl_error
-        )
-    elseif(AXIOM_WGET_BIN)
-        execute_process(
-            COMMAND "${AXIOM_WGET_BIN}" -O "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
-            RESULT_VARIABLE dl_result
-            ERROR_VARIABLE  dl_error
-        )
-    else()
-        message(FATAL_ERROR "Neither curl nor wget is installed.")
-    endif()
-
-    if(NOT dl_result EQUAL 0)
-        message(FATAL_ERROR "SQLite download failed: ${dl_error}")
-    endif()
-
-    file(SIZE "${AXIOM_SQLITE_ZIP}" zip_size)
-    if(zip_size LESS 2000000)
-        message(FATAL_ERROR "SQLite download is truncated (${zip_size} bytes).")
-    endif()
-
-    file(ARCHIVE_EXTRACT INPUT "${AXIOM_SQLITE_ZIP}"
-         DESTINATION "${AXIOM_DEPS_DIR}/sqlite3-extract")
-
-    file(GLOB SQLITE_DIRS "${AXIOM_DEPS_DIR}/sqlite3-extract/sqlite-amalgamation-*")
-    list(LENGTH SQLITE_DIRS SQLITE_DIRS_LEN)
-    if(SQLITE_DIRS_LEN EQUAL 0)
-        message(FATAL_ERROR "SQLite amalgamation extraction produced no directory")
-    endif()
-    list(GET SQLITE_DIRS 0 SQLITE_DIR)
-
-    file(RENAME "${SQLITE_DIR}" "${AXIOM_SQLITE_DIR}")
-    file(REMOVE_RECURSE "${AXIOM_DEPS_DIR}/sqlite3-extract")
-    file(REMOVE "${AXIOM_SQLITE_ZIP}")
-
-    file(SIZE "${AXIOM_SQLITE_C}" extracted_size)
-    if(extracted_size LESS ${AXIOM_SQLITE_MIN_BYTES})
-        message(FATAL_ERROR "Extracted sqlite3.c is truncated (${extracted_size} bytes).")
-    endif()
-
-    message(STATUS "SQLite amalgamation cached at ${AXIOM_SQLITE_DIR}")
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(SQLite3 REQUIRED)
+    set(AXIOM_SQLITE_TARGET SQLite::SQLite3)
+    message(STATUS "SQLite3 (from vcpkg): ${SQLite3_VERSION}")
 else()
-    message(STATUS "Using cached SQLite amalgamation from .deps/sqlite3-src/")
-endif()
-
-add_library(axiom_sqlite STATIC "${AXIOM_SQLITE_C}")
-target_include_directories(axiom_sqlite PUBLIC "${AXIOM_SQLITE_DIR}")
-
-target_compile_definitions(axiom_sqlite PRIVATE
-    SQLITE_THREADSAFE=1
-    SQLITE_OMIT_LOAD_EXTENSION=1
-    SQLITE_DEFAULT_MEMSTATUS=0
-    SQLITE_DQS=0
-)
-
-if(UNIX AND NOT APPLE)
-    target_link_libraries(axiom_sqlite PUBLIC dl pthread)
+    set(AXIOM_SQLITE_DIR "${AXIOM_DEPS_DIR}/sqlite3-src")
+    set(AXIOM_SQLITE_C   "${AXIOM_SQLITE_DIR}/sqlite3.c")
+    set(AXIOM_SQLITE_ZIP "${AXIOM_DEPS_DIR}/sqlite3.zip")
+    set(AXIOM_SQLITE_URL "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip")
+    set(AXIOM_SQLITE_MIN_BYTES 5000000)
+    set(AXIOM_SQLITE_CACHE_OK OFF)
+    if(EXISTS "${AXIOM_SQLITE_C}")
+        file(SIZE "${AXIOM_SQLITE_C}" cache_size)
+        if(cache_size GREATER_EQUAL ${AXIOM_SQLITE_MIN_BYTES})
+            set(AXIOM_SQLITE_CACHE_OK ON)
+        else()
+            message(STATUS "SQLite cache truncated (${cache_size} bytes); re-downloading")
+            file(REMOVE_RECURSE "${AXIOM_SQLITE_DIR}")
+        endif()
+    endif()
+    if(NOT AXIOM_SQLITE_CACHE_OK)
+        message(STATUS "Downloading SQLite amalgamation")
+        file(REMOVE "${AXIOM_SQLITE_ZIP}")
+        find_program(AXIOM_CURL_BIN NAMES curl)
+        find_program(AXIOM_WGET_BIN NAMES wget)
+        if(AXIOM_CURL_BIN)
+            execute_process(
+                COMMAND "${AXIOM_CURL_BIN}" -fL --retry 3 --retry-delay 2
+                        -o "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
+                RESULT_VARIABLE dl_result
+                ERROR_VARIABLE  dl_error
+            )
+        elseif(AXIOM_WGET_BIN)
+            execute_process(
+                COMMAND "${AXIOM_WGET_BIN}" -O "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
+                RESULT_VARIABLE dl_result
+                ERROR_VARIABLE  dl_error
+            )
+        else()
+            message(FATAL_ERROR "Neither curl nor wget is installed.")
+        endif()
+        if(NOT dl_result EQUAL 0)
+            message(FATAL_ERROR "SQLite download failed: ${dl_error}")
+        endif()
+        file(SIZE "${AXIOM_SQLITE_ZIP}" zip_size)
+        if(zip_size LESS 2000000)
+            message(FATAL_ERROR "SQLite download is truncated (${zip_size} bytes).")
+        endif()
+        file(ARCHIVE_EXTRACT INPUT "${AXIOM_SQLITE_ZIP}"
+             DESTINATION "${AXIOM_DEPS_DIR}/sqlite3-extract")
+        file(GLOB SQLITE_DIRS "${AXIOM_DEPS_DIR}/sqlite3-extract/sqlite-amalgamation-*")
+        list(LENGTH SQLITE_DIRS SQLITE_DIRS_LEN)
+        if(SQLITE_DIRS_LEN EQUAL 0)
+            message(FATAL_ERROR "SQLite amalgamation extraction produced no directory")
+        endif()
+        list(GET SQLITE_DIRS 0 SQLITE_DIR)
+        file(RENAME "${SQLITE_DIR}" "${AXIOM_SQLITE_DIR}")
+        file(REMOVE_RECURSE "${AXIOM_DEPS_DIR}/sqlite3-extract")
+        file(REMOVE "${AXIOM_SQLITE_ZIP}")
+        file(SIZE "${AXIOM_SQLITE_C}" extracted_size)
+        if(extracted_size LESS ${AXIOM_SQLITE_MIN_BYTES})
+            message(FATAL_ERROR "Extracted sqlite3.c is truncated (${extracted_size} bytes).")
+        endif()
+        message(STATUS "SQLite amalgamation cached at ${AXIOM_SQLITE_DIR}")
+    else()
+        message(STATUS "Using cached SQLite amalgamation from .deps/sqlite3-src/")
+    endif()
+    add_library(axiom_sqlite STATIC "${AXIOM_SQLITE_C}")
+    target_include_directories(axiom_sqlite PUBLIC "${AXIOM_SQLITE_DIR}")
+    target_compile_definitions(axiom_sqlite PRIVATE
+        SQLITE_THREADSAFE=1
+        SQLITE_OMIT_LOAD_EXTENSION=1
+        SQLITE_DEFAULT_MEMSTATUS=0
+        SQLITE_DQS=0
+    )
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(axiom_sqlite PUBLIC dl pthread)
+    endif()
+    set(AXIOM_SQLITE_TARGET axiom_sqlite)
 endif()
 
 # ----------------------------------------------------------------
@@ -494,34 +510,20 @@ endif()
 # ----------------------------------------------------------------
 add_executable(axiomdlp-agent
     src/main.cpp
-
-    # foundation
     src/foundation/application.cpp
     src/foundation/config.cpp
     src/foundation/logger.cpp
-
-    # events
     src/events/event.cpp
     src/events/event_bus.cpp
-
-    # module framework
     src/modules/module_manager.cpp
-
-    # net
     src/net/http_client.cpp
     src/net/websocket_client.cpp
     src/net/outbound_queue.cpp
     src/net/message_router.cpp
-
-    # util
     src/util/glob_match.cpp
     src/util/file_hash.cpp
     src/util/base64.cpp
-
-    # platform implementations
     src/platform/common/efsw_file_watcher.cpp
-
-    # feature modules
     src/features/agent_sync/agent_sync_module.cpp
     src/features/content_scanner/content_scanner_module.cpp
     src/features/event_logger/event_logger_module.cpp
@@ -529,19 +531,16 @@ add_executable(axiomdlp-agent
     src/features/inventory/inventory_module.cpp
     src/features/inventory/inventory_scanner.cpp
     src/features/websocket_transport/transport_module.cpp
-
-    # storage
     src/storage/sqlite_database.cpp
     src/storage/migrations.cpp
     src/storage/file_repository.cpp
     src/storage/state_repository.cpp
-
     ${AXIOM_PLATFORM_SOURCES}
 )
 
 target_include_directories(axiomdlp-agent PRIVATE
     src
-    ${AXIOM_BOOST_ISOLATED_DIR}
+    ${AXIOM_BOOST_INCLUDE_DIRS}
 )
 
 target_compile_definitions(axiomdlp-agent PRIVATE
@@ -552,12 +551,16 @@ target_compile_definitions(axiomdlp-agent PRIVATE
 target_link_libraries(axiomdlp-agent PRIVATE
     spdlog::spdlog
     nlohmann_json::nlohmann_json
-    efsw-static
-    axiom_sqlite
+    ${AXIOM_EFSW_TARGET}
+    ${AXIOM_SQLITE_TARGET}
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
 )
+
+if(AXIOM_USE_VCPKG_DEPS)
+    target_link_libraries(axiomdlp-agent PRIVATE Boost::headers)
+endif()
 
 # ----------------------------------------------------------------
 # Platform-specific settings
@@ -565,20 +568,24 @@ target_link_libraries(axiomdlp-agent PRIVATE
 if(WIN32)
     target_link_libraries(axiomdlp-agent PRIVATE
         advapi32 shell32 ws2_32 crypt32)
-
-    target_link_options(axiomdlp-agent PRIVATE
-        -static -static-libgcc -static-libstdc++
-    )
     target_compile_definitions(axiomdlp-agent PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
         _WIN32_WINNT=0x0601
     )
+    if(MSVC)
+        target_compile_definitions(axiomdlp-agent PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+        )
+    else()
+        target_link_options(axiomdlp-agent PRIVATE
+            -static -static-libgcc -static-libstdc++
+        )
+    endif()
 endif()
 
 if(UNIX AND NOT APPLE)
     set(AXIOM_HAVE_SYSTEMD OFF)
-
     include(FindPkgConfig QUIET)
     if(PkgConfig_FOUND)
         if(CMAKE_SIZEOF_VOID_P EQUAL 4)
@@ -588,13 +595,11 @@ if(UNIX AND NOT APPLE)
             set(ENV{PKG_CONFIG_LIBDIR}
                 "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig")
         endif()
-
         pkg_check_modules(SYSTEMD QUIET libsystemd)
         if(SYSTEMD_FOUND)
             set(AXIOM_HAVE_SYSTEMD ON)
         endif()
     endif()
-
     if(AXIOM_HAVE_SYSTEMD)
         message(STATUS "libsystemd found: sd_notify enabled")
         target_compile_definitions(axiomdlp-agent PRIVATE HAVE_SYSTEMD)
@@ -603,7 +608,6 @@ if(UNIX AND NOT APPLE)
     else()
         message(STATUS "libsystemd not available: sd_notify disabled")
     endif()
-
     target_compile_options(axiomdlp-agent PRIVATE
         -fstack-protector-strong -fPIE
     )
@@ -613,7 +617,11 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(MSVC)
-    target_compile_options(axiomdlp-agent PRIVATE /W4 /permissive-)
+    target_compile_options(axiomdlp-agent PRIVATE
+        /W4
+        /permissive-
+        /Zc:__cplusplus
+    )
 else()
     target_compile_options(axiomdlp-agent PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -670,14 +678,14 @@ endif()
 
     {
       "name": "windows-x86_64-debug",
-      "displayName": "Windows x86_64 — Debug",
+      "displayName": "Windows x86_64 — Debug (MinGW fallback)",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/windows-x86_64.cmake",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "windows-x86_64-release",
-      "displayName": "Windows x86_64 — Release",
+      "displayName": "Windows x86_64 — Release (MinGW fallback)",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/windows-x86_64.cmake",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
@@ -685,17 +693,86 @@ endif()
 
     {
       "name": "windows-i686-debug",
-      "displayName": "Windows i686 (32-bit) — Debug",
+      "displayName": "Windows i686 (32-bit) — Debug (MinGW fallback)",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/windows-i686.cmake",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "windows-i686-release",
-      "displayName": "Windows i686 (32-bit) — Release",
+      "displayName": "Windows i686 (32-bit) — Release (MinGW fallback)",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/windows-i686.cmake",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+
+    {
+      "name": "windows-x64-msvc-debug",
+      "displayName": "Windows x64 — Debug (MSVC + vcpkg)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/windows-x64-msvc-debug",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-x64-msvc-release",
+      "displayName": "Windows x64 — Release (MSVC + vcpkg)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/windows-x64-msvc-release",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-x86-msvc-debug",
+      "displayName": "Windows x86 — Debug (MSVC + vcpkg)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/windows-x86-msvc-debug",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_TARGET_TRIPLET": "x86-windows-static",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-x86-msvc-release",
+      "displayName": "Windows x86 — Release (MSVC + vcpkg)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/windows-x86-msvc-release",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x86-windows-static",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
     }
   ],
 
@@ -707,7 +784,27 @@ endif()
     { "name": "windows-x86_64-debug",   "configurePreset": "windows-x86_64-debug" },
     { "name": "windows-x86_64-release", "configurePreset": "windows-x86_64-release" },
     { "name": "windows-i686-debug",     "configurePreset": "windows-i686-debug" },
-    { "name": "windows-i686-release",   "configurePreset": "windows-i686-release" }
+    { "name": "windows-i686-release",   "configurePreset": "windows-i686-release" },
+    {
+      "name": "windows-x64-msvc-debug",
+      "configurePreset": "windows-x64-msvc-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-x64-msvc-release",
+      "configurePreset": "windows-x64-msvc-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-x86-msvc-debug",
+      "configurePreset": "windows-x86-msvc-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-x86-msvc-release",
+      "configurePreset": "windows-x86-msvc-release",
+      "configuration": "Release"
+    }
   ]
 }
 ```
@@ -2799,6 +2896,15 @@ build-*/
 
 # Shared dependency source cache
 .deps/
+
+# vcpkg manifest mode artifacts
+vcpkg_installed/
+vcpkg-cache/
+*.vcpkg-lock.json
+
+# MSVC / Visual Studio
+.vs/
+*.vcxproj.user
 
 # Generated compile database (root merged file)
 compile_commands.json
@@ -9398,6 +9504,10 @@ std::unique_ptr<IFileWatcher> make_file_watcher();
 ```cpp
 // src/platform/linux/paths_linux.cpp
 
+#if !defined(__linux__)
+#  error "src/platform/linux/paths.cpp is Linux-only and must not be compiled on other hosts."
+#endif
+
 #include "platform/paths.h"
 
 #include <limits.h>
@@ -9443,6 +9553,10 @@ std::string default_data_dir() {
 
 ```cpp
 // src/platform/linux/service_linux.cpp
+
+#if !defined(__linux__)
+#  error "src/platform/linux/service.cpp is Linux-only and must not be compiled on other hosts."
+#endif
 
 #include "platform/service.h"
 #include "modules/module_manager.h"
@@ -9841,6 +9955,10 @@ std::string default_service_name();
 ```cpp
 // src/platform/windows/paths_windows.cpp
 
+#if !defined(_WIN32)
+#  error "src/platform/windows/paths.cpp is Windows-only and must not be compiled on other hosts."
+#endif
+
 #include "platform/paths.h"
 
 #include <windows.h>
@@ -9931,6 +10049,10 @@ std::string default_data_dir() {
 
 ```cpp
 // src/platform/windows/service_win.cpp
+
+#if !defined(_WIN32)
+#  error "src/platform/windows/service.cpp is Windows-only and must not be compiled on other hosts."
+#endif
 
 #include "platform/service.h"
 #include "modules/module_manager.h"
@@ -12288,6 +12410,92 @@ echo "  $DEPS/openssl-mingw64"
 echo "  $DEPS/openssl-mingw32"
 ```
 
+### \`scripts/build-windows-msvc.ps1\`
+
+```powershell
+<#
+.SYNOPSIS
+    Build AxiomDLP Agent on Windows with MSVC + vcpkg.
+
+.PARAMETER Configuration
+    Debug or Release (default: Release).
+
+.PARAMETER Arch
+    x64 or x86 (default: x64).
+
+.PARAMETER Clean
+    If set, delete the build directory before configuring.
+
+.EXAMPLE
+    .\scripts\build-windows-msvc.ps1
+    .\scripts\build-windows-msvc.ps1 -Configuration Debug
+    .\scripts\build-windows-msvc.ps1 -Clean
+#>
+
+param(
+    [ValidateSet("Debug", "Release")]
+    [string]$Configuration = "Release",
+
+    [ValidateSet("x64", "x86")]
+    [string]$Arch = "x64",
+
+    [switch]$Clean
+)
+
+$ErrorActionPreference = "Stop"
+
+$projectRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $projectRoot
+
+Write-Host "=== AxiomDLP Agent — Windows MSVC build ===" -ForegroundColor Cyan
+Write-Host "  Project root: $projectRoot"
+Write-Host "  Config:       $Configuration"
+Write-Host "  Arch:         $Arch"
+
+if (-not $env:VCPKG_ROOT) {
+    Write-Error @"
+VCPKG_ROOT is not set.
+
+Run the one-time setup first:
+    .\scripts\setup-windows-msvc.ps1
+
+Then re-open your shell.
+"@
+    exit 1
+}
+if (-not (Test-Path "$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake")) {
+    Write-Error "vcpkg toolchain file not found at $env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+    exit 1
+}
+Write-Host "  VCPKG_ROOT:   $env:VCPKG_ROOT" -ForegroundColor Green
+
+$presetName = "windows-$Arch-msvc-$(($Configuration).ToLower())"
+$buildDir   = Join-Path $projectRoot "build\$presetName"
+
+if ($Clean -and (Test-Path $buildDir)) {
+    Write-Host "  Cleaning $buildDir" -ForegroundColor Yellow
+    Remove-Item -Recurse -Force $buildDir
+}
+
+Write-Host "`n--- Configure (preset: $presetName) ---" -ForegroundColor Yellow
+cmake --preset $presetName
+if ($LASTEXITCODE -ne 0) { Write-Error "Configure failed."; exit $LASTEXITCODE }
+
+Write-Host "`n--- Build ---" -ForegroundColor Yellow
+cmake --build --preset $presetName --config $Configuration
+if ($LASTEXITCODE -ne 0) { Write-Error "Build failed."; exit $LASTEXITCODE }
+
+$exe = Join-Path $buildDir "axiomdlp-agent.exe"
+if (Test-Path $exe) {
+    $size = [math]::Round((Get-Item $exe).Length / 1MB, 2)
+    Write-Host "`n=== Build succeeded ===" -ForegroundColor Cyan
+    Write-Host "  Binary: $exe"
+    Write-Host "  Size:   $size MB"
+} else {
+    Write-Warning "Build finished but $exe not found. Check the preset's binaryDir."
+}
+```
+
 ### \`scripts/merge-compile-commands.sh\`
 
 ```bash
@@ -12423,6 +12631,95 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+```
+
+### \`scripts/setup-windows-msvc.ps1\`
+
+```powershell
+<#
+.SYNOPSIS
+    One-time setup for building AxiomDLP Agent on Windows with MSVC + vcpkg.
+
+.DESCRIPTION
+    - Verifies Visual Studio 2022 (or Build Tools) with the C++ workload.
+    - Clones vcpkg into %USERPROFILE%\vcpkg if missing.
+    - Bootstraps vcpkg.
+    - Sets VCPKG_ROOT persistently for the current user.
+
+.NOTES
+    Run once per machine. Requires PowerShell 5.1+ (built-in) or 7+.
+#>
+
+$ErrorActionPreference = "Stop"
+
+Write-Host "=== AxiomDLP Agent — Windows MSVC bootstrap ===" -ForegroundColor Cyan
+
+# ----------------------------------------------------------------
+# 1. Verify Visual Studio
+# ----------------------------------------------------------------
+Write-Host "`n[1/3] Looking for Visual Studio..." -ForegroundColor Yellow
+
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (-not (Test-Path $vswhere)) {
+    Write-Error @"
+Visual Studio Installer not found.
+
+Install one of:
+  - Visual Studio 2022 Community (free)
+  - Visual Studio 2022 Build Tools (free, headless)
+
+Make sure to select the workload:
+  "Desktop development with C++"
+
+Download: https://visualstudio.microsoft.com/downloads/
+"@
+    exit 1
+}
+
+$vsInstall = & $vswhere -latest -products * `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+    -property installationPath
+
+if (-not $vsInstall) {
+    Write-Error "Visual Studio found but the C++ workload is missing. Add 'Desktop development with C++'."
+    exit 1
+}
+Write-Host "  Found: $vsInstall" -ForegroundColor Green
+
+# ----------------------------------------------------------------
+# 2. Clone + bootstrap vcpkg
+# ----------------------------------------------------------------
+$vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "$env:USERPROFILE\vcpkg" }
+
+Write-Host "`n[2/3] Checking vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
+
+if (-not (Test-Path "$vcpkgRoot\.git")) {
+    Write-Host "  Cloning vcpkg (one-time, ~100 MB)..." -ForegroundColor Yellow
+    git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+}
+
+if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+    Write-Host "  Bootstrapping vcpkg..." -ForegroundColor Yellow
+    Push-Location $vcpkgRoot
+    .\bootstrap-vcpkg.bat -disableMetrics
+    Pop-Location
+}
+
+if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+    Write-Error "vcpkg bootstrap failed; check $vcpkgRoot"
+    exit 1
+}
+Write-Host "  vcpkg ready: $vcpkgRoot\vcpkg.exe" -ForegroundColor Green
+
+# ----------------------------------------------------------------
+# 3. Persist VCPKG_ROOT
+# ----------------------------------------------------------------
+Write-Host "`n[3/3] Setting VCPKG_ROOT=$vcpkgRoot for current user..." -ForegroundColor Yellow
+[System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "User")
+$env:VCPKG_ROOT = $vcpkgRoot
+
+Write-Host "`n=== Setup complete ===" -ForegroundColor Cyan
+Write-Host "Re-open your shell, then run: .\scripts\build-windows-msvc.ps1" -ForegroundColor Cyan
 ```
 
 ### \`scripts/viz.html\`
@@ -13627,18 +13924,20 @@ the user** — do not assume their contents.
 - `data/` — runtime data — not bundled (ask if needed)
 - `.deps/` — third-party dependency tree — not bundled
 - `.git/` — version-control metadata — not bundled
+- `.github/` — not bundled (ask if needed)
 - `logs/` — runtime logs — not bundled (ask if needed)
 - `.vscode/` — editor config — not bundled
 - `axiomdlp-agent-bundle.md` — generated bundle — not bundled
 - `.clangd` — editor config — not bundled
 - `compile_commands.json` — generated — not bundled
-- `migration.md` — not bundled (ask if needed)
+- `vcpkg-configuration.json` — not bundled (ask if needed)
+- `vcpkg.json` — not bundled (ask if needed)
 
 
 ---
 
 ## Summary
 
-- Files included: **79**
-- Files skipped:  **21**
-- Bundle size:    440K
+- Files included: **81**
+- Files skipped:  **23**
+- Bundle size:    452K
