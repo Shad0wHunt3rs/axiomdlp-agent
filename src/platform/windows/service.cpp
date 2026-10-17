@@ -1,5 +1,9 @@
 // src/platform/windows/service_win.cpp
 
+#if !defined(_WIN32)
+#  error "src/platform/windows/service.cpp is Windows-only and must not be compiled on other hosts."
+#endif
+
 #include "platform/service.h"
 #include "modules/module_manager.h"
 

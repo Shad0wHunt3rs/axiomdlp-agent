@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "axiomdlp-agent",
+  "version-string": "0.1.0",
+  "description": "AxiomDLP Endpoint Agent — Windows MSVC build dependencies",
+  "homepage": "https://github.com/your-org/axiomdlp-agent",
+  "dependencies": [
+    "nlohmann-json",
+    "spdlog",
+    "efsw",
+    "sqlite3",
+    "openssl",
+    {
+      "name": "boost",
+      "features": ["beast", "asio", "system"]
+    }
+  ],
+  "overrides": []
+}

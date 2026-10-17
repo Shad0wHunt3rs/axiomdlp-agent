@@ -1,5 +1,9 @@
 // src/platform/windows/paths_windows.cpp
 
+#if !defined(_WIN32)
+#  error "src/platform/windows/paths.cpp is Windows-only and must not be compiled on other hosts."
+#endif
+
 #include "platform/paths.h"
 
 #include <windows.h>
