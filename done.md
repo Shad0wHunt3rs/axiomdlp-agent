@@ -1,5 +1,10 @@
 # AxiomDLP Endpoint Agent — DONE.md
 
+> **Note:** This document describes the `main` branch (MinGW + GCC,
+> four targets). On the `msvc-windows-build` branch, Windows is
+> MSVC + vcpkg only — see `docs/windows-msvc-build.md`. The historical
+> `.deps/openssl-mingw*` paths below no longer exist on this branch.
+
 **Status Document — Everything Implemented, Verified, and Fixed on the Agent Side**
 
 **Last updated:** After atomic ShutdownController, bidirectional WebSocket, server-pushed revocation, TLS enforcement, config consolidation, and industry-standard timing.

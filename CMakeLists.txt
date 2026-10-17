@@ -190,6 +190,68 @@ endif()
 find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------
+# gRPC + Protobuf (optional, enables grpc_transport module)
+#
+# Windows (MSVC): provided by vcpkg — add "grpc" + "protobuf"
+#                 to vcpkg.json (already done).
+# Linux (GCC):    build with scripts/linux/build-grpc.sh, then wire
+#                 up .deps/grpc-linux-* in the else() branch below.
+#                 Currently disabled on Linux so the module is
+#                 MSVC/Windows-only for now.
+# ----------------------------------------------------------------
+set(AXIOM_HAVE_GRPC OFF)
+set(AXIOM_GRPC_SOURCES "")
+set(AXIOM_GRPC_LIBS "")
+set(AXIOM_PROTO_SRC "")
+set(AXIOM_PROTO_HDR "")
+set(AXIOM_PROTO_GEN_DIR "")
+
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(Protobuf CONFIG REQUIRED)
+    find_package(gRPC CONFIG REQUIRED)
+
+    set(AXIOM_HAVE_GRPC ON)
+    set(AXIOM_PROTO_DIR     "${CMAKE_CURRENT_SOURCE_DIR}/src/features/grpc_transport")
+    set(AXIOM_PROTO_FILE    "${AXIOM_PROTO_DIR}/agent.proto")
+    set(AXIOM_PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
+    set(AXIOM_PROTO_PKG_DIR "${AXIOM_PROTO_GEN_DIR}/axiomdlp/agent/v1")
+
+    set(AXIOM_PROTO_SRC
+        "${AXIOM_PROTO_PKG_DIR}/agent.pb.cc"
+        "${AXIOM_PROTO_PKG_DIR}/agent.grpc.pb.cc"
+    )
+    set(AXIOM_PROTO_HDR
+        "${AXIOM_PROTO_PKG_DIR}/agent.pb.h"
+        "${AXIOM_PROTO_PKG_DIR}/agent.grpc.pb.h"
+    )
+
+    set(AXIOM_GRPC_SOURCES "src/features/grpc_transport/grpc_transport_module.cpp")
+    set(AXIOM_GRPC_LIBS    gRPC::grpc++ protobuf::libprotobuf)
+
+    add_custom_command(
+        OUTPUT  ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR}
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${AXIOM_PROTO_PKG_DIR}"
+        COMMAND "$<TARGET_FILE:protobuf::protoc>"
+            --proto_path=${AXIOM_PROTO_DIR}
+            --cpp_out=${AXIOM_PROTO_GEN_DIR}
+            --grpc_out=${AXIOM_PROTO_GEN_DIR}
+            --plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+            ${AXIOM_PROTO_FILE}
+        DEPENDS ${AXIOM_PROTO_FILE}
+        COMMENT "protoc: generating C++ from agent.proto"
+        VERBATIM
+    )
+
+    add_custom_target(axiom_grpc_gen DEPENDS ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR})
+
+    message(STATUS "gRPC (from vcpkg)")
+    message(STATUS "Protobuf (from vcpkg): ${Protobuf_VERSION}")
+else()
+    message(STATUS "gRPC: not enabled on this platform — grpc_transport excluded")
+endif()
+
+
+# ----------------------------------------------------------------
 # OpenSSL
 # ----------------------------------------------------------------
 if(AXIOM_USE_VCPKG_DEPS)
@@ -365,6 +427,8 @@ add_executable(axiomdlp-agent
     src/storage/migrations.cpp
     src/storage/file_repository.cpp
     src/storage/state_repository.cpp
+    ${AXIOM_GRPC_SOURCES}
+    ${AXIOM_PROTO_SRC}
     ${AXIOM_PLATFORM_SOURCES}
 )
 
@@ -372,6 +436,9 @@ target_include_directories(axiomdlp-agent PRIVATE
     src
     ${AXIOM_BOOST_INCLUDE_DIRS}
 )
+if(AXIOM_HAVE_GRPC)
+    target_include_directories(axiomdlp-agent PRIVATE ${AXIOM_PROTO_GEN_DIR})
+endif()
 
 target_compile_definitions(axiomdlp-agent PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
@@ -390,6 +457,12 @@ target_link_libraries(axiomdlp-agent PRIVATE
 
 if(AXIOM_USE_VCPKG_DEPS)
     target_link_libraries(axiomdlp-agent PRIVATE Boost::headers)
+endif()
+
+if(AXIOM_HAVE_GRPC)
+    target_link_libraries(axiomdlp-agent PRIVATE ${AXIOM_GRPC_LIBS})
+    target_compile_definitions(axiomdlp-agent PRIVATE AXIOM_HAVE_GRPC=1)
+    add_dependencies(axiomdlp-agent axiom_grpc_gen)
 endif()
 
 # ----------------------------------------------------------------

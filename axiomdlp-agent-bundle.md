@@ -1,6 +1,6 @@
 # AxiomDLP Agent — Source Bundle
 
-- **Generated:** 2026-10-17 08:22:32 UTC
+- **Generated:** 2026-10-17 08:40:41 UTC
 - **Root:** `/home/kali/axiomdlp-agent`
 
 This bundle contains **only the project's own source code** —
@@ -28,9 +28,6 @@ If you need any of them, ask the user — do not guess.
 ./cmake/toolchains
 ./cmake/toolchains/linux-i686.cmake
 ./cmake/toolchains/linux-x86_64.cmake
-./cmake/toolchains/windows-i686.cmake
-./cmake/toolchains/windows-x86_64.cmake
-./compile_commands.json
 ./config
 ./config/agent.default.json
 ./config/agent.default_win.json
@@ -57,15 +54,14 @@ If you need any of them, ask the user — do not guess.
 ./packaging/windows
 ./packaging/windows/service_install.ps1
 ./scripts
-./scripts/build-all.sh
-./scripts/build-grpc.sh
-./scripts/build-openssl.sh
-./scripts/build-windows-msvc.ps1
-./scripts/merge-compile-commands.sh
-./scripts/mock_server.py
-./scripts/setup-windows-msvc.ps1
-./scripts/viz.html
-./scripts/viz_server.py
+./scripts/linux
+./scripts/linux/build-all.sh
+./scripts/linux/build-grpc.sh
+./scripts/linux/build-openssl.sh
+./scripts/linux/merge-compile-commands.sh
+./scripts/win
+./scripts/win/build-windows-msvc.ps1
+./scripts/win/setup-windows-msvc.ps1
 ./src
 ./src/events
 ./src/events/event_bus.cpp
@@ -206,11 +202,7 @@ if(MSVC)
     endif()
 else()
     set(AXIOM_USE_VCPKG_DEPS OFF)
-    if(WIN32)
-        message(STATUS "Build strategy: MinGW cross-compile (.deps/)")
-    else()
-        message(STATUS "Build strategy: GCC native (.deps/)")
-    endif()
+    message(STATUS "Build strategy: GCC native (.deps/)")
 endif()
 
 # ----------------------------------------------------------------
@@ -360,13 +352,7 @@ if(AXIOM_USE_VCPKG_DEPS)
     find_package(OpenSSL REQUIRED)
     message(STATUS "OpenSSL (from vcpkg): ${OPENSSL_VERSION}")
 else()
-    if(WIN32)
-        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw64")
-        else()
-            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw32")
-        endif()
-    elseif(UNIX AND NOT APPLE)
+    if(UNIX AND NOT APPLE)
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
             set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-x86_64")
         else()
@@ -566,22 +552,19 @@ endif()
 # Platform-specific settings
 # ----------------------------------------------------------------
 if(WIN32)
+    # Windows is MSVC + vcpkg only.
+    # ole32   -> CoTaskMemFree  (used by src/platform/windows/paths.cpp)
+    # user32  -> Shell helpers
+    # ws2_32  -> Winsock  (Boost.Asio/Beast)
+    # crypt32 -> Windows crypto helpers
     target_link_libraries(axiomdlp-agent PRIVATE
-        advapi32 shell32 ws2_32 crypt32)
+        advapi32 shell32 ws2_32 crypt32 ole32 user32)
     target_compile_definitions(axiomdlp-agent PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
         _WIN32_WINNT=0x0601
+        _CRT_SECURE_NO_WARNINGS
     )
-    if(MSVC)
-        target_compile_definitions(axiomdlp-agent PRIVATE
-            _CRT_SECURE_NO_WARNINGS
-        )
-    else()
-        target_link_options(axiomdlp-agent PRIVATE
-            -static -static-libgcc -static-libstdc++
-        )
-    endif()
 endif()
 
 if(UNIX AND NOT APPLE)
@@ -645,70 +628,45 @@ endif()
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}"
     },
-
     {
       "name": "linux-x86_64-debug",
-      "displayName": "Linux x86_64 — Debug",
+      "displayName": "Linux x86_64 \u2014 Debug",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "linux-x86_64-release",
-      "displayName": "Linux x86_64 — Release",
+      "displayName": "Linux x86_64 \u2014 Release",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
-
     {
       "name": "linux-i686-debug",
-      "displayName": "Linux i686 (32-bit) — Debug",
+      "displayName": "Linux i686 (32-bit) \u2014 Debug",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "linux-i686-release",
-      "displayName": "Linux i686 (32-bit) — Release",
+      "displayName": "Linux i686 (32-bit) \u2014 Release",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
-
-    {
-      "name": "windows-x86_64-debug",
-      "displayName": "Windows x86_64 — Debug (MinGW fallback)",
-      "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-x86_64.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-    },
-    {
-      "name": "windows-x86_64-release",
-      "displayName": "Windows x86_64 — Release (MinGW fallback)",
-      "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-x86_64.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
-    },
-
-    {
-      "name": "windows-i686-debug",
-      "displayName": "Windows i686 (32-bit) — Debug (MinGW fallback)",
-      "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-i686.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-    },
-    {
-      "name": "windows-i686-release",
-      "displayName": "Windows i686 (32-bit) — Release (MinGW fallback)",
-      "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-i686.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
-    },
-
     {
       "name": "windows-x64-msvc-debug",
-      "displayName": "Windows x64 — Debug (MSVC + vcpkg)",
+      "displayName": "Windows x64 \u2014 Debug (MSVC + vcpkg)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/windows-x64-msvc-debug",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
@@ -725,7 +683,7 @@ endif()
     },
     {
       "name": "windows-x64-msvc-release",
-      "displayName": "Windows x64 — Release (MSVC + vcpkg)",
+      "displayName": "Windows x64 \u2014 Release (MSVC + vcpkg)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/windows-x64-msvc-release",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
@@ -742,7 +700,7 @@ endif()
     },
     {
       "name": "windows-x86-msvc-debug",
-      "displayName": "Windows x86 — Debug (MSVC + vcpkg)",
+      "displayName": "Windows x86 \u2014 Debug (MSVC + vcpkg)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/windows-x86-msvc-debug",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
@@ -759,7 +717,7 @@ endif()
     },
     {
       "name": "windows-x86-msvc-release",
-      "displayName": "Windows x86 — Release (MSVC + vcpkg)",
+      "displayName": "Windows x86 \u2014 Release (MSVC + vcpkg)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/windows-x86-msvc-release",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
@@ -775,16 +733,23 @@ endif()
       }
     }
   ],
-
   "buildPresets": [
-    { "name": "linux-x86_64-debug",     "configurePreset": "linux-x86_64-debug" },
-    { "name": "linux-x86_64-release",   "configurePreset": "linux-x86_64-release" },
-    { "name": "linux-i686-debug",       "configurePreset": "linux-i686-debug" },
-    { "name": "linux-i686-release",     "configurePreset": "linux-i686-release" },
-    { "name": "windows-x86_64-debug",   "configurePreset": "windows-x86_64-debug" },
-    { "name": "windows-x86_64-release", "configurePreset": "windows-x86_64-release" },
-    { "name": "windows-i686-debug",     "configurePreset": "windows-i686-debug" },
-    { "name": "windows-i686-release",   "configurePreset": "windows-i686-release" },
+    {
+      "name": "linux-x86_64-debug",
+      "configurePreset": "linux-x86_64-debug"
+    },
+    {
+      "name": "linux-x86_64-release",
+      "configurePreset": "linux-x86_64-release"
+    },
+    {
+      "name": "linux-i686-debug",
+      "configurePreset": "linux-i686-debug"
+    },
+    {
+      "name": "linux-i686-release",
+      "configurePreset": "linux-i686-release"
+    },
     {
       "name": "windows-x64-msvc-debug",
       "configurePreset": "windows-x64-msvc-debug",
@@ -1889,6 +1854,11 @@ Triggered on every tag:
 ~~~~markdown
 # AxiomDLP Endpoint Agent — DONE.md
 
+> **Note:** This document describes the `main` branch (MinGW + GCC,
+> four targets). On the `msvc-windows-build` branch, Windows is
+> MSVC + vcpkg only — see `docs/windows-msvc-build.md`. The historical
+> `.deps/openssl-mingw*` paths below no longer exist on this branch.
+
 **Status Document — Everything Implemented, Verified, and Fixed on the Agent Side**
 
 **Last updated:** After atomic ShutdownController, bidirectional WebSocket, server-pushed revocation, TLS enforcement, config consolidation, and industry-standard timing.
@@ -2940,6 +2910,7 @@ cmake_install.cmake
 # clangd cache
 .clangd.cache/
 .cache/
+axiomdlp-agent-bundle.md
 ```
 
   + make-bundle.sh
@@ -12031,13 +12002,20 @@ bool path_matches_pattern(const std::string& pattern,
 
 ## Scripts
 
-### \`scripts/build-all.sh\`
+### \`scripts/linux/build-all.sh\`
 
 ```bash
 #!/usr/bin/env bash
+#
+# scripts/linux/build-all.sh — Linux-only build entrypoint.
+#
+# Windows builds are done natively on Windows via
+#   scripts/win/build-windows-msvc.ps1   (MSVC + vcpkg)
+# See docs/windows-msvc-build.md.
+#
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS_DIR="${ROOT}/.deps"
 
 if [ ! -d "${DEPS_DIR}/nlohmann_json-src" ]; then
@@ -12053,21 +12031,19 @@ fi
 
 openssl_target_ready() {
     local dir="$1"
-    { [ -f "${dir}/lib/libssl.a"    ] && [ -f "${dir}/lib/libcrypto.a"    ]; } || \
-    { [ -f "${dir}/lib64/libssl.a"  ] && [ -f "${dir}/lib64/libcrypto.a"  ]; }
+    { [ -f "${dir}/lib/libssl.a"   ] && [ -f "${dir}/lib/libcrypto.a"   ]; } || \
+    { [ -f "${dir}/lib64/libssl.a" ] && [ -f "${dir}/lib64/libcrypto.a" ]; }
 }
 
 if ! openssl_target_ready "${DEPS_DIR}/openssl-linux-x86_64" || \
-   ! openssl_target_ready "${DEPS_DIR}/openssl-linux-i686"   || \
-   ! openssl_target_ready "${DEPS_DIR}/openssl-mingw64"      || \
-   ! openssl_target_ready "${DEPS_DIR}/openssl-mingw32"; then
+   ! openssl_target_ready "${DEPS_DIR}/openssl-linux-i686"; then
     echo "==============================================="
     echo "OpenSSL not fully built; building (one-time)..."
     echo "==============================================="
-    "${ROOT}/scripts/build-openssl.sh"
+    "${ROOT}/scripts/linux/build-openssl.sh"
     echo
 else
-    echo "OpenSSL: already built for all targets, skipping."
+    echo "OpenSSL: already built for all Linux targets, skipping."
     echo
 fi
 
@@ -12076,8 +12052,6 @@ BUILD_TYPE="${1:-release}"
 TARGETS=(
     linux-x86_64
     linux-i686
-    windows-x86_64
-    windows-i686
 )
 
 for target in "${TARGETS[@]}"; do
@@ -12091,20 +12065,18 @@ done
 
 echo
 echo "==============================================="
-echo "All builds complete. Artifacts:"
+echo "All Linux builds complete. Artifacts:"
 echo "==============================================="
 
 for target in "${TARGETS[@]}"; do
-    if [[ "$target" == windows-* ]]; then
-        f="build/${target}-${BUILD_TYPE}/axiomdlp-agent.exe"
-    else
-        f="build/${target}-${BUILD_TYPE}/axiomdlp-agent"
-    fi
-    file "$f"
+    file "build/${target}-${BUILD_TYPE}/axiomdlp-agent"
 done
+
+echo
+echo "For Windows: clone on a Windows box and run scripts\\win\\build-windows-msvc.ps1"
 ```
 
-### \`scripts/build-grpc.sh\`
+### \`scripts/linux/build-grpc.sh\`
 
 ```bash
 #!/usr/bin/env bash
@@ -12134,7 +12106,7 @@ done
 set -euo pipefail
 
 GRPC_VERSION="v1.62.0"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS="$ROOT/.deps"
 SRC="$DEPS/grpc-src"
 BUILD_DIR="$DEPS/grpc-build"
@@ -12314,18 +12286,17 @@ echo "Windows gRPC is intentionally not built here."
 echo "The agent uses Boost.Beast WebSocket + JSON on Windows."
 ```
 
-### \`scripts/build-openssl.sh\`
+### \`scripts/linux/build-openssl.sh\`
 
 ```bash
 #!/usr/bin/env bash
 # scripts/build-openssl.sh
 #
-# Builds OpenSSL statically for all four agent targets.
+# Builds OpenSSL statically for both Linux agent targets.
+# Windows OpenSSL is supplied by vcpkg on the Windows side.
 # Output goes to:
 #   .deps/openssl-linux-x86_64/
 #   .deps/openssl-linux-i686/
-#   .deps/openssl-mingw64/
-#   .deps/openssl-mingw32/
 #
 # Run once. Re-run only if you bump OPENSSL_VERSION.
 # Takes 15-25 minutes total.
@@ -12333,7 +12304,7 @@ echo "The agent uses Boost.Beast WebSocket + JSON on Windows."
 set -euo pipefail
 
 OPENSSL_VERSION="3.3.2"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS="$ROOT/.deps"
 SRC="$DEPS/openssl-src"
 TARBALL="$DEPS/openssl.tar.gz"
@@ -12399,18 +12370,49 @@ build_one() {
 # ---------- Build all four ----------
 build_one "linux-x86_64"       "$DEPS/openssl-linux-x86_64"
 build_one "linux-x86"          "$DEPS/openssl-linux-i686"   -m32
-build_one "mingw64"            "$DEPS/openssl-mingw64"      --cross-compile-prefix=x86_64-w64-mingw32-
-build_one "mingw"              "$DEPS/openssl-mingw32"      --cross-compile-prefix=i686-w64-mingw32-
 
 echo
-echo "Done. All four OpenSSL trees are ready:"
+echo "Done. Both Linux OpenSSL trees are ready:"
 echo "  $DEPS/openssl-linux-x86_64"
 echo "  $DEPS/openssl-linux-i686"
-echo "  $DEPS/openssl-mingw64"
-echo "  $DEPS/openssl-mingw32"
 ```
 
-### \`scripts/build-windows-msvc.ps1\`
+### \`scripts/linux/merge-compile-commands.sh\`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+OUT="$ROOT/compile_commands.json"
+
+FILES=(
+    "$ROOT/build/linux-x86_64-debug/compile_commands.json"
+    "$ROOT/build/linux-x86_64-release/compile_commands.json"
+    "$ROOT/build/linux-i686-release/compile_commands.json"
+    "$ROOT/build/windows-x86_64-debug/compile_commands.json"
+    "$ROOT/build/windows-x86_64-release/compile_commands.json"
+    "$ROOT/build/windows-i686-release/compile_commands.json"
+)
+
+python3 - "${FILES[@]}" "$OUT" << 'PYEOF'
+import json, sys, os
+out = sys.argv[-1]
+inputs = sys.argv[1:-1]
+merged = {}
+for path in inputs:
+    if not os.path.exists(path):
+        continue
+    with open(path) as f:
+        for entry in json.load(f):
+            merged[entry["file"]] = entry
+result = sorted(merged.values(), key=lambda e: e["file"])
+with open(out, "w") as f:
+    json.dump(result, f, indent=2)
+print(f"Merged {len(result)} entries into {out}")
+PYEOF
+```
+
+### \`scripts/win/build-windows-msvc.ps1\`
 
 ```powershell
 <#
@@ -12444,7 +12446,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $projectRoot
 
 Write-Host "=== AxiomDLP Agent — Windows MSVC build ===" -ForegroundColor Cyan
@@ -12457,7 +12459,7 @@ if (-not $env:VCPKG_ROOT) {
 VCPKG_ROOT is not set.
 
 Run the one-time setup first:
-    .\scripts\setup-windows-msvc.ps1
+    .\scripts\win\setup-windows-msvc.ps1
 
 Then re-open your shell.
 "@
@@ -12496,144 +12498,7 @@ if (Test-Path $exe) {
 }
 ```
 
-### \`scripts/merge-compile-commands.sh\`
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/compile_commands.json"
-
-FILES=(
-    "$ROOT/build/linux-x86_64-debug/compile_commands.json"
-    "$ROOT/build/linux-x86_64-release/compile_commands.json"
-    "$ROOT/build/linux-i686-release/compile_commands.json"
-    "$ROOT/build/windows-x86_64-debug/compile_commands.json"
-    "$ROOT/build/windows-x86_64-release/compile_commands.json"
-    "$ROOT/build/windows-i686-release/compile_commands.json"
-)
-
-python3 - "${FILES[@]}" "$OUT" << 'PYEOF'
-import json, sys, os
-out = sys.argv[-1]
-inputs = sys.argv[1:-1]
-merged = {}
-for path in inputs:
-    if not os.path.exists(path):
-        continue
-    with open(path) as f:
-        for entry in json.load(f):
-            merged[entry["file"]] = entry
-result = sorted(merged.values(), key=lambda e: e["file"])
-with open(out, "w") as f:
-    json.dump(result, f, indent=2)
-print(f"Merged {len(result)} entries into {out}")
-PYEOF
-```
-
-### \`scripts/mock_server.py\`
-
-```python
-#!/usr/bin/env python3
-"""
-Mock WebSocket server for testing the TransportModule.
-
-Listens on ws://127.0.0.1:8765, logs every message, and responds to
-heartbeats with heartbeat_ack.
-
-Requirements:
-    pip install websockets
-"""
-
-import asyncio
-import json
-import signal
-import sys
-
-try:
-    import websockets
-except ImportError:
-    print("ERROR: 'websockets' package not installed.", file=sys.stderr)
-    print("Install:  pip install websockets", file=sys.stderr)
-    sys.exit(1)
-
-HOST = "0.0.0.0"
-PORT = 8765
-
-# Track stats for a periodic summary.
-_stats = {"heartbeats": 0, "sensitive_files": 0}
-
-
-async def handle_connection(ws):
-    peer = ws.remote_address
-    print(f"[+] client connected: {peer}")
-
-    try:
-        async for raw in ws:
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                print(f"[!] malformed JSON: {raw[:120]}")
-                continue
-
-            msg_type = msg.get("type", "?")
-            payload = msg.get("payload", {})
-
-            if msg_type == "heartbeat":
-                _stats["heartbeats"] += 1
-                await ws.send(json.dumps({
-                    "v": 1,
-                    "type": "heartbeat_ack",
-                    "ts": msg.get("ts", 0),
-                    "payload": {},
-                }))
-                print(f"[<] heartbeat #{_stats['heartbeats']}")
-
-            elif msg_type == "sensitive_file":
-                _stats["sensitive_files"] += 1
-                path = payload.get("path", "?")
-                cat = payload.get("category", "?")
-                size = payload.get("size", 0)
-                print(f"[<] sensitive #{_stats['sensitive_files']}: "
-                      f"{path} ({cat}, {size} bytes)")
-
-            else:
-                print(f"[<] {msg_type}: {json.dumps(payload)[:200]}")
-
-    except websockets.ConnectionClosed:
-        pass
-    finally:
-        print(f"[-] client disconnected: {peer}")
-
-
-async def main():
-    stop_event = asyncio.Event()
-
-    def on_signal(*_):
-        print("\nshutting down...")
-        stop_event.set()
-
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, on_signal)
-        except NotImplementedError:
-            pass
-
-    async with websockets.serve(handle_connection, HOST, PORT):
-        print(f"mock server listening on ws://{HOST}:{PORT}")
-        print("Press Ctrl+C to stop.\n")
-        await stop_event.wait()
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-```
-
-### \`scripts/setup-windows-msvc.ps1\`
+### \`scripts/win/setup-windows-msvc.ps1\`
 
 ```powershell
 <#
@@ -12719,690 +12584,7 @@ Write-Host "`n[3/3] Setting VCPKG_ROOT=$vcpkgRoot for current user..." -Foregrou
 $env:VCPKG_ROOT = $vcpkgRoot
 
 Write-Host "`n=== Setup complete ===" -ForegroundColor Cyan
-Write-Host "Re-open your shell, then run: .\scripts\build-windows-msvc.ps1" -ForegroundColor Cyan
-```
-
-### \`scripts/viz.html\`
-
-```html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>AxiomDLP — Filesystem Inventory</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<style>
-  :root {
-    --bg:      #0f1117;
-    --panel:   #161922;
-    --panel-2: #1e222d;
-    --border:  #2a2f3d;
-    --text:    #d8dde8;
-    --muted:   #7c8799;
-    --accent:  #4ea1ff;
-    --good:    #34d399;
-    --warn:    #fbbf24;
-    --bad:     #f87171;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    font-size: 14px;
-  }
-  header {
-    padding: 20px 32px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: baseline;
-    gap: 16px;
-  }
-  header h1 {
-    margin: 0;
-    font-size: 20px;
-    font-weight: 600;
-  }
-  header .badge {
-    background: var(--panel-2);
-    color: var(--muted);
-    padding: 3px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-family: ui-monospace, monospace;
-  }
-  header .refresh {
-    margin-left: auto;
-    background: var(--accent);
-    color: #000;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 13px;
-  }
-  header .refresh:hover { opacity: 0.85; }
-
-  main { padding: 24px 32px; }
-
-  .cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 16px;
-    margin-bottom: 24px;
-  }
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 16px 20px;
-  }
-  .card .label {
-    color: var(--muted);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: 6px;
-  }
-  .card .value {
-    font-size: 26px;
-    font-weight: 600;
-    font-family: ui-monospace, monospace;
-  }
-
-  .grid-2 {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 24px;
-    margin-bottom: 24px;
-  }
-  @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
-
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 20px;
-  }
-  .panel h2 {
-    margin: 0 0 16px;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .chart-wrap { height: 280px; position: relative; }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-  }
-  th {
-    text-align: left;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-    color: var(--muted);
-    font-weight: 500;
-    text-transform: uppercase;
-    font-size: 11px;
-    letter-spacing: 0.06em;
-  }
-  td {
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-    font-family: ui-monospace, monospace;
-  }
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background: var(--panel-2); }
-
-  .path {
-    max-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    direction: rtl;
-    text-align: left;
-  }
-  .path:hover { direction: ltr; text-align: right; }
-
-  .tag {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 3px;
-    background: var(--panel-2);
-    color: var(--muted);
-    font-size: 11px;
-  }
-
-  .filter-bar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 12px;
-    align-items: center;
-  }
-  .filter-bar input, .filter-bar select {
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 10px;
-    border-radius: 4px;
-    font-size: 13px;
-    font-family: inherit;
-  }
-  .filter-bar input { flex: 1; }
-  .filter-bar select { min-width: 130px; }
-</style>
-</head>
-<body>
-
-<header>
-  <h1>AxiomDLP — Filesystem Inventory</h1>
-  <span class="badge" id="schema-badge">schema v—</span>
-  <button class="refresh" onclick="refreshAll()">Refresh</button>
-</header>
-
-<main>
-  <!-- Summary cards -->
-  <div class="cards" id="cards">
-    <div class="card"><div class="label">Files</div>       <div class="value" id="stat-files">—</div></div>
-    <div class="card"><div class="label">Directories</div> <div class="value" id="stat-dirs">—</div></div>
-    <div class="card"><div class="label">Total Size</div>  <div class="value" id="stat-bytes">—</div></div>
-    <div class="card"><div class="label">Sensitive (future)</div> <div class="value" id="stat-sensitive">—</div></div>
-  </div>
-
-  <!-- Charts -->
-  <div class="grid-2">
-    <div class="panel">
-      <h2>Files by Category</h2>
-      <div class="chart-wrap"><canvas id="chart-categories"></canvas></div>
-    </div>
-    <div class="panel">
-      <h2>Top 25 Extensions</h2>
-      <div class="chart-wrap"><canvas id="chart-extensions"></canvas></div>
-    </div>
-  </div>
-
-  <div class="grid-2">
-    <div class="panel">
-      <h2>Top-Level Directories</h2>
-      <table id="table-dirs">
-        <thead><tr><th>Directory</th><th>Files</th><th>Size</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="panel">
-      <h2>Largest Files</h2>
-      <table id="table-largest">
-        <thead><tr><th>Path</th><th>Size</th><th>Category</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Browse -->
-  <div class="panel" style="margin-top: 24px;">
-    <h2>Browse Files</h2>
-    <div class="filter-bar">
-      <input id="search" placeholder="Search path (e.g. Downloads, .pdf, video)">
-      <select id="order">
-        <option value="size">Sort by size</option>
-        <option value="mtime">Sort by modified</option>
-        <option value="path">Sort by path</option>
-      </select>
-      <button class="refresh" onclick="refreshFiles()">Apply</button>
-    </div>
-    <table id="table-files">
-      <thead>
-        <tr>
-          <th style="width: 60%;">Path</th>
-          <th>Size</th>
-          <th>Category</th>
-          <th>Modified</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</main>
-
-<script>
-// ------------------------------------------------------------------
-// Helpers
-// ------------------------------------------------------------------
-const fmtBytes = (b) => {
-  if (b === 0 || b == null) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(b) / Math.log(1024));
-  const v = b / Math.pow(1024, i);
-  return v.toFixed(v < 10 ? 2 : 1) + " " + units[i];
-};
-const fmtNum = (n) => (n || 0).toLocaleString();
-const fmtDate = (ns) => {
-  if (!ns) return "—";
-  const ms = Math.floor(ns / 1_000_000);
-  const d = new Date(ms);
-  return d.toISOString().replace("T", " ").slice(0, 19);
-};
-const get = (url) => fetch(url).then(r => r.json());
-
-// ------------------------------------------------------------------
-// Summary cards
-// ------------------------------------------------------------------
-async function loadStats() {
-  const s = await get("/api/stats");
-  document.getElementById("stat-files").textContent     = fmtNum(s.files);
-  document.getElementById("stat-dirs").textContent      = fmtNum(s.dirs);
-  document.getElementById("stat-bytes").textContent     = fmtBytes(s.bytes);
-  document.getElementById("stat-sensitive").textContent = fmtNum(s.sensitive);
-  document.getElementById("schema-badge").textContent   = "schema v" + s.schema;
-}
-
-// ------------------------------------------------------------------
-// Category pie chart
-// ------------------------------------------------------------------
-let catChart = null;
-async function loadCategories() {
-  const data = await get("/api/categories");
-  const ctx  = document.getElementById("chart-categories");
-
-  const palette = [
-    "#4ea1ff","#34d399","#fbbf24","#f87171","#a78bfa",
-    "#22d3ee","#fb923c","#e879f9","#84cc16","#f472b6",
-  ];
-
-  if (catChart) catChart.destroy();
-  catChart = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels: data.map(d => d.category),
-      datasets: [{
-        data: data.map(d => d.count),
-        backgroundColor: data.map((_, i) => palette[i % palette.length]),
-        borderColor: "#161922",
-        borderWidth: 2,
-      }],
-    },
-    options: {
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: "right",
-          labels: { color: "#d8dde8", boxWidth: 12, font: { size: 12 } },
-        },
-        tooltip: {
-          callbacks: {
-            label: (ctx) => {
-              const item = data[ctx.dataIndex];
-              return `${item.category}: ${fmtNum(item.count)} files, ${fmtBytes(item.bytes)}`;
-            },
-          },
-        },
-      },
-    },
-  });
-}
-
-// ------------------------------------------------------------------
-// Extension bar chart
-// ------------------------------------------------------------------
-let extChart = null;
-async function loadExtensions() {
-  const data = await get("/api/extensions");
-  const ctx  = document.getElementById("chart-extensions");
-
-  if (extChart) extChart.destroy();
-  extChart = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels: data.map(d => "." + d.extension),
-      datasets: [{
-        label: "Files",
-        data: data.map(d => d.count),
-        backgroundColor: "#4ea1ff",
-      }],
-    },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: "#7c8799", font: { size: 10 } }, grid: { display: false } },
-        y: { ticks: { color: "#7c8799", font: { size: 11 } }, grid: { color: "#2a2f3d" } },
-      },
-    },
-  });
-}
-
-// ------------------------------------------------------------------
-// Top directories table
-// ------------------------------------------------------------------
-async function loadTopDirs() {
-  const data = await get("/api/top-dirs");
-  const tbody = document.querySelector("#table-dirs tbody");
-  tbody.innerHTML = "";
-  for (const d of data) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${d.dir}</td>
-      <td>${fmtNum(d.count)}</td>
-      <td>${fmtBytes(d.bytes)}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-// ------------------------------------------------------------------
-// Largest files table
-// ------------------------------------------------------------------
-async function loadLargest() {
-  const data = await get("/api/files?limit=20&order=size");
-  const tbody = document.querySelector("#table-largest tbody");
-  tbody.innerHTML = "";
-  for (const f of data) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td class="path" title="${f.path}">${f.path}</td>
-      <td>${fmtBytes(f.size)}</td>
-      <td><span class="tag">${f.category}</span></td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-// ------------------------------------------------------------------
-// Browse files
-// ------------------------------------------------------------------
-async function refreshFiles() {
-  const search = document.getElementById("search").value.trim();
-  const order  = document.getElementById("order").value;
-  let url = `/api/files?limit=200&order=${order}`;
-  if (search) url += `&search=${encodeURIComponent(search)}`;
-
-  const data = await get(url);
-  const tbody = document.querySelector("#table-files tbody");
-  tbody.innerHTML = "";
-
-  if (data.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#7c8799;">No matches.</td></tr>';
-    return;
-  }
-
-  for (const f of data) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td class="path" title="${f.path}">${f.path}</td>
-      <td>${fmtBytes(f.size)}</td>
-      <td><span class="tag">${f.category}</span></td>
-      <td>${fmtDate(f.mtime_ns)}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-// ------------------------------------------------------------------
-// Wire it up
-// ------------------------------------------------------------------
-async function refreshAll() {
-  await Promise.all([
-    loadStats(),
-    loadCategories(),
-    loadExtensions(),
-    loadTopDirs(),
-    loadLargest(),
-  ]);
-  await refreshFiles();
-}
-
-document.getElementById("search").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") refreshFiles();
-});
-
-refreshAll();
-</script>
-</body>
-</html>
-```
-
-### \`scripts/viz_server.py\`
-
-```python
-#!/usr/bin/env python3
-"""
-Minimal HTTP server that exposes data/agent.db as JSON for the
-visualization page. Uses only the Python standard library — no pip.
-
-Endpoints:
-    GET /                -> the HTML page
-    GET /api/stats       -> totals
-    GET /api/categories  -> file count + bytes per category
-    GET /api/extensions  -> top extensions by count
-    GET /api/top-dirs    -> top-level directory breakdown
-    GET /api/walk-info   -> migrations version, file count
-    GET /api/files       -> paginated file list
-        ?limit=N         (default 100)
-        &offset=N        (default 0)
-        &order=size|mtime|path
-        &category=X      (optional filter)
-        &extension=X     (optional filter)
-        &search=X        (optional path substring)
-"""
-
-import json
-import os
-import sqlite3
-import sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
-
-# ------------------------------------------------------------------
-# Config
-# ------------------------------------------------------------------
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR   = os.path.dirname(SCRIPT_DIR)
-DB_PATH    = os.path.join(ROOT_DIR, "data", "agent.db")
-HTML_PATH  = os.path.join(SCRIPT_DIR, "viz.html")
-PORT       = int(os.environ.get("VIZ_PORT", "8080"))
-
-
-# ------------------------------------------------------------------
-# Database helpers
-# ------------------------------------------------------------------
-
-def db_connect():
-    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    return con
-
-
-def get_stats():
-    with db_connect() as con:
-        cur = con.cursor()
-        row = cur.execute("""
-            SELECT
-                SUM(CASE WHEN is_directory = 0 THEN 1 ELSE 0 END) AS files,
-                SUM(CASE WHEN is_directory = 1 THEN 1 ELSE 0 END) AS dirs,
-                SUM(CASE WHEN is_directory = 0 THEN size ELSE 0 END) AS bytes,
-                SUM(CASE WHEN is_sensitive = 1 THEN 1 ELSE 0 END) AS sensitive
-            FROM files
-        """).fetchone()
-        version = cur.execute("PRAGMA user_version").fetchone()[0]
-        return {
-            "files":     row["files"]     or 0,
-            "dirs":      row["dirs"]      or 0,
-            "bytes":     row["bytes"]     or 0,
-            "sensitive": row["sensitive"] or 0,
-            "schema":    version,
-        }
-
-
-def get_categories():
-    with db_connect() as con:
-        cur = con.cursor()
-        rows = cur.execute("""
-            SELECT category, COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
-            FROM files
-            WHERE is_directory = 0
-            GROUP BY category
-            ORDER BY count DESC
-        """).fetchall()
-        return [dict(r) for r in rows]
-
-
-def get_extensions():
-    with db_connect() as con:
-        cur = con.cursor()
-        rows = cur.execute("""
-            SELECT extension, COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
-            FROM files
-            WHERE is_directory = 0 AND extension != ''
-            GROUP BY extension
-            ORDER BY count DESC
-            LIMIT 25
-        """).fetchall()
-        return [dict(r) for r in rows]
-
-
-def get_top_dirs():
-    with db_connect() as con:
-        cur = con.cursor()
-        rows = cur.execute("""
-            SELECT
-                substr(path, 1, instr(substr(path, 2), '/') + 1) AS dir,
-                COUNT(*) AS count,
-                COALESCE(SUM(size), 0) AS bytes
-            FROM files
-            WHERE is_directory = 0
-            GROUP BY dir
-            ORDER BY count DESC
-            LIMIT 20
-        """).fetchall()
-        return [dict(r) for r in rows]
-
-
-def get_files(params):
-    limit    = min(int(params.get("limit",  ["100"])[0]), 1000)
-    offset   = max(int(params.get("offset", ["0"])[0]), 0)
-    order    = params.get("order", ["size"])[0]
-    category = params.get("category",  [""])[0]
-    extension= params.get("extension", [""])[0]
-    search   = params.get("search",    [""])[0]
-
-    order_col = "size"
-    if order in ("size", "mtime", "path"):
-        order_col = {"size": "size", "mtime": "mtime_ns", "path": "path"}[order]
-
-    where = ["is_directory = 0"]
-    binds = []
-    if category:
-        where.append("category = ?")
-        binds.append(category)
-    if extension:
-        where.append("extension = ?")
-        binds.append(extension)
-    if search:
-        where.append("path LIKE ?")
-        binds.append(f"%{search}%")
-
-    sql = f"""
-        SELECT path, basename, extension, size, mtime_ns, category,
-               is_executable, uid
-        FROM files
-        WHERE {' AND '.join(where)}
-        ORDER BY {order_col} DESC
-        LIMIT ? OFFSET ?
-    """
-    binds.extend([limit, offset])
-
-    with db_connect() as con:
-        cur = con.cursor()
-        rows = cur.execute(sql, binds).fetchall()
-        return [dict(r) for r in rows]
-
-
-# ------------------------------------------------------------------
-# HTTP handler
-# ------------------------------------------------------------------
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        pass  # quiet
-
-    def _send_json(self, obj):
-        body = json.dumps(obj).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _send_html(self):
-        with open(HTML_PATH, "rb") as f:
-            body = f.read()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        url    = urlparse(self.path)
-        path   = url.path
-        params = parse_qs(url.query)
-
-        try:
-            if path == "/" or path == "/index.html":
-                self._send_html()
-            elif path == "/api/stats":
-                self._send_json(get_stats())
-            elif path == "/api/categories":
-                self._send_json(get_categories())
-            elif path == "/api/extensions":
-                self._send_json(get_extensions())
-            elif path == "/api/top-dirs":
-                self._send_json(get_top_dirs())
-            elif path == "/api/files":
-                self._send_json(get_files(params))
-            else:
-                self.send_error(404)
-        except Exception as e:
-            body = json.dumps({"error": str(e)}).encode()
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-
-# ------------------------------------------------------------------
-# Main
-# ------------------------------------------------------------------
-
-def main():
-    if not os.path.exists(DB_PATH):
-        print(f"ERROR: database not found: {DB_PATH}", file=sys.stderr)
-        print("Run the agent once to populate it.", file=sys.stderr)
-        sys.exit(1)
-
-    if not os.path.exists(HTML_PATH):
-        print(f"ERROR: HTML page not found: {HTML_PATH}", file=sys.stderr)
-        sys.exit(1)
-
-    server = HTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"Serving {DB_PATH}")
-    print(f"Open http://127.0.0.1:{PORT}/ in your browser")
-    print("Press Ctrl+C to stop.")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopped.")
-
-
-if __name__ == "__main__":
-    main()
+Write-Host "Re-open your shell, then run: .\scripts\win\build-windows-msvc.ps1" -ForegroundColor Cyan
 ```
 
 ---
@@ -13929,7 +13111,6 @@ the user** — do not assume their contents.
 - `.vscode/` — editor config — not bundled
 - `axiomdlp-agent-bundle.md` — generated bundle — not bundled
 - `.clangd` — editor config — not bundled
-- `compile_commands.json` — generated — not bundled
 - `vcpkg-configuration.json` — not bundled (ask if needed)
 - `vcpkg.json` — not bundled (ask if needed)
 
@@ -13938,6 +13119,6 @@ the user** — do not assume their contents.
 
 ## Summary
 
-- Files included: **81**
-- Files skipped:  **23**
-- Bundle size:    452K
+- Files included: **78**
+- Files skipped:  **22**
+- Bundle size:    428K

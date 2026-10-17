@@ -363,6 +363,15 @@ void parse_content_scanner(const json& mods, Config& cfg) {
     }
 }
 
+void parse_grpc_transport(const json& mods, Config& cfg) {
+    if (!mods.contains("grpc_transport")) return;
+    const json& g = mods["grpc_transport"];
+    if (!g.is_object()) return;
+
+    read_bool(g, "enabled", cfg.modules.grpc_transport.enabled,
+              cfg.load_warnings, "modules.grpc_transport");
+}
+
 } // namespace
 
 Config Config::load(const std::string& path) {
@@ -405,8 +414,17 @@ Config Config::load(const std::string& path) {
             parse_transport(mods, cfg);
             parse_agent_sync(mods, cfg);
             parse_content_scanner(mods, cfg);
+            parse_grpc_transport(mods, cfg);
         }
     }
+
+#ifndef AXIOM_HAVE_GRPC
+    if (cfg.modules.grpc_transport.enabled) {
+        cfg.load_warnings.push_back(
+            "modules.grpc_transport.enabled=true, but gRPC is not available "
+            "on this platform — the module will be ignored");
+    }
+#endif
 
     return cfg;
 }

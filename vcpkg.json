@@ -10,9 +10,14 @@
     "efsw",
     "sqlite3",
     "openssl",
+    "protobuf",
     {
       "name": "boost",
       "features": ["beast", "asio", "system"]
+    },
+    {
+      "name": "grpc",
+      "features": []
     }
   ],
   "overrides": []
