@@ -1,62 +1,41 @@
 name: Windows MSVC build
 
 on:
-  push:
-    branches: [msvc-windows-build, main]
-  pull_request:
-    branches: [msvc-windows-build, main]
+  # Only allows manual runs from the Actions tab. Does not run on push/PR.
   workflow_dispatch:
-
-env:
-  VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}\\vcpkg-cache,readwrite"
 
 jobs:
   build:
-    name: Build (${{ matrix.arch }})
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64, x86]
-
+    
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.arch }}
-
-      - name: Setup CMake + Ninja
-        uses: lukka/get-cmake@latest
-
-      - name: Restore vcpkg binary cache
+      - name: Cache vcpkg installed packages
         uses: actions/cache@v4
         with:
-          path: vcpkg-cache
-          key: vcpkg-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          path: C:\Users\runneradmin\vcpkg\installed
+          key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}
           restore-keys: |
-            vcpkg-${{ runner.os }}-${{ matrix.arch }}-
+            ${{ runner.os }}-vcpkg-
 
-      - name: Clone vcpkg
-        shell: pwsh
-        run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git C:\vcpkg
-          C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
-          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+      - name: Setup MSVC and vcpkg
+        run: .\scripts\win\setup-windows-msvc.ps1
+        shell: powershell
 
-      - name: Configure
-        shell: pwsh
-        run: cmake --preset windows-${{ matrix.arch }}-msvc-release
+      - name: Build x64 Release
+        run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
+        shell: powershell
 
-      - name: Build
-        shell: pwsh
-        run: cmake --build --preset windows-${{ matrix.arch }}-msvc-release
+      - name: Build x86 Release
+        run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
+        shell: powershell
 
-      - name: Upload artifact
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: axiomdlp-agent-windows-${{ matrix.arch }}-release
-          path: build/windows-${{ matrix.arch }}-msvc-release/axiomdlp-agent.exe
-          if-no-files-found: error
+          name: axiomdlp-agent-windows-binaries
+          path: |
+            build/windows-x64-msvc-release/axiomdlp-agent.exe
+            build/windows-x86-msvc-release/axiomdlp-agent.exe
