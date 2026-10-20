@@ -10,6 +10,9 @@
 #include "features/filesystem_watcher/filesystem_watcher_module.h"
 #include "features/inventory/inventory_module.h"
 #include "features/websocket_transport/transport_module.h"
+#ifdef AXIOM_HAVE_GRPC
+#include "features/grpc_transport/grpc_transport_module.h"
+#endif
 #include "storage/migrations.h"
 #include "storage/state_repository.h"
 
@@ -129,6 +132,10 @@ bool Application::init() {
     module_manager_->register_module(std::make_unique<TransportModule>());
     module_manager_->register_module(std::make_unique<AgentSyncModule>());
     module_manager_->register_module(std::make_unique<ContentScannerModule>());
+
+#ifdef AXIOM_HAVE_GRPC
+    module_manager_->register_module(std::make_unique<GrpcTransportModule>());
+#endif
 
     // 12. Initialize all modules.
     if (!module_manager_->initialize_all(*module_context_)) {

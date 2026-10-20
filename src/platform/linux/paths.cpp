@@ -1,5 +1,9 @@
 // src/platform/linux/paths_linux.cpp
 
+#if !defined(__linux__)
+#  error "src/platform/linux/paths.cpp is Linux-only and must not be compiled on other hosts."
+#endif
+
 #include "platform/paths.h"
 
 #include <limits.h>

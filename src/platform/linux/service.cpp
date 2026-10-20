@@ -1,5 +1,9 @@
 // src/platform/linux/service_linux.cpp
 
+#if !defined(__linux__)
+#  error "src/platform/linux/service.cpp is Linux-only and must not be compiled on other hosts."
+#endif
+
 #include "platform/service.h"
 #include "modules/module_manager.h"
 

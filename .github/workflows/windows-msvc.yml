@@ -1,0 +1,41 @@
+name: Windows MSVC build
+
+on:
+  # Only allows manual runs from the Actions tab. Does not run on push/PR.
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\vcpkg\installed
+          key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-
+
+      - name: Setup MSVC and vcpkg
+        run: .\scripts\win\setup-windows-msvc.ps1
+        shell: powershell
+
+      - name: Build x64 Release
+        run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
+        shell: powershell
+
+      - name: Build x86 Release
+        run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
+        shell: powershell
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: axiomdlp-agent-windows-binaries
+          path: |
+            build/windows-x64-msvc-release/axiomdlp-agent.exe
+            build/windows-x86-msvc-release/axiomdlp-agent.exe

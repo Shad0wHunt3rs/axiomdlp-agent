@@ -1,6 +1,6 @@
 # AxiomDLP Agent — Source Bundle
 
-- **Generated:** 2026-10-17 08:01:25 UTC
+- **Generated:** 2026-10-17 08:40:41 UTC
 - **Root:** `/home/kali/axiomdlp-agent`
 
 This bundle contains **only the project's own source code** —
@@ -28,9 +28,6 @@ If you need any of them, ask the user — do not guess.
 ./cmake/toolchains
 ./cmake/toolchains/linux-i686.cmake
 ./cmake/toolchains/linux-x86_64.cmake
-./cmake/toolchains/windows-i686.cmake
-./cmake/toolchains/windows-x86_64.cmake
-./compile_commands.json
 ./config
 ./config/agent.default.json
 ./config/agent.default_win.json
@@ -43,10 +40,12 @@ If you need any of them, ask the user — do not guess.
 ./docs/modules.md
 ./docs/policy_format.md
 ./done.md
+./.github
+./.github/workflows
+./.github/workflows/windows-msvc.yml
 ./.gitignore
 ./LICENSE
 ./make-bundle.sh
-./migration.md
 ./next.md
 ./packaging
 ./packaging/linux
@@ -55,13 +54,14 @@ If you need any of them, ask the user — do not guess.
 ./packaging/windows
 ./packaging/windows/service_install.ps1
 ./scripts
-./scripts/build-all.sh
-./scripts/build-grpc.sh
-./scripts/build-openssl.sh
-./scripts/merge-compile-commands.sh
-./scripts/mock_server.py
-./scripts/viz.html
-./scripts/viz_server.py
+./scripts/linux
+./scripts/linux/build-all.sh
+./scripts/linux/build-grpc.sh
+./scripts/linux/build-openssl.sh
+./scripts/linux/merge-compile-commands.sh
+./scripts/win
+./scripts/win/build-windows-msvc.ps1
+./scripts/win/setup-windows-msvc.ps1
 ./src
 ./src/events
 ./src/events/event_bus.cpp
@@ -142,6 +142,8 @@ If you need any of them, ask the user — do not guess.
 ./src/util/file_hash.h
 ./src/util/glob_match.cpp
 ./src/util/glob_match.h
+./vcpkg-configuration.json
+./vcpkg.json
 ```
 
 ---
@@ -184,6 +186,26 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ----------------------------------------------------------------
+# Dependency acquisition strategy
+#
+#   MSVC (Windows, native)   -> vcpkg manifest mode
+#   MINGW (Windows, cross)   -> existing .deps/ cross-built trees
+#   UNIX (Linux)             -> existing .deps/ native trees
+# ----------------------------------------------------------------
+if(MSVC)
+    set(AXIOM_USE_VCPKG_DEPS ON)
+    message(STATUS "Build strategy: MSVC + vcpkg (Windows native)")
+    if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY
+            "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING
+            "Use static CRT to match MinGW's -static-libstdc++")
+    endif()
+else()
+    set(AXIOM_USE_VCPKG_DEPS OFF)
+    message(STATUS "Build strategy: GCC native (.deps/)")
+endif()
+
+# ----------------------------------------------------------------
 # Detect target triple
 # ----------------------------------------------------------------
 if(WIN32)
@@ -210,268 +232,248 @@ message(STATUS "Dependency source cache: ${AXIOM_DEPS_DIR}")
 # ----------------------------------------------------------------
 include(FetchContent)
 
-# --- nlohmann/json (header-only; prefer system) ---
-find_package(nlohmann_json QUIET)
-
-if(NOT nlohmann_json_FOUND)
-    message(STATUS "System nlohmann_json not found; fetching via FetchContent")
-    set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
-    set(JSON_Install    OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        nlohmann_json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG        v3.11.3
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(nlohmann_json)
+# --- nlohmann/json (header-only) ---
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(nlohmann_json CONFIG REQUIRED)
+    message(STATUS "nlohmann_json (from vcpkg): ${nlohmann_json_VERSION}")
 else()
-    message(STATUS "Using system nlohmann_json (${nlohmann_json_VERSION})")
+    find_package(nlohmann_json QUIET)
+    if(NOT nlohmann_json_FOUND)
+        message(STATUS "System nlohmann_json not found; fetching via FetchContent")
+        set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+        set(JSON_Install    OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(
+            nlohmann_json
+            GIT_REPOSITORY https://github.com/nlohmann/json.git
+            GIT_TAG        v3.11.3
+            GIT_SHALLOW    TRUE
+        )
+        FetchContent_MakeAvailable(nlohmann_json)
+    else()
+        message(STATUS "Using system nlohmann_json (${nlohmann_json_VERSION})")
+    endif()
 endif()
 
-# --- spdlog (compiled; always FetchContent for cross-compile) ---
-set(SPDLOG_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
-set(SPDLOG_BUILD_EXAMPLE  OFF CACHE BOOL "" FORCE)
-set(SPDLOG_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-set(SPDLOG_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
-set(SPDLOG_INSTALL        OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(
-    spdlog
-    GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG        v1.14.1
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(spdlog)
+# --- spdlog ---
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(spdlog CONFIG REQUIRED)
+    message(STATUS "spdlog (from vcpkg): ${spdlog_VERSION}")
+else()
+    set(SPDLOG_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_EXAMPLE  OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_INSTALL        OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG        v1.14.1
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(spdlog)
+endif()
 
 # --- efsw (file system watcher) ---
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(BUILD_STATIC_LIBS ON  CACHE BOOL "" FORCE)
-set(EFSW_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
-set(EFSW_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(
-    efsw
-    GIT_REPOSITORY https://github.com/SpartanJ/efsw.git
-    GIT_TAG        1.7.2
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(efsw)
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(efsw CONFIG REQUIRED)
+    if(TARGET efsw::efsw)
+        set(AXIOM_EFSW_TARGET efsw::efsw)
+    else()
+        set(AXIOM_EFSW_TARGET efsw)
+    endif()
+    message(STATUS "efsw (from vcpkg)")
+else()
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(BUILD_STATIC_LIBS ON  CACHE BOOL "" FORCE)
+    set(EFSW_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
+    set(EFSW_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        efsw
+        GIT_REPOSITORY https://github.com/SpartanJ/efsw.git
+        GIT_TAG        1.7.2
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(efsw)
+    set(AXIOM_EFSW_TARGET efsw-static)
+endif()
 
 # ----------------------------------------------------------------
-# Boost (Beast + Asio + System) — headers only
-#
-# We do NOT use find_package(Boost). For cross-compiled targets it
-# searches the target's system include paths, where Boost is not
-# installed.
-#
-# We also must NOT add /usr/include directly to the target's include
-# path, because that would expose the host's Linux system headers to
-# cross-compiled targets. Those headers conflict with MinGW's own
-# headers for libc (stdlib.h, stdint.h, time.h, wchar.h, ...) and
-# cause hundreds of cascading type errors.
-#
-# The fix: create an isolated directory containing ONLY the boost/
-# subtree (via a symlink), and use that as the include path. Cross
-# targets see Boost but nothing else from the host's /usr/include.
-#
-# Boost.Beast provides both the WebSocket client (used by the
-# transport module) and the HTTP client (used by the agent_sync
-# and content_scanner modules). No external HTTP library is needed.
+# Boost (Beast + Asio + System)
 # ----------------------------------------------------------------
 set(AXIOM_BOOST_ROOT "" CACHE PATH "Override Boost header root")
 
-if(NOT AXIOM_BOOST_ROOT)
-    foreach(candidate "/usr/include" "/usr/local/include")
-        if(EXISTS "${candidate}/boost/beast.hpp")
-            set(AXIOM_BOOST_ROOT "${candidate}")
-            break()
-        endif()
-    endforeach()
-endif()
-
-if(NOT AXIOM_BOOST_ROOT OR NOT EXISTS "${AXIOM_BOOST_ROOT}/boost/beast.hpp")
-    message(FATAL_ERROR
-        "Boost headers not found. Install them with:\n"
-        "    sudo apt install -y libboost-dev\n"
-        "Then verify that /usr/include/boost/beast.hpp exists.")
-endif()
-
-set(AXIOM_BOOST_ISOLATED_DIR "${AXIOM_DEPS_DIR}/boost-include")
-
-if(NOT EXISTS "${AXIOM_BOOST_ISOLATED_DIR}/boost/beast.hpp")
-    message(STATUS "Creating isolated Boost include directory at ${AXIOM_BOOST_ISOLATED_DIR}")
-    file(MAKE_DIRECTORY "${AXIOM_BOOST_ISOLATED_DIR}")
-    file(CREATE_LINK
-         "${AXIOM_BOOST_ROOT}/boost"
-         "${AXIOM_BOOST_ISOLATED_DIR}/boost"
-         SYMBOLIC)
-endif()
-
-file(STRINGS "${AXIOM_BOOST_ROOT}/boost/version.hpp"
-     _boost_version_line
-     REGEX "#define BOOST_LIB_VERSION ")
-
-if(_boost_version_line MATCHES "\"([0-9_]+)\"")
-    set(_boost_version_raw "${CMAKE_MATCH_1}")
-    string(REPLACE "_" "." _boost_version "${_boost_version_raw}")
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(Boost CONFIG REQUIRED)
+    set(AXIOM_BOOST_INCLUDE_DIRS "")
+    message(STATUS "Boost: from vcpkg (CONFIG mode)")
 else()
-    set(_boost_version "unknown")
+    if(NOT AXIOM_BOOST_ROOT)
+        foreach(candidate "/usr/include" "/usr/local/include")
+            if(EXISTS "${candidate}/boost/beast.hpp")
+                set(AXIOM_BOOST_ROOT "${candidate}")
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(NOT AXIOM_BOOST_ROOT OR NOT EXISTS "${AXIOM_BOOST_ROOT}/boost/beast.hpp")
+        message(FATAL_ERROR
+            "Boost headers not found. Install them with:\n"
+            "    sudo apt install -y libboost-dev\n"
+            "Then verify that /usr/include/boost/beast.hpp exists.")
+    endif()
+    set(AXIOM_BOOST_ISOLATED_DIR "${AXIOM_DEPS_DIR}/boost-include")
+    if(NOT EXISTS "${AXIOM_BOOST_ISOLATED_DIR}/boost/beast.hpp")
+        message(STATUS "Creating isolated Boost include directory at ${AXIOM_BOOST_ISOLATED_DIR}")
+        file(MAKE_DIRECTORY "${AXIOM_BOOST_ISOLATED_DIR}")
+        file(CREATE_LINK
+             "${AXIOM_BOOST_ROOT}/boost"
+             "${AXIOM_BOOST_ISOLATED_DIR}/boost"
+             SYMBOLIC)
+    endif()
+    file(STRINGS "${AXIOM_BOOST_ROOT}/boost/version.hpp"
+         _boost_version_line
+         REGEX "#define BOOST_LIB_VERSION ")
+    if(_boost_version_line MATCHES "\"([0-9_]+)\"")
+        set(_boost_version_raw "${CMAKE_MATCH_1}")
+        string(REPLACE "_" "." _boost_version "${_boost_version_raw}")
+    else()
+        set(_boost_version "unknown")
+    endif()
+    message(STATUS "Boost headers (isolated): ${AXIOM_BOOST_ISOLATED_DIR}/boost (version ${_boost_version})")
+    set(AXIOM_BOOST_INCLUDE_DIRS "${AXIOM_BOOST_ISOLATED_DIR}")
 endif()
-
-message(STATUS "Boost headers (isolated): ${AXIOM_BOOST_ISOLATED_DIR}/boost (version ${_boost_version})")
 
 find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------
-# OpenSSL — TLS support for agent_sync, transport, content_scanner.
-#
-# All four targets use statically built OpenSSL from .deps/.
-# Imported targets are created manually because CMake 4.x's
-# find_package(OpenSSL) ignores pre-set library paths on
-# cross-compile targets and on multilib native builds.
+# OpenSSL
 # ----------------------------------------------------------------
-if(WIN32)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw64")
-    else()
-        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-mingw32")
-    endif()
-elseif(UNIX AND NOT APPLE)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-x86_64")
-    else()
-        set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-i686")
-    endif()
-endif()
-
-if(EXISTS "${AXIOM_OPENSSL_DIR}/lib/libssl.a")
-    set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib")
-elseif(EXISTS "${AXIOM_OPENSSL_DIR}/lib64/libssl.a")
-    set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib64")
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(OpenSSL REQUIRED)
+    message(STATUS "OpenSSL (from vcpkg): ${OPENSSL_VERSION}")
 else()
-    message(FATAL_ERROR
-        "OpenSSL not found in ${AXIOM_OPENSSL_DIR}.\n"
-        "Run ./scripts/build-openssl.sh first.")
+    if(UNIX AND NOT APPLE)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-x86_64")
+        else()
+            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-i686")
+        endif()
+    endif()
+    if(EXISTS "${AXIOM_OPENSSL_DIR}/lib/libssl.a")
+        set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib")
+    elseif(EXISTS "${AXIOM_OPENSSL_DIR}/lib64/libssl.a")
+        set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib64")
+    else()
+        message(FATAL_ERROR
+            "OpenSSL not found in ${AXIOM_OPENSSL_DIR}.\n"
+            "Run ./scripts/build-openssl.sh first.")
+    endif()
+    set(AXIOM_OPENSSL_INCLUDE_DIR "${AXIOM_OPENSSL_DIR}/include")
+    if(NOT EXISTS "${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/ssl.h")
+        message(FATAL_ERROR
+            "OpenSSL headers not found at ${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/.")
+    endif()
+    if(NOT TARGET OpenSSL::SSL)
+        add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)
+        set_target_properties(OpenSSL::SSL PROPERTIES
+            IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"
+            INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}"
+            INTERFACE_LINK_LIBRARIES      "OpenSSL::Crypto")
+    endif()
+    if(NOT TARGET OpenSSL::Crypto)
+        add_library(OpenSSL::Crypto STATIC IMPORTED GLOBAL)
+        set_target_properties(OpenSSL::Crypto PROPERTIES
+            IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
+            INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}")
+    endif()
+    message(STATUS "OpenSSL (imported from .deps)")
+    message(STATUS "  include: ${AXIOM_OPENSSL_INCLUDE_DIR}")
+    message(STATUS "  ssl:     ${AXIOM_OPENSSL_LIB_DIR}/libssl.a")
+    message(STATUS "  crypto:  ${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a")
 endif()
-
-set(AXIOM_OPENSSL_INCLUDE_DIR "${AXIOM_OPENSSL_DIR}/include")
-
-if(NOT EXISTS "${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/ssl.h")
-    message(FATAL_ERROR
-        "OpenSSL headers not found at ${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/.")
-endif()
-
-if(NOT TARGET OpenSSL::SSL)
-    add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)
-    set_target_properties(OpenSSL::SSL PROPERTIES
-        IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}"
-        INTERFACE_LINK_LIBRARIES      "OpenSSL::Crypto")
-endif()
-
-if(NOT TARGET OpenSSL::Crypto)
-    add_library(OpenSSL::Crypto STATIC IMPORTED GLOBAL)
-    set_target_properties(OpenSSL::Crypto PROPERTIES
-        IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}")
-endif()
-
-message(STATUS "OpenSSL (imported from .deps)")
-message(STATUS "  include: ${AXIOM_OPENSSL_INCLUDE_DIR}")
-message(STATUS "  ssl:     ${AXIOM_OPENSSL_LIB_DIR}/libssl.a")
-message(STATUS "  crypto:  ${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a")
 
 # ----------------------------------------------------------------
-# SQLite3 amalgamation
+# SQLite3
 # ----------------------------------------------------------------
-set(AXIOM_SQLITE_DIR "${AXIOM_DEPS_DIR}/sqlite3-src")
-set(AXIOM_SQLITE_C   "${AXIOM_SQLITE_DIR}/sqlite3.c")
-set(AXIOM_SQLITE_ZIP "${AXIOM_DEPS_DIR}/sqlite3.zip")
-set(AXIOM_SQLITE_URL "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip")
-set(AXIOM_SQLITE_MIN_BYTES 5000000)
-
-set(AXIOM_SQLITE_CACHE_OK OFF)
-
-if(EXISTS "${AXIOM_SQLITE_C}")
-    file(SIZE "${AXIOM_SQLITE_C}" cache_size)
-    if(cache_size GREATER_EQUAL ${AXIOM_SQLITE_MIN_BYTES})
-        set(AXIOM_SQLITE_CACHE_OK ON)
-    else()
-        message(STATUS "SQLite cache truncated (${cache_size} bytes); re-downloading")
-        file(REMOVE_RECURSE "${AXIOM_SQLITE_DIR}")
-    endif()
-endif()
-
-if(NOT AXIOM_SQLITE_CACHE_OK)
-    message(STATUS "Downloading SQLite amalgamation")
-
-    file(REMOVE "${AXIOM_SQLITE_ZIP}")
-
-    find_program(AXIOM_CURL_BIN NAMES curl)
-    find_program(AXIOM_WGET_BIN NAMES wget)
-
-    if(AXIOM_CURL_BIN)
-        execute_process(
-            COMMAND "${AXIOM_CURL_BIN}" -fL --retry 3 --retry-delay 2
-                    -o "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
-            RESULT_VARIABLE dl_result
-            ERROR_VARIABLE  dl_error
-        )
-    elseif(AXIOM_WGET_BIN)
-        execute_process(
-            COMMAND "${AXIOM_WGET_BIN}" -O "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
-            RESULT_VARIABLE dl_result
-            ERROR_VARIABLE  dl_error
-        )
-    else()
-        message(FATAL_ERROR "Neither curl nor wget is installed.")
-    endif()
-
-    if(NOT dl_result EQUAL 0)
-        message(FATAL_ERROR "SQLite download failed: ${dl_error}")
-    endif()
-
-    file(SIZE "${AXIOM_SQLITE_ZIP}" zip_size)
-    if(zip_size LESS 2000000)
-        message(FATAL_ERROR "SQLite download is truncated (${zip_size} bytes).")
-    endif()
-
-    file(ARCHIVE_EXTRACT INPUT "${AXIOM_SQLITE_ZIP}"
-         DESTINATION "${AXIOM_DEPS_DIR}/sqlite3-extract")
-
-    file(GLOB SQLITE_DIRS "${AXIOM_DEPS_DIR}/sqlite3-extract/sqlite-amalgamation-*")
-    list(LENGTH SQLITE_DIRS SQLITE_DIRS_LEN)
-    if(SQLITE_DIRS_LEN EQUAL 0)
-        message(FATAL_ERROR "SQLite amalgamation extraction produced no directory")
-    endif()
-    list(GET SQLITE_DIRS 0 SQLITE_DIR)
-
-    file(RENAME "${SQLITE_DIR}" "${AXIOM_SQLITE_DIR}")
-    file(REMOVE_RECURSE "${AXIOM_DEPS_DIR}/sqlite3-extract")
-    file(REMOVE "${AXIOM_SQLITE_ZIP}")
-
-    file(SIZE "${AXIOM_SQLITE_C}" extracted_size)
-    if(extracted_size LESS ${AXIOM_SQLITE_MIN_BYTES})
-        message(FATAL_ERROR "Extracted sqlite3.c is truncated (${extracted_size} bytes).")
-    endif()
-
-    message(STATUS "SQLite amalgamation cached at ${AXIOM_SQLITE_DIR}")
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(SQLite3 REQUIRED)
+    set(AXIOM_SQLITE_TARGET SQLite::SQLite3)
+    message(STATUS "SQLite3 (from vcpkg): ${SQLite3_VERSION}")
 else()
-    message(STATUS "Using cached SQLite amalgamation from .deps/sqlite3-src/")
-endif()
-
-add_library(axiom_sqlite STATIC "${AXIOM_SQLITE_C}")
-target_include_directories(axiom_sqlite PUBLIC "${AXIOM_SQLITE_DIR}")
-
-target_compile_definitions(axiom_sqlite PRIVATE
-    SQLITE_THREADSAFE=1
-    SQLITE_OMIT_LOAD_EXTENSION=1
-    SQLITE_DEFAULT_MEMSTATUS=0
-    SQLITE_DQS=0
-)
-
-if(UNIX AND NOT APPLE)
-    target_link_libraries(axiom_sqlite PUBLIC dl pthread)
+    set(AXIOM_SQLITE_DIR "${AXIOM_DEPS_DIR}/sqlite3-src")
+    set(AXIOM_SQLITE_C   "${AXIOM_SQLITE_DIR}/sqlite3.c")
+    set(AXIOM_SQLITE_ZIP "${AXIOM_DEPS_DIR}/sqlite3.zip")
+    set(AXIOM_SQLITE_URL "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip")
+    set(AXIOM_SQLITE_MIN_BYTES 5000000)
+    set(AXIOM_SQLITE_CACHE_OK OFF)
+    if(EXISTS "${AXIOM_SQLITE_C}")
+        file(SIZE "${AXIOM_SQLITE_C}" cache_size)
+        if(cache_size GREATER_EQUAL ${AXIOM_SQLITE_MIN_BYTES})
+            set(AXIOM_SQLITE_CACHE_OK ON)
+        else()
+            message(STATUS "SQLite cache truncated (${cache_size} bytes); re-downloading")
+            file(REMOVE_RECURSE "${AXIOM_SQLITE_DIR}")
+        endif()
+    endif()
+    if(NOT AXIOM_SQLITE_CACHE_OK)
+        message(STATUS "Downloading SQLite amalgamation")
+        file(REMOVE "${AXIOM_SQLITE_ZIP}")
+        find_program(AXIOM_CURL_BIN NAMES curl)
+        find_program(AXIOM_WGET_BIN NAMES wget)
+        if(AXIOM_CURL_BIN)
+            execute_process(
+                COMMAND "${AXIOM_CURL_BIN}" -fL --retry 3 --retry-delay 2
+                        -o "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
+                RESULT_VARIABLE dl_result
+                ERROR_VARIABLE  dl_error
+            )
+        elseif(AXIOM_WGET_BIN)
+            execute_process(
+                COMMAND "${AXIOM_WGET_BIN}" -O "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
+                RESULT_VARIABLE dl_result
+                ERROR_VARIABLE  dl_error
+            )
+        else()
+            message(FATAL_ERROR "Neither curl nor wget is installed.")
+        endif()
+        if(NOT dl_result EQUAL 0)
+            message(FATAL_ERROR "SQLite download failed: ${dl_error}")
+        endif()
+        file(SIZE "${AXIOM_SQLITE_ZIP}" zip_size)
+        if(zip_size LESS 2000000)
+            message(FATAL_ERROR "SQLite download is truncated (${zip_size} bytes).")
+        endif()
+        file(ARCHIVE_EXTRACT INPUT "${AXIOM_SQLITE_ZIP}"
+             DESTINATION "${AXIOM_DEPS_DIR}/sqlite3-extract")
+        file(GLOB SQLITE_DIRS "${AXIOM_DEPS_DIR}/sqlite3-extract/sqlite-amalgamation-*")
+        list(LENGTH SQLITE_DIRS SQLITE_DIRS_LEN)
+        if(SQLITE_DIRS_LEN EQUAL 0)
+            message(FATAL_ERROR "SQLite amalgamation extraction produced no directory")
+        endif()
+        list(GET SQLITE_DIRS 0 SQLITE_DIR)
+        file(RENAME "${SQLITE_DIR}" "${AXIOM_SQLITE_DIR}")
+        file(REMOVE_RECURSE "${AXIOM_DEPS_DIR}/sqlite3-extract")
+        file(REMOVE "${AXIOM_SQLITE_ZIP}")
+        file(SIZE "${AXIOM_SQLITE_C}" extracted_size)
+        if(extracted_size LESS ${AXIOM_SQLITE_MIN_BYTES})
+            message(FATAL_ERROR "Extracted sqlite3.c is truncated (${extracted_size} bytes).")
+        endif()
+        message(STATUS "SQLite amalgamation cached at ${AXIOM_SQLITE_DIR}")
+    else()
+        message(STATUS "Using cached SQLite amalgamation from .deps/sqlite3-src/")
+    endif()
+    add_library(axiom_sqlite STATIC "${AXIOM_SQLITE_C}")
+    target_include_directories(axiom_sqlite PUBLIC "${AXIOM_SQLITE_DIR}")
+    target_compile_definitions(axiom_sqlite PRIVATE
+        SQLITE_THREADSAFE=1
+        SQLITE_OMIT_LOAD_EXTENSION=1
+        SQLITE_DEFAULT_MEMSTATUS=0
+        SQLITE_DQS=0
+    )
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(axiom_sqlite PUBLIC dl pthread)
+    endif()
+    set(AXIOM_SQLITE_TARGET axiom_sqlite)
 endif()
 
 # ----------------------------------------------------------------
@@ -494,34 +496,20 @@ endif()
 # ----------------------------------------------------------------
 add_executable(axiomdlp-agent
     src/main.cpp
-
-    # foundation
     src/foundation/application.cpp
     src/foundation/config.cpp
     src/foundation/logger.cpp
-
-    # events
     src/events/event.cpp
     src/events/event_bus.cpp
-
-    # module framework
     src/modules/module_manager.cpp
-
-    # net
     src/net/http_client.cpp
     src/net/websocket_client.cpp
     src/net/outbound_queue.cpp
     src/net/message_router.cpp
-
-    # util
     src/util/glob_match.cpp
     src/util/file_hash.cpp
     src/util/base64.cpp
-
-    # platform implementations
     src/platform/common/efsw_file_watcher.cpp
-
-    # feature modules
     src/features/agent_sync/agent_sync_module.cpp
     src/features/content_scanner/content_scanner_module.cpp
     src/features/event_logger/event_logger_module.cpp
@@ -529,19 +517,16 @@ add_executable(axiomdlp-agent
     src/features/inventory/inventory_module.cpp
     src/features/inventory/inventory_scanner.cpp
     src/features/websocket_transport/transport_module.cpp
-
-    # storage
     src/storage/sqlite_database.cpp
     src/storage/migrations.cpp
     src/storage/file_repository.cpp
     src/storage/state_repository.cpp
-
     ${AXIOM_PLATFORM_SOURCES}
 )
 
 target_include_directories(axiomdlp-agent PRIVATE
     src
-    ${AXIOM_BOOST_ISOLATED_DIR}
+    ${AXIOM_BOOST_INCLUDE_DIRS}
 )
 
 target_compile_definitions(axiomdlp-agent PRIVATE
@@ -552,33 +537,38 @@ target_compile_definitions(axiomdlp-agent PRIVATE
 target_link_libraries(axiomdlp-agent PRIVATE
     spdlog::spdlog
     nlohmann_json::nlohmann_json
-    efsw-static
-    axiom_sqlite
+    ${AXIOM_EFSW_TARGET}
+    ${AXIOM_SQLITE_TARGET}
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
 )
 
+if(AXIOM_USE_VCPKG_DEPS)
+    target_link_libraries(axiomdlp-agent PRIVATE Boost::headers)
+endif()
+
 # ----------------------------------------------------------------
 # Platform-specific settings
 # ----------------------------------------------------------------
 if(WIN32)
+    # Windows is MSVC + vcpkg only.
+    # ole32   -> CoTaskMemFree  (used by src/platform/windows/paths.cpp)
+    # user32  -> Shell helpers
+    # ws2_32  -> Winsock  (Boost.Asio/Beast)
+    # crypt32 -> Windows crypto helpers
     target_link_libraries(axiomdlp-agent PRIVATE
-        advapi32 shell32 ws2_32 crypt32)
-
-    target_link_options(axiomdlp-agent PRIVATE
-        -static -static-libgcc -static-libstdc++
-    )
+        advapi32 shell32 ws2_32 crypt32 ole32 user32)
     target_compile_definitions(axiomdlp-agent PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
         _WIN32_WINNT=0x0601
+        _CRT_SECURE_NO_WARNINGS
     )
 endif()
 
 if(UNIX AND NOT APPLE)
     set(AXIOM_HAVE_SYSTEMD OFF)
-
     include(FindPkgConfig QUIET)
     if(PkgConfig_FOUND)
         if(CMAKE_SIZEOF_VOID_P EQUAL 4)
@@ -588,13 +578,11 @@ if(UNIX AND NOT APPLE)
             set(ENV{PKG_CONFIG_LIBDIR}
                 "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig")
         endif()
-
         pkg_check_modules(SYSTEMD QUIET libsystemd)
         if(SYSTEMD_FOUND)
             set(AXIOM_HAVE_SYSTEMD ON)
         endif()
     endif()
-
     if(AXIOM_HAVE_SYSTEMD)
         message(STATUS "libsystemd found: sd_notify enabled")
         target_compile_definitions(axiomdlp-agent PRIVATE HAVE_SYSTEMD)
@@ -603,7 +591,6 @@ if(UNIX AND NOT APPLE)
     else()
         message(STATUS "libsystemd not available: sd_notify disabled")
     endif()
-
     target_compile_options(axiomdlp-agent PRIVATE
         -fstack-protector-strong -fPIE
     )
@@ -613,7 +600,11 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(MSVC)
-    target_compile_options(axiomdlp-agent PRIVATE /W4 /permissive-)
+    target_compile_options(axiomdlp-agent PRIVATE
+        /W4
+        /permissive-
+        /Zc:__cplusplus
+    )
 else()
     target_compile_options(axiomdlp-agent PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -637,77 +628,148 @@ endif()
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}"
     },
-
     {
       "name": "linux-x86_64-debug",
-      "displayName": "Linux x86_64 — Debug",
+      "displayName": "Linux x86_64 \u2014 Debug",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "linux-x86_64-release",
-      "displayName": "Linux x86_64 — Release",
+      "displayName": "Linux x86_64 \u2014 Release",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
-
     {
       "name": "linux-i686-debug",
-      "displayName": "Linux i686 (32-bit) — Debug",
+      "displayName": "Linux i686 (32-bit) \u2014 Debug",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "linux-i686-release",
-      "displayName": "Linux i686 (32-bit) — Release",
+      "displayName": "Linux i686 (32-bit) \u2014 Release",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
-    },
-
-    {
-      "name": "windows-x86_64-debug",
-      "displayName": "Windows x86_64 — Debug",
-      "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-x86_64.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
     {
-      "name": "windows-x86_64-release",
-      "displayName": "Windows x86_64 — Release",
+      "name": "windows-x64-msvc-debug",
+      "displayName": "Windows x64 \u2014 Debug (MSVC + vcpkg)",
       "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-x86_64.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "binaryDir": "${sourceDir}/build/windows-x64-msvc-debug",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
     },
-
     {
-      "name": "windows-i686-debug",
-      "displayName": "Windows i686 (32-bit) — Debug",
+      "name": "windows-x64-msvc-release",
+      "displayName": "Windows x64 \u2014 Release (MSVC + vcpkg)",
       "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-i686.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "binaryDir": "${sourceDir}/build/windows-x64-msvc-release",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
     },
     {
-      "name": "windows-i686-release",
-      "displayName": "Windows i686 (32-bit) — Release",
+      "name": "windows-x86-msvc-debug",
+      "displayName": "Windows x86 \u2014 Debug (MSVC + vcpkg)",
       "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-i686.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "binaryDir": "${sourceDir}/build/windows-x86-msvc-debug",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_TARGET_TRIPLET": "x86-windows-static",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-x86-msvc-release",
+      "displayName": "Windows x86 \u2014 Release (MSVC + vcpkg)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/windows-x86-msvc-release",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x86-windows-static",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
     }
   ],
-
   "buildPresets": [
-    { "name": "linux-x86_64-debug",     "configurePreset": "linux-x86_64-debug" },
-    { "name": "linux-x86_64-release",   "configurePreset": "linux-x86_64-release" },
-    { "name": "linux-i686-debug",       "configurePreset": "linux-i686-debug" },
-    { "name": "linux-i686-release",     "configurePreset": "linux-i686-release" },
-    { "name": "windows-x86_64-debug",   "configurePreset": "windows-x86_64-debug" },
-    { "name": "windows-x86_64-release", "configurePreset": "windows-x86_64-release" },
-    { "name": "windows-i686-debug",     "configurePreset": "windows-i686-debug" },
-    { "name": "windows-i686-release",   "configurePreset": "windows-i686-release" }
+    {
+      "name": "linux-x86_64-debug",
+      "configurePreset": "linux-x86_64-debug"
+    },
+    {
+      "name": "linux-x86_64-release",
+      "configurePreset": "linux-x86_64-release"
+    },
+    {
+      "name": "linux-i686-debug",
+      "configurePreset": "linux-i686-debug"
+    },
+    {
+      "name": "linux-i686-release",
+      "configurePreset": "linux-i686-release"
+    },
+    {
+      "name": "windows-x64-msvc-debug",
+      "configurePreset": "windows-x64-msvc-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-x64-msvc-release",
+      "configurePreset": "windows-x64-msvc-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-x86-msvc-debug",
+      "configurePreset": "windows-x86-msvc-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-x86-msvc-release",
+      "configurePreset": "windows-x86-msvc-release",
+      "configuration": "Release"
+    }
   ]
 }
 ```
@@ -1792,6 +1854,11 @@ Triggered on every tag:
 ~~~~markdown
 # AxiomDLP Endpoint Agent — DONE.md
 
+> **Note:** This document describes the `main` branch (MinGW + GCC,
+> four targets). On the `msvc-windows-build` branch, Windows is
+> MSVC + vcpkg only — see `docs/windows-msvc-build.md`. The historical
+> `.deps/openssl-mingw*` paths below no longer exist on this branch.
+
 **Status Document — Everything Implemented, Verified, and Fixed on the Agent Side**
 
 **Last updated:** After atomic ShutdownController, bidirectional WebSocket, server-pushed revocation, TLS enforcement, config consolidation, and industry-standard timing.
@@ -2800,6 +2867,15 @@ build-*/
 # Shared dependency source cache
 .deps/
 
+# vcpkg manifest mode artifacts
+vcpkg_installed/
+vcpkg-cache/
+*.vcpkg-lock.json
+
+# MSVC / Visual Studio
+.vs/
+*.vcxproj.user
+
 # Generated compile database (root merged file)
 compile_commands.json
 
@@ -2834,6 +2910,7 @@ cmake_install.cmake
 # clangd cache
 .clangd.cache/
 .cache/
+axiomdlp-agent-bundle.md
 ```
 
   + make-bundle.sh
@@ -9398,6 +9475,10 @@ std::unique_ptr<IFileWatcher> make_file_watcher();
 ```cpp
 // src/platform/linux/paths_linux.cpp
 
+#if !defined(__linux__)
+#  error "src/platform/linux/paths.cpp is Linux-only and must not be compiled on other hosts."
+#endif
+
 #include "platform/paths.h"
 
 #include <limits.h>
@@ -9443,6 +9524,10 @@ std::string default_data_dir() {
 
 ```cpp
 // src/platform/linux/service_linux.cpp
+
+#if !defined(__linux__)
+#  error "src/platform/linux/service.cpp is Linux-only and must not be compiled on other hosts."
+#endif
 
 #include "platform/service.h"
 #include "modules/module_manager.h"
@@ -9841,6 +9926,10 @@ std::string default_service_name();
 ```cpp
 // src/platform/windows/paths_windows.cpp
 
+#if !defined(_WIN32)
+#  error "src/platform/windows/paths.cpp is Windows-only and must not be compiled on other hosts."
+#endif
+
 #include "platform/paths.h"
 
 #include <windows.h>
@@ -9931,6 +10020,10 @@ std::string default_data_dir() {
 
 ```cpp
 // src/platform/windows/service_win.cpp
+
+#if !defined(_WIN32)
+#  error "src/platform/windows/service.cpp is Windows-only and must not be compiled on other hosts."
+#endif
 
 #include "platform/service.h"
 #include "modules/module_manager.h"
@@ -11909,13 +12002,20 @@ bool path_matches_pattern(const std::string& pattern,
 
 ## Scripts
 
-### \`scripts/build-all.sh\`
+### \`scripts/linux/build-all.sh\`
 
 ```bash
 #!/usr/bin/env bash
+#
+# scripts/linux/build-all.sh — Linux-only build entrypoint.
+#
+# Windows builds are done natively on Windows via
+#   scripts/win/build-windows-msvc.ps1   (MSVC + vcpkg)
+# See docs/windows-msvc-build.md.
+#
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS_DIR="${ROOT}/.deps"
 
 if [ ! -d "${DEPS_DIR}/nlohmann_json-src" ]; then
@@ -11931,21 +12031,19 @@ fi
 
 openssl_target_ready() {
     local dir="$1"
-    { [ -f "${dir}/lib/libssl.a"    ] && [ -f "${dir}/lib/libcrypto.a"    ]; } || \
-    { [ -f "${dir}/lib64/libssl.a"  ] && [ -f "${dir}/lib64/libcrypto.a"  ]; }
+    { [ -f "${dir}/lib/libssl.a"   ] && [ -f "${dir}/lib/libcrypto.a"   ]; } || \
+    { [ -f "${dir}/lib64/libssl.a" ] && [ -f "${dir}/lib64/libcrypto.a" ]; }
 }
 
 if ! openssl_target_ready "${DEPS_DIR}/openssl-linux-x86_64" || \
-   ! openssl_target_ready "${DEPS_DIR}/openssl-linux-i686"   || \
-   ! openssl_target_ready "${DEPS_DIR}/openssl-mingw64"      || \
-   ! openssl_target_ready "${DEPS_DIR}/openssl-mingw32"; then
+   ! openssl_target_ready "${DEPS_DIR}/openssl-linux-i686"; then
     echo "==============================================="
     echo "OpenSSL not fully built; building (one-time)..."
     echo "==============================================="
-    "${ROOT}/scripts/build-openssl.sh"
+    "${ROOT}/scripts/linux/build-openssl.sh"
     echo
 else
-    echo "OpenSSL: already built for all targets, skipping."
+    echo "OpenSSL: already built for all Linux targets, skipping."
     echo
 fi
 
@@ -11954,8 +12052,6 @@ BUILD_TYPE="${1:-release}"
 TARGETS=(
     linux-x86_64
     linux-i686
-    windows-x86_64
-    windows-i686
 )
 
 for target in "${TARGETS[@]}"; do
@@ -11969,20 +12065,18 @@ done
 
 echo
 echo "==============================================="
-echo "All builds complete. Artifacts:"
+echo "All Linux builds complete. Artifacts:"
 echo "==============================================="
 
 for target in "${TARGETS[@]}"; do
-    if [[ "$target" == windows-* ]]; then
-        f="build/${target}-${BUILD_TYPE}/axiomdlp-agent.exe"
-    else
-        f="build/${target}-${BUILD_TYPE}/axiomdlp-agent"
-    fi
-    file "$f"
+    file "build/${target}-${BUILD_TYPE}/axiomdlp-agent"
 done
+
+echo
+echo "For Windows: clone on a Windows box and run scripts\\win\\build-windows-msvc.ps1"
 ```
 
-### \`scripts/build-grpc.sh\`
+### \`scripts/linux/build-grpc.sh\`
 
 ```bash
 #!/usr/bin/env bash
@@ -12012,7 +12106,7 @@ done
 set -euo pipefail
 
 GRPC_VERSION="v1.62.0"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS="$ROOT/.deps"
 SRC="$DEPS/grpc-src"
 BUILD_DIR="$DEPS/grpc-build"
@@ -12192,18 +12286,17 @@ echo "Windows gRPC is intentionally not built here."
 echo "The agent uses Boost.Beast WebSocket + JSON on Windows."
 ```
 
-### \`scripts/build-openssl.sh\`
+### \`scripts/linux/build-openssl.sh\`
 
 ```bash
 #!/usr/bin/env bash
 # scripts/build-openssl.sh
 #
-# Builds OpenSSL statically for all four agent targets.
+# Builds OpenSSL statically for both Linux agent targets.
+# Windows OpenSSL is supplied by vcpkg on the Windows side.
 # Output goes to:
 #   .deps/openssl-linux-x86_64/
 #   .deps/openssl-linux-i686/
-#   .deps/openssl-mingw64/
-#   .deps/openssl-mingw32/
 #
 # Run once. Re-run only if you bump OPENSSL_VERSION.
 # Takes 15-25 minutes total.
@@ -12211,7 +12304,7 @@ echo "The agent uses Boost.Beast WebSocket + JSON on Windows."
 set -euo pipefail
 
 OPENSSL_VERSION="3.3.2"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS="$ROOT/.deps"
 SRC="$DEPS/openssl-src"
 TARBALL="$DEPS/openssl.tar.gz"
@@ -12277,23 +12370,19 @@ build_one() {
 # ---------- Build all four ----------
 build_one "linux-x86_64"       "$DEPS/openssl-linux-x86_64"
 build_one "linux-x86"          "$DEPS/openssl-linux-i686"   -m32
-build_one "mingw64"            "$DEPS/openssl-mingw64"      --cross-compile-prefix=x86_64-w64-mingw32-
-build_one "mingw"              "$DEPS/openssl-mingw32"      --cross-compile-prefix=i686-w64-mingw32-
 
 echo
-echo "Done. All four OpenSSL trees are ready:"
+echo "Done. Both Linux OpenSSL trees are ready:"
 echo "  $DEPS/openssl-linux-x86_64"
 echo "  $DEPS/openssl-linux-i686"
-echo "  $DEPS/openssl-mingw64"
-echo "  $DEPS/openssl-mingw32"
 ```
 
-### \`scripts/merge-compile-commands.sh\`
+### \`scripts/linux/merge-compile-commands.sh\`
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$ROOT/compile_commands.json"
 
 FILES=(
@@ -12323,789 +12412,179 @@ print(f"Merged {len(result)} entries into {out}")
 PYEOF
 ```
 
-### \`scripts/mock_server.py\`
+### \`scripts/win/build-windows-msvc.ps1\`
 
-```python
-#!/usr/bin/env python3
-"""
-Mock WebSocket server for testing the TransportModule.
+```powershell
+<#
+.SYNOPSIS
+    Build AxiomDLP Agent on Windows with MSVC + vcpkg.
 
-Listens on ws://127.0.0.1:8765, logs every message, and responds to
-heartbeats with heartbeat_ack.
+.PARAMETER Configuration
+    Debug or Release (default: Release).
 
-Requirements:
-    pip install websockets
-"""
+.PARAMETER Arch
+    x64 or x86 (default: x64).
 
-import asyncio
-import json
-import signal
-import sys
+.PARAMETER Clean
+    If set, delete the build directory before configuring.
 
-try:
-    import websockets
-except ImportError:
-    print("ERROR: 'websockets' package not installed.", file=sys.stderr)
-    print("Install:  pip install websockets", file=sys.stderr)
-    sys.exit(1)
+.EXAMPLE
+    .\scripts\build-windows-msvc.ps1
+    .\scripts\build-windows-msvc.ps1 -Configuration Debug
+    .\scripts\build-windows-msvc.ps1 -Clean
+#>
 
-HOST = "0.0.0.0"
-PORT = 8765
+param(
+    [ValidateSet("Debug", "Release")]
+    [string]$Configuration = "Release",
 
-# Track stats for a periodic summary.
-_stats = {"heartbeats": 0, "sensitive_files": 0}
+    [ValidateSet("x64", "x86")]
+    [string]$Arch = "x64",
 
+    [switch]$Clean
+)
 
-async def handle_connection(ws):
-    peer = ws.remote_address
-    print(f"[+] client connected: {peer}")
+$ErrorActionPreference = "Stop"
 
-    try:
-        async for raw in ws:
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                print(f"[!] malformed JSON: {raw[:120]}")
-                continue
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+Set-Location $projectRoot
 
-            msg_type = msg.get("type", "?")
-            payload = msg.get("payload", {})
+Write-Host "=== AxiomDLP Agent — Windows MSVC build ===" -ForegroundColor Cyan
+Write-Host "  Project root: $projectRoot"
+Write-Host "  Config:       $Configuration"
+Write-Host "  Arch:         $Arch"
 
-            if msg_type == "heartbeat":
-                _stats["heartbeats"] += 1
-                await ws.send(json.dumps({
-                    "v": 1,
-                    "type": "heartbeat_ack",
-                    "ts": msg.get("ts", 0),
-                    "payload": {},
-                }))
-                print(f"[<] heartbeat #{_stats['heartbeats']}")
+if (-not $env:VCPKG_ROOT) {
+    Write-Error @"
+VCPKG_ROOT is not set.
 
-            elif msg_type == "sensitive_file":
-                _stats["sensitive_files"] += 1
-                path = payload.get("path", "?")
-                cat = payload.get("category", "?")
-                size = payload.get("size", 0)
-                print(f"[<] sensitive #{_stats['sensitive_files']}: "
-                      f"{path} ({cat}, {size} bytes)")
+Run the one-time setup first:
+    .\scripts\win\setup-windows-msvc.ps1
 
-            else:
-                print(f"[<] {msg_type}: {json.dumps(payload)[:200]}")
+Then re-open your shell.
+"@
+    exit 1
+}
+if (-not (Test-Path "$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake")) {
+    Write-Error "vcpkg toolchain file not found at $env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+    exit 1
+}
+Write-Host "  VCPKG_ROOT:   $env:VCPKG_ROOT" -ForegroundColor Green
 
-    except websockets.ConnectionClosed:
-        pass
-    finally:
-        print(f"[-] client disconnected: {peer}")
+$presetName = "windows-$Arch-msvc-$(($Configuration).ToLower())"
+$buildDir   = Join-Path $projectRoot "build\$presetName"
 
+if ($Clean -and (Test-Path $buildDir)) {
+    Write-Host "  Cleaning $buildDir" -ForegroundColor Yellow
+    Remove-Item -Recurse -Force $buildDir
+}
 
-async def main():
-    stop_event = asyncio.Event()
+Write-Host "`n--- Configure (preset: $presetName) ---" -ForegroundColor Yellow
+cmake --preset $presetName
+if ($LASTEXITCODE -ne 0) { Write-Error "Configure failed."; exit $LASTEXITCODE }
 
-    def on_signal(*_):
-        print("\nshutting down...")
-        stop_event.set()
+Write-Host "`n--- Build ---" -ForegroundColor Yellow
+cmake --build --preset $presetName --config $Configuration
+if ($LASTEXITCODE -ne 0) { Write-Error "Build failed."; exit $LASTEXITCODE }
 
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, on_signal)
-        except NotImplementedError:
-            pass
-
-    async with websockets.serve(handle_connection, HOST, PORT):
-        print(f"mock server listening on ws://{HOST}:{PORT}")
-        print("Press Ctrl+C to stop.\n")
-        await stop_event.wait()
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+$exe = Join-Path $buildDir "axiomdlp-agent.exe"
+if (Test-Path $exe) {
+    $size = [math]::Round((Get-Item $exe).Length / 1MB, 2)
+    Write-Host "`n=== Build succeeded ===" -ForegroundColor Cyan
+    Write-Host "  Binary: $exe"
+    Write-Host "  Size:   $size MB"
+} else {
+    Write-Warning "Build finished but $exe not found. Check the preset's binaryDir."
+}
 ```
 
-### \`scripts/viz.html\`
+### \`scripts/win/setup-windows-msvc.ps1\`
 
-```html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>AxiomDLP — Filesystem Inventory</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<style>
-  :root {
-    --bg:      #0f1117;
-    --panel:   #161922;
-    --panel-2: #1e222d;
-    --border:  #2a2f3d;
-    --text:    #d8dde8;
-    --muted:   #7c8799;
-    --accent:  #4ea1ff;
-    --good:    #34d399;
-    --warn:    #fbbf24;
-    --bad:     #f87171;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    font-size: 14px;
-  }
-  header {
-    padding: 20px 32px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: baseline;
-    gap: 16px;
-  }
-  header h1 {
-    margin: 0;
-    font-size: 20px;
-    font-weight: 600;
-  }
-  header .badge {
-    background: var(--panel-2);
-    color: var(--muted);
-    padding: 3px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-family: ui-monospace, monospace;
-  }
-  header .refresh {
-    margin-left: auto;
-    background: var(--accent);
-    color: #000;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 13px;
-  }
-  header .refresh:hover { opacity: 0.85; }
+```powershell
+<#
+.SYNOPSIS
+    One-time setup for building AxiomDLP Agent on Windows with MSVC + vcpkg.
 
-  main { padding: 24px 32px; }
+.DESCRIPTION
+    - Verifies Visual Studio 2022 (or Build Tools) with the C++ workload.
+    - Clones vcpkg into %USERPROFILE%\vcpkg if missing.
+    - Bootstraps vcpkg.
+    - Sets VCPKG_ROOT persistently for the current user.
 
-  .cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 16px;
-    margin-bottom: 24px;
-  }
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 16px 20px;
-  }
-  .card .label {
-    color: var(--muted);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: 6px;
-  }
-  .card .value {
-    font-size: 26px;
-    font-weight: 600;
-    font-family: ui-monospace, monospace;
-  }
+.NOTES
+    Run once per machine. Requires PowerShell 5.1+ (built-in) or 7+.
+#>
 
-  .grid-2 {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 24px;
-    margin-bottom: 24px;
-  }
-  @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+$ErrorActionPreference = "Stop"
 
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 20px;
-  }
-  .panel h2 {
-    margin: 0 0 16px;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .chart-wrap { height: 280px; position: relative; }
+Write-Host "=== AxiomDLP Agent — Windows MSVC bootstrap ===" -ForegroundColor Cyan
 
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-  }
-  th {
-    text-align: left;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-    color: var(--muted);
-    font-weight: 500;
-    text-transform: uppercase;
-    font-size: 11px;
-    letter-spacing: 0.06em;
-  }
-  td {
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-    font-family: ui-monospace, monospace;
-  }
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background: var(--panel-2); }
+# ----------------------------------------------------------------
+# 1. Verify Visual Studio
+# ----------------------------------------------------------------
+Write-Host "`n[1/3] Looking for Visual Studio..." -ForegroundColor Yellow
 
-  .path {
-    max-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    direction: rtl;
-    text-align: left;
-  }
-  .path:hover { direction: ltr; text-align: right; }
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (-not (Test-Path $vswhere)) {
+    Write-Error @"
+Visual Studio Installer not found.
 
-  .tag {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 3px;
-    background: var(--panel-2);
-    color: var(--muted);
-    font-size: 11px;
-  }
+Install one of:
+  - Visual Studio 2022 Community (free)
+  - Visual Studio 2022 Build Tools (free, headless)
 
-  .filter-bar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 12px;
-    align-items: center;
-  }
-  .filter-bar input, .filter-bar select {
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 10px;
-    border-radius: 4px;
-    font-size: 13px;
-    font-family: inherit;
-  }
-  .filter-bar input { flex: 1; }
-  .filter-bar select { min-width: 130px; }
-</style>
-</head>
-<body>
+Make sure to select the workload:
+  "Desktop development with C++"
 
-<header>
-  <h1>AxiomDLP — Filesystem Inventory</h1>
-  <span class="badge" id="schema-badge">schema v—</span>
-  <button class="refresh" onclick="refreshAll()">Refresh</button>
-</header>
-
-<main>
-  <!-- Summary cards -->
-  <div class="cards" id="cards">
-    <div class="card"><div class="label">Files</div>       <div class="value" id="stat-files">—</div></div>
-    <div class="card"><div class="label">Directories</div> <div class="value" id="stat-dirs">—</div></div>
-    <div class="card"><div class="label">Total Size</div>  <div class="value" id="stat-bytes">—</div></div>
-    <div class="card"><div class="label">Sensitive (future)</div> <div class="value" id="stat-sensitive">—</div></div>
-  </div>
-
-  <!-- Charts -->
-  <div class="grid-2">
-    <div class="panel">
-      <h2>Files by Category</h2>
-      <div class="chart-wrap"><canvas id="chart-categories"></canvas></div>
-    </div>
-    <div class="panel">
-      <h2>Top 25 Extensions</h2>
-      <div class="chart-wrap"><canvas id="chart-extensions"></canvas></div>
-    </div>
-  </div>
-
-  <div class="grid-2">
-    <div class="panel">
-      <h2>Top-Level Directories</h2>
-      <table id="table-dirs">
-        <thead><tr><th>Directory</th><th>Files</th><th>Size</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="panel">
-      <h2>Largest Files</h2>
-      <table id="table-largest">
-        <thead><tr><th>Path</th><th>Size</th><th>Category</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Browse -->
-  <div class="panel" style="margin-top: 24px;">
-    <h2>Browse Files</h2>
-    <div class="filter-bar">
-      <input id="search" placeholder="Search path (e.g. Downloads, .pdf, video)">
-      <select id="order">
-        <option value="size">Sort by size</option>
-        <option value="mtime">Sort by modified</option>
-        <option value="path">Sort by path</option>
-      </select>
-      <button class="refresh" onclick="refreshFiles()">Apply</button>
-    </div>
-    <table id="table-files">
-      <thead>
-        <tr>
-          <th style="width: 60%;">Path</th>
-          <th>Size</th>
-          <th>Category</th>
-          <th>Modified</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</main>
-
-<script>
-// ------------------------------------------------------------------
-// Helpers
-// ------------------------------------------------------------------
-const fmtBytes = (b) => {
-  if (b === 0 || b == null) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(b) / Math.log(1024));
-  const v = b / Math.pow(1024, i);
-  return v.toFixed(v < 10 ? 2 : 1) + " " + units[i];
-};
-const fmtNum = (n) => (n || 0).toLocaleString();
-const fmtDate = (ns) => {
-  if (!ns) return "—";
-  const ms = Math.floor(ns / 1_000_000);
-  const d = new Date(ms);
-  return d.toISOString().replace("T", " ").slice(0, 19);
-};
-const get = (url) => fetch(url).then(r => r.json());
-
-// ------------------------------------------------------------------
-// Summary cards
-// ------------------------------------------------------------------
-async function loadStats() {
-  const s = await get("/api/stats");
-  document.getElementById("stat-files").textContent     = fmtNum(s.files);
-  document.getElementById("stat-dirs").textContent      = fmtNum(s.dirs);
-  document.getElementById("stat-bytes").textContent     = fmtBytes(s.bytes);
-  document.getElementById("stat-sensitive").textContent = fmtNum(s.sensitive);
-  document.getElementById("schema-badge").textContent   = "schema v" + s.schema;
+Download: https://visualstudio.microsoft.com/downloads/
+"@
+    exit 1
 }
 
-// ------------------------------------------------------------------
-// Category pie chart
-// ------------------------------------------------------------------
-let catChart = null;
-async function loadCategories() {
-  const data = await get("/api/categories");
-  const ctx  = document.getElementById("chart-categories");
+$vsInstall = & $vswhere -latest -products * `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+    -property installationPath
 
-  const palette = [
-    "#4ea1ff","#34d399","#fbbf24","#f87171","#a78bfa",
-    "#22d3ee","#fb923c","#e879f9","#84cc16","#f472b6",
-  ];
+if (-not $vsInstall) {
+    Write-Error "Visual Studio found but the C++ workload is missing. Add 'Desktop development with C++'."
+    exit 1
+}
+Write-Host "  Found: $vsInstall" -ForegroundColor Green
 
-  if (catChart) catChart.destroy();
-  catChart = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels: data.map(d => d.category),
-      datasets: [{
-        data: data.map(d => d.count),
-        backgroundColor: data.map((_, i) => palette[i % palette.length]),
-        borderColor: "#161922",
-        borderWidth: 2,
-      }],
-    },
-    options: {
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: "right",
-          labels: { color: "#d8dde8", boxWidth: 12, font: { size: 12 } },
-        },
-        tooltip: {
-          callbacks: {
-            label: (ctx) => {
-              const item = data[ctx.dataIndex];
-              return `${item.category}: ${fmtNum(item.count)} files, ${fmtBytes(item.bytes)}`;
-            },
-          },
-        },
-      },
-    },
-  });
+# ----------------------------------------------------------------
+# 2. Clone + bootstrap vcpkg
+# ----------------------------------------------------------------
+$vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "$env:USERPROFILE\vcpkg" }
+
+Write-Host "`n[2/3] Checking vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
+
+if (-not (Test-Path "$vcpkgRoot\.git")) {
+    Write-Host "  Cloning vcpkg (one-time, ~100 MB)..." -ForegroundColor Yellow
+    git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
 }
 
-// ------------------------------------------------------------------
-// Extension bar chart
-// ------------------------------------------------------------------
-let extChart = null;
-async function loadExtensions() {
-  const data = await get("/api/extensions");
-  const ctx  = document.getElementById("chart-extensions");
-
-  if (extChart) extChart.destroy();
-  extChart = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels: data.map(d => "." + d.extension),
-      datasets: [{
-        label: "Files",
-        data: data.map(d => d.count),
-        backgroundColor: "#4ea1ff",
-      }],
-    },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: "#7c8799", font: { size: 10 } }, grid: { display: false } },
-        y: { ticks: { color: "#7c8799", font: { size: 11 } }, grid: { color: "#2a2f3d" } },
-      },
-    },
-  });
+if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+    Write-Host "  Bootstrapping vcpkg..." -ForegroundColor Yellow
+    Push-Location $vcpkgRoot
+    .\bootstrap-vcpkg.bat -disableMetrics
+    Pop-Location
 }
 
-// ------------------------------------------------------------------
-// Top directories table
-// ------------------------------------------------------------------
-async function loadTopDirs() {
-  const data = await get("/api/top-dirs");
-  const tbody = document.querySelector("#table-dirs tbody");
-  tbody.innerHTML = "";
-  for (const d of data) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${d.dir}</td>
-      <td>${fmtNum(d.count)}</td>
-      <td>${fmtBytes(d.bytes)}</td>
-    `;
-    tbody.appendChild(tr);
-  }
+if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+    Write-Error "vcpkg bootstrap failed; check $vcpkgRoot"
+    exit 1
 }
+Write-Host "  vcpkg ready: $vcpkgRoot\vcpkg.exe" -ForegroundColor Green
 
-// ------------------------------------------------------------------
-// Largest files table
-// ------------------------------------------------------------------
-async function loadLargest() {
-  const data = await get("/api/files?limit=20&order=size");
-  const tbody = document.querySelector("#table-largest tbody");
-  tbody.innerHTML = "";
-  for (const f of data) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td class="path" title="${f.path}">${f.path}</td>
-      <td>${fmtBytes(f.size)}</td>
-      <td><span class="tag">${f.category}</span></td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
+# ----------------------------------------------------------------
+# 3. Persist VCPKG_ROOT
+# ----------------------------------------------------------------
+Write-Host "`n[3/3] Setting VCPKG_ROOT=$vcpkgRoot for current user..." -ForegroundColor Yellow
+[System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "User")
+$env:VCPKG_ROOT = $vcpkgRoot
 
-// ------------------------------------------------------------------
-// Browse files
-// ------------------------------------------------------------------
-async function refreshFiles() {
-  const search = document.getElementById("search").value.trim();
-  const order  = document.getElementById("order").value;
-  let url = `/api/files?limit=200&order=${order}`;
-  if (search) url += `&search=${encodeURIComponent(search)}`;
-
-  const data = await get(url);
-  const tbody = document.querySelector("#table-files tbody");
-  tbody.innerHTML = "";
-
-  if (data.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#7c8799;">No matches.</td></tr>';
-    return;
-  }
-
-  for (const f of data) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td class="path" title="${f.path}">${f.path}</td>
-      <td>${fmtBytes(f.size)}</td>
-      <td><span class="tag">${f.category}</span></td>
-      <td>${fmtDate(f.mtime_ns)}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-// ------------------------------------------------------------------
-// Wire it up
-// ------------------------------------------------------------------
-async function refreshAll() {
-  await Promise.all([
-    loadStats(),
-    loadCategories(),
-    loadExtensions(),
-    loadTopDirs(),
-    loadLargest(),
-  ]);
-  await refreshFiles();
-}
-
-document.getElementById("search").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") refreshFiles();
-});
-
-refreshAll();
-</script>
-</body>
-</html>
-```
-
-### \`scripts/viz_server.py\`
-
-```python
-#!/usr/bin/env python3
-"""
-Minimal HTTP server that exposes data/agent.db as JSON for the
-visualization page. Uses only the Python standard library — no pip.
-
-Endpoints:
-    GET /                -> the HTML page
-    GET /api/stats       -> totals
-    GET /api/categories  -> file count + bytes per category
-    GET /api/extensions  -> top extensions by count
-    GET /api/top-dirs    -> top-level directory breakdown
-    GET /api/walk-info   -> migrations version, file count
-    GET /api/files       -> paginated file list
-        ?limit=N         (default 100)
-        &offset=N        (default 0)
-        &order=size|mtime|path
-        &category=X      (optional filter)
-        &extension=X     (optional filter)
-        &search=X        (optional path substring)
-"""
-
-import json
-import os
-import sqlite3
-import sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
-
-# ------------------------------------------------------------------
-# Config
-# ------------------------------------------------------------------
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR   = os.path.dirname(SCRIPT_DIR)
-DB_PATH    = os.path.join(ROOT_DIR, "data", "agent.db")
-HTML_PATH  = os.path.join(SCRIPT_DIR, "viz.html")
-PORT       = int(os.environ.get("VIZ_PORT", "8080"))
-
-
-# ------------------------------------------------------------------
-# Database helpers
-# ------------------------------------------------------------------
-
-def db_connect():
-    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    return con
-
-
-def get_stats():
-    with db_connect() as con:
-        cur = con.cursor()
-        row = cur.execute("""
-            SELECT
-                SUM(CASE WHEN is_directory = 0 THEN 1 ELSE 0 END) AS files,
-                SUM(CASE WHEN is_directory = 1 THEN 1 ELSE 0 END) AS dirs,
-                SUM(CASE WHEN is_directory = 0 THEN size ELSE 0 END) AS bytes,
-                SUM(CASE WHEN is_sensitive = 1 THEN 1 ELSE 0 END) AS sensitive
-            FROM files
-        """).fetchone()
-        version = cur.execute("PRAGMA user_version").fetchone()[0]
-        return {
-            "files":     row["files"]     or 0,
-            "dirs":      row["dirs"]      or 0,
-            "bytes":     row["bytes"]     or 0,
-            "sensitive": row["sensitive"] or 0,
-            "schema":    version,
-        }
-
-
-def get_categories():
-    with db_connect() as con:
-        cur = con.cursor()
-        rows = cur.execute("""
-            SELECT category, COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
-            FROM files
-            WHERE is_directory = 0
-            GROUP BY category
-            ORDER BY count DESC
-        """).fetchall()
-        return [dict(r) for r in rows]
-
-
-def get_extensions():
-    with db_connect() as con:
-        cur = con.cursor()
-        rows = cur.execute("""
-            SELECT extension, COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
-            FROM files
-            WHERE is_directory = 0 AND extension != ''
-            GROUP BY extension
-            ORDER BY count DESC
-            LIMIT 25
-        """).fetchall()
-        return [dict(r) for r in rows]
-
-
-def get_top_dirs():
-    with db_connect() as con:
-        cur = con.cursor()
-        rows = cur.execute("""
-            SELECT
-                substr(path, 1, instr(substr(path, 2), '/') + 1) AS dir,
-                COUNT(*) AS count,
-                COALESCE(SUM(size), 0) AS bytes
-            FROM files
-            WHERE is_directory = 0
-            GROUP BY dir
-            ORDER BY count DESC
-            LIMIT 20
-        """).fetchall()
-        return [dict(r) for r in rows]
-
-
-def get_files(params):
-    limit    = min(int(params.get("limit",  ["100"])[0]), 1000)
-    offset   = max(int(params.get("offset", ["0"])[0]), 0)
-    order    = params.get("order", ["size"])[0]
-    category = params.get("category",  [""])[0]
-    extension= params.get("extension", [""])[0]
-    search   = params.get("search",    [""])[0]
-
-    order_col = "size"
-    if order in ("size", "mtime", "path"):
-        order_col = {"size": "size", "mtime": "mtime_ns", "path": "path"}[order]
-
-    where = ["is_directory = 0"]
-    binds = []
-    if category:
-        where.append("category = ?")
-        binds.append(category)
-    if extension:
-        where.append("extension = ?")
-        binds.append(extension)
-    if search:
-        where.append("path LIKE ?")
-        binds.append(f"%{search}%")
-
-    sql = f"""
-        SELECT path, basename, extension, size, mtime_ns, category,
-               is_executable, uid
-        FROM files
-        WHERE {' AND '.join(where)}
-        ORDER BY {order_col} DESC
-        LIMIT ? OFFSET ?
-    """
-    binds.extend([limit, offset])
-
-    with db_connect() as con:
-        cur = con.cursor()
-        rows = cur.execute(sql, binds).fetchall()
-        return [dict(r) for r in rows]
-
-
-# ------------------------------------------------------------------
-# HTTP handler
-# ------------------------------------------------------------------
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        pass  # quiet
-
-    def _send_json(self, obj):
-        body = json.dumps(obj).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _send_html(self):
-        with open(HTML_PATH, "rb") as f:
-            body = f.read()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        url    = urlparse(self.path)
-        path   = url.path
-        params = parse_qs(url.query)
-
-        try:
-            if path == "/" or path == "/index.html":
-                self._send_html()
-            elif path == "/api/stats":
-                self._send_json(get_stats())
-            elif path == "/api/categories":
-                self._send_json(get_categories())
-            elif path == "/api/extensions":
-                self._send_json(get_extensions())
-            elif path == "/api/top-dirs":
-                self._send_json(get_top_dirs())
-            elif path == "/api/files":
-                self._send_json(get_files(params))
-            else:
-                self.send_error(404)
-        except Exception as e:
-            body = json.dumps({"error": str(e)}).encode()
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-
-# ------------------------------------------------------------------
-# Main
-# ------------------------------------------------------------------
-
-def main():
-    if not os.path.exists(DB_PATH):
-        print(f"ERROR: database not found: {DB_PATH}", file=sys.stderr)
-        print("Run the agent once to populate it.", file=sys.stderr)
-        sys.exit(1)
-
-    if not os.path.exists(HTML_PATH):
-        print(f"ERROR: HTML page not found: {HTML_PATH}", file=sys.stderr)
-        sys.exit(1)
-
-    server = HTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"Serving {DB_PATH}")
-    print(f"Open http://127.0.0.1:{PORT}/ in your browser")
-    print("Press Ctrl+C to stop.")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopped.")
-
-
-if __name__ == "__main__":
-    main()
+Write-Host "`n=== Setup complete ===" -ForegroundColor Cyan
+Write-Host "Re-open your shell, then run: .\scripts\win\build-windows-msvc.ps1" -ForegroundColor Cyan
 ```
 
 ---
@@ -13627,18 +13106,19 @@ the user** — do not assume their contents.
 - `data/` — runtime data — not bundled (ask if needed)
 - `.deps/` — third-party dependency tree — not bundled
 - `.git/` — version-control metadata — not bundled
+- `.github/` — not bundled (ask if needed)
 - `logs/` — runtime logs — not bundled (ask if needed)
 - `.vscode/` — editor config — not bundled
 - `axiomdlp-agent-bundle.md` — generated bundle — not bundled
 - `.clangd` — editor config — not bundled
-- `compile_commands.json` — generated — not bundled
-- `migration.md` — not bundled (ask if needed)
+- `vcpkg-configuration.json` — not bundled (ask if needed)
+- `vcpkg.json` — not bundled (ask if needed)
 
 
 ---
 
 ## Summary
 
-- Files included: **79**
-- Files skipped:  **21**
-- Bundle size:    440K
+- Files included: **78**
+- Files skipped:  **22**
+- Bundle size:    428K

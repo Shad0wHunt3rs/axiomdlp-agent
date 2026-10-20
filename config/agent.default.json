@@ -4,11 +4,9 @@
     "file": "agent.log",
     "level": "info"
   },
-
   "storage": {
     "db_path": "data/agent.db"
   },
-
   "server": {
     "base_url": "http://127.0.0.1:3000",
     "api_token": "axdlp_user_gNAHsaK1QoFwVq3H3kMFMku0f8nJjkVugecDQfxF",
@@ -16,7 +14,6 @@
     "reconnect_backoff_seconds": 10,
     "reconnect_backoff_max_seconds": 300
   },
-
   "modules": {
     "filesystem_watcher": {
       "enabled": true,
@@ -29,7 +26,6 @@
       ],
       "debounce_ms": 300
     },
-
     "inventory": {
       "enabled": true,
       "watch_paths": [
@@ -41,18 +37,20 @@
       "interval_seconds": 60,
       "compute_hashes": true,
       "max_file_size_bytes": 104857600,
-      "scannable_categories": ["document", "code", "data", "config"]
+      "scannable_categories": [
+        "document",
+        "code",
+        "data",
+        "config"
+      ]
     },
-
     "transport": {
       "enabled": true,
       "server_url": ""
     },
-
     "agent_sync": {
       "enabled": true
     },
-
     "content_scanner": {
       "enabled": true,
       "batch_size": 50,
@@ -64,15 +62,57 @@
       "max_retries": 3,
       "request_timeout_seconds": 300,
       "text_extensions": [
-        "txt", "md", "log", "csv", "tsv",
-        "json", "yaml", "yml", "toml", "xml",
-        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx",
-        "py", "js", "ts", "jsx", "tsx",
-        "go", "rs", "java", "kt", "scala", "cs", "swift",
-        "rb", "php", "pl", "lua", "sql", "sh", "bash", "zsh", "ps1",
-        "html", "css", "scss", "less",
-        "conf", "cfg", "ini", "env", "properties"
+        "txt",
+        "md",
+        "log",
+        "csv",
+        "tsv",
+        "json",
+        "yaml",
+        "yml",
+        "toml",
+        "xml",
+        "c",
+        "cpp",
+        "cc",
+        "cxx",
+        "h",
+        "hpp",
+        "hxx",
+        "py",
+        "js",
+        "ts",
+        "jsx",
+        "tsx",
+        "go",
+        "rs",
+        "java",
+        "kt",
+        "scala",
+        "cs",
+        "swift",
+        "rb",
+        "php",
+        "pl",
+        "lua",
+        "sql",
+        "sh",
+        "bash",
+        "zsh",
+        "ps1",
+        "html",
+        "css",
+        "scss",
+        "less",
+        "conf",
+        "cfg",
+        "ini",
+        "env",
+        "properties"
       ]
+    },
+    "grpc_transport": {
+      "enabled": false
     }
   }
 }

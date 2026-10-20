@@ -106,6 +106,16 @@ struct AgentSyncModuleConfig {
 };
 
 // ----------------------------------------------------------------
+// Section: modules.grpc_transport
+//
+// Additive alternative to transport (WebSocket). Disabled by
+// default. Only the Windows MSVC build currently compiles it.
+// ----------------------------------------------------------------
+struct GrpcTransportModuleConfig {
+    bool enabled = false;
+};
+
+// ----------------------------------------------------------------
 // Section: modules.content_scanner
 //
 // URL and token come from `server`. Everything here is scanner
@@ -146,6 +156,7 @@ struct ModulesConfig {
     TransportModuleConfig         transport;
     AgentSyncModuleConfig         agent_sync;
     ContentScannerModuleConfig    content_scanner;
+    GrpcTransportModuleConfig     grpc_transport;
 };
 
 // ----------------------------------------------------------------
