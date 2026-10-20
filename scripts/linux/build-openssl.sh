@@ -9,6 +9,14 @@
 #
 # Run once. Re-run only if you bump OPENSSL_VERSION.
 # Takes 15-25 minutes total.
+#
+# Built with no-zlib so that FindOpenSSL.cmake does not try to add
+# ZLIB::ZLIB to the link interface of OpenSSL::SSL / OpenSSL::Crypto.
+# Without this, the i686 build fails at configure time with
+# "The link interface of target OpenSSL::Crypto contains ZLIB::ZLIB
+#  but the target was not found" unless zlib1g-dev:i386 is installed.
+# TLS compression has been disabled by default since 2012 for
+# security reasons (CRIME / BREACH), so nothing is lost.
 
 set -euo pipefail
 
@@ -64,7 +72,7 @@ build_one() {
     ./Configure "$target" \
         --prefix="$out" \
         --openssldir="$out/ssl" \
-        no-shared no-tests no-docs no-apps no-legacy \
+        no-shared no-tests no-docs no-apps no-legacy no-zlib \
         "${extra_args[@]}"
 
     make -j"$(nproc)"

@@ -124,7 +124,59 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(httplib)
 
 # ----------------------------------------------------------------
+# OpenSSL (must run BEFORE find_package(gRPC))
+#
+# gRPC's CMake config file calls find_dependency(OpenSSL). If that
+# runs first, it resolves to the host's system OpenSSL. On a 32-bit
+# (i686) build the host system OpenSSL is 64-bit and the link fails
+# with "file in wrong format". Setting OPENSSL_ROOT_DIR + explicit
+# library paths here and calling find_package(OpenSSL) ourselves
+# forces gRPC's later find_dependency(OpenSSL) to reuse the correct
+# architecture's targets.
+# ----------------------------------------------------------------
+if(AXIOM_USE_VCPKG_DEPS)
+    find_package(OpenSSL REQUIRED)
+else()
+    if(UNIX AND NOT APPLE)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-x86_64")
+        else()
+            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-i686")
+        endif()
+    endif()
+
+    if(EXISTS "${AXIOM_OPENSSL_DIR}/lib/libssl.a")
+        set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib")
+    elseif(EXISTS "${AXIOM_OPENSSL_DIR}/lib64/libssl.a")
+        set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib64")
+    else()
+        message(FATAL_ERROR
+            "OpenSSL not found at ${AXIOM_OPENSSL_DIR}. "
+            "Run ./scripts/linux/build-openssl.sh first.")
+    endif()
+
+    # Cache hints consumed by FindOpenSSL.cmake (both our call
+    # below and gRPC's internal find_dependency(OpenSSL) call).
+    set(OPENSSL_ROOT_DIR       "${AXIOM_OPENSSL_DIR}"                  CACHE PATH     "" FORCE)
+    set(OPENSSL_INCLUDE_DIR    "${AXIOM_OPENSSL_DIR}/include"          CACHE PATH     "" FORCE)
+    set(OPENSSL_SSL_LIBRARY    "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"     CACHE FILEPATH "" FORCE)
+    set(OPENSSL_CRYPTO_LIBRARY "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"  CACHE FILEPATH "" FORCE)
+    set(OPENSSL_USE_STATIC_LIBS ON                                     CACHE BOOL     "" FORCE)
+
+    find_package(OpenSSL REQUIRED)
+
+    if(NOT TARGET OpenSSL::SSL OR NOT TARGET OpenSSL::Crypto)
+        message(FATAL_ERROR
+            "OpenSSL imported targets missing after find_package(OpenSSL). "
+            "Check ${AXIOM_OPENSSL_DIR} layout.")
+    endif()
+endif()
+
+# ----------------------------------------------------------------
 # gRPC + Protobuf (Mandatory)
+#
+# Runs after OpenSSL is set up so gRPC's find_dependency(OpenSSL)
+# reuses our targets instead of resolving to the system OpenSSL.
 # ----------------------------------------------------------------
 if(NOT AXIOM_USE_VCPKG_DEPS)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -178,43 +230,12 @@ add_custom_command(
 add_custom_target(axiom_grpc_gen DEPENDS ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR})
 
 # ----------------------------------------------------------------
-# OpenSSL & SQLite3
+# SQLite3
 # ----------------------------------------------------------------
 if(AXIOM_USE_VCPKG_DEPS)
-    find_package(OpenSSL REQUIRED)
     find_package(SQLite3 REQUIRED)
     set(AXIOM_SQLITE_TARGET SQLite::SQLite3)
 else()
-    if(UNIX AND NOT APPLE)
-        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-x86_64")
-        else()
-            set(AXIOM_OPENSSL_DIR "${AXIOM_DEPS_DIR}/openssl-linux-i686")
-        endif()
-    endif()
-    if(EXISTS "${AXIOM_OPENSSL_DIR}/lib/libssl.a")
-        set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib")
-    elseif(EXISTS "${AXIOM_OPENSSL_DIR}/lib64/libssl.a")
-        set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib64")
-    else()
-        message(FATAL_ERROR "OpenSSL not found. Run ./scripts/linux/build-openssl.sh first.")
-    endif()
-    
-    set(AXIOM_OPENSSL_INCLUDE_DIR "${AXIOM_OPENSSL_DIR}/include")
-    if(NOT TARGET OpenSSL::SSL)
-        add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)
-        set_target_properties(OpenSSL::SSL PROPERTIES
-            IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"
-            INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}"
-            INTERFACE_LINK_LIBRARIES      "OpenSSL::Crypto")
-    endif()
-    if(NOT TARGET OpenSSL::Crypto)
-        add_library(OpenSSL::Crypto STATIC IMPORTED GLOBAL)
-        set_target_properties(OpenSSL::Crypto PROPERTIES
-            IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
-            INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}")
-    endif()
-
     set(AXIOM_SQLITE_DIR "${AXIOM_DEPS_DIR}/sqlite3-src")
     set(AXIOM_SQLITE_C   "${AXIOM_SQLITE_DIR}/sqlite3.c")
     add_library(axiom_sqlite STATIC "${AXIOM_SQLITE_C}")
