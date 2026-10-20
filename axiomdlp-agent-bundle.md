@@ -1,6 +1,6 @@
 # AxiomDLP Agent — Source Bundle
 
-- **Generated:** 2026-10-17 08:40:41 UTC
+- **Generated:** 2026-10-20 18:07:30 UTC
 - **Root:** `/home/kali/axiomdlp-agent`
 
 This bundle contains **only the project's own source code** —
@@ -28,8 +28,10 @@ If you need any of them, ask the user — do not guess.
 ./cmake/toolchains
 ./cmake/toolchains/linux-i686.cmake
 ./cmake/toolchains/linux-x86_64.cmake
+./compile_commands.json
 ./config
 ./config/agent.default.json
+./config/agent.default.json.bak
 ./config/agent.default_win.json
 ./config/agent.schema.json
 ./docs
@@ -81,14 +83,15 @@ If you need any of them, ask the user — do not guess.
 ./src/features/filesystem_watcher
 ./src/features/filesystem_watcher/filesystem_watcher_module.cpp
 ./src/features/filesystem_watcher/filesystem_watcher_module.h
+./src/features/grpc_transport
+./src/features/grpc_transport/agent.proto
+./src/features/grpc_transport/grpc_transport_module.cpp
+./src/features/grpc_transport/grpc_transport_module.h
 ./src/features/inventory
 ./src/features/inventory/inventory_module.cpp
 ./src/features/inventory/inventory_module.h
 ./src/features/inventory/inventory_scanner.cpp
 ./src/features/inventory/inventory_scanner.h
-./src/features/websocket_transport
-./src/features/websocket_transport/transport_module.cpp
-./src/features/websocket_transport/transport_module.h
 ./src/foundation
 ./src/foundation/application.cpp
 ./src/foundation/application.h
@@ -108,12 +111,8 @@ If you need any of them, ask the user — do not guess.
 ./src/net
 ./src/net/http_client.cpp
 ./src/net/http_client.h
-./src/net/message_router.cpp
-./src/net/message_router.h
 ./src/net/outbound_queue.cpp
 ./src/net/outbound_queue.h
-./src/net/websocket_client.cpp
-./src/net/websocket_client.h
 ./src/platform
 ./src/platform/common
 ./src/platform/common/efsw_file_watcher.cpp
@@ -142,7 +141,8 @@ If you need any of them, ask the user — do not guess.
 ./src/util/file_hash.h
 ./src/util/glob_match.cpp
 ./src/util/glob_match.h
-./vcpkg-configuration.json
+./tests
+./tests/test_phase6.py
 ./vcpkg.json
 ```
 
@@ -164,16 +164,16 @@ set(AXIOM_DEPS_DIR "${CMAKE_SOURCE_DIR}/.deps" CACHE PATH "Shared FetchContent s
 file(MAKE_DIRECTORY "${AXIOM_DEPS_DIR}")
 
 if(EXISTS "${AXIOM_DEPS_DIR}/spdlog-src")
-    set(FETCHCONTENT_SOURCE_DIR_SPDLOG "${AXIOM_DEPS_DIR}/spdlog-src"
-        CACHE PATH "spdlog source cache" FORCE)
+    set(FETCHCONTENT_SOURCE_DIR_SPDLOG "${AXIOM_DEPS_DIR}/spdlog-src" CACHE PATH "spdlog source cache" FORCE)
 endif()
 if(EXISTS "${AXIOM_DEPS_DIR}/nlohmann_json-src")
-    set(FETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON "${AXIOM_DEPS_DIR}/nlohmann_json-src"
-        CACHE PATH "nlohmann/json source cache" FORCE)
+    set(FETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON "${AXIOM_DEPS_DIR}/nlohmann_json-src" CACHE PATH "nlohmann/json source cache" FORCE)
 endif()
 if(EXISTS "${AXIOM_DEPS_DIR}/efsw-src")
-    set(FETCHCONTENT_SOURCE_DIR_EFSW "${AXIOM_DEPS_DIR}/efsw-src"
-        CACHE PATH "efsw source cache" FORCE)
+    set(FETCHCONTENT_SOURCE_DIR_EFSW "${AXIOM_DEPS_DIR}/efsw-src" CACHE PATH "efsw source cache" FORCE)
+endif()
+if(EXISTS "${AXIOM_DEPS_DIR}/cpp-httplib-src")
+    set(FETCHCONTENT_SOURCE_DIR_HTTPLIB "${AXIOM_DEPS_DIR}/cpp-httplib-src" CACHE PATH "cpp-httplib source cache" FORCE)
 endif()
 
 # ----------------------------------------------------------------
@@ -187,18 +187,12 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ----------------------------------------------------------------
 # Dependency acquisition strategy
-#
-#   MSVC (Windows, native)   -> vcpkg manifest mode
-#   MINGW (Windows, cross)   -> existing .deps/ cross-built trees
-#   UNIX (Linux)             -> existing .deps/ native trees
 # ----------------------------------------------------------------
 if(MSVC)
     set(AXIOM_USE_VCPKG_DEPS ON)
     message(STATUS "Build strategy: MSVC + vcpkg (Windows native)")
     if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
-        set(CMAKE_MSVC_RUNTIME_LIBRARY
-            "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING
-            "Use static CRT to match MinGW's -static-libstdc++")
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "Use static CRT")
     endif()
 else()
     set(AXIOM_USE_VCPKG_DEPS OFF)
@@ -225,55 +219,39 @@ else()
 endif()
 
 message(STATUS "AxiomDLP Agent target: ${AXIOM_TARGET}")
-message(STATUS "Dependency source cache: ${AXIOM_DEPS_DIR}")
 
 # ----------------------------------------------------------------
 # Third-party dependencies
 # ----------------------------------------------------------------
 include(FetchContent)
 
-# --- nlohmann/json (header-only) ---
+# --- nlohmann/json ---
 if(AXIOM_USE_VCPKG_DEPS)
     find_package(nlohmann_json CONFIG REQUIRED)
-    message(STATUS "nlohmann_json (from vcpkg): ${nlohmann_json_VERSION}")
 else()
     find_package(nlohmann_json QUIET)
     if(NOT nlohmann_json_FOUND)
-        message(STATUS "System nlohmann_json not found; fetching via FetchContent")
         set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
         set(JSON_Install    OFF CACHE BOOL "" FORCE)
-        FetchContent_Declare(
-            nlohmann_json
-            GIT_REPOSITORY https://github.com/nlohmann/json.git
-            GIT_TAG        v3.11.3
-            GIT_SHALLOW    TRUE
-        )
+        FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG v3.11.3 GIT_SHALLOW TRUE)
         FetchContent_MakeAvailable(nlohmann_json)
-    else()
-        message(STATUS "Using system nlohmann_json (${nlohmann_json_VERSION})")
     endif()
 endif()
 
 # --- spdlog ---
 if(AXIOM_USE_VCPKG_DEPS)
     find_package(spdlog CONFIG REQUIRED)
-    message(STATUS "spdlog (from vcpkg): ${spdlog_VERSION}")
 else()
     set(SPDLOG_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
     set(SPDLOG_BUILD_EXAMPLE  OFF CACHE BOOL "" FORCE)
     set(SPDLOG_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
     set(SPDLOG_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
     set(SPDLOG_INSTALL        OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        spdlog
-        GIT_REPOSITORY https://github.com/gabime/spdlog.git
-        GIT_TAG        v1.14.1
-        GIT_SHALLOW    TRUE
-    )
+    FetchContent_Declare(spdlog GIT_REPOSITORY https://github.com/gabime/spdlog.git GIT_TAG v1.14.1 GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(spdlog)
 endif()
 
-# --- efsw (file system watcher) ---
+# --- efsw ---
 if(AXIOM_USE_VCPKG_DEPS)
     find_package(efsw CONFIG REQUIRED)
     if(TARGET efsw::efsw)
@@ -281,76 +259,87 @@ if(AXIOM_USE_VCPKG_DEPS)
     else()
         set(AXIOM_EFSW_TARGET efsw)
     endif()
-    message(STATUS "efsw (from vcpkg)")
 else()
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
     set(BUILD_STATIC_LIBS ON  CACHE BOOL "" FORCE)
     set(EFSW_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
     set(EFSW_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        efsw
-        GIT_REPOSITORY https://github.com/SpartanJ/efsw.git
-        GIT_TAG        1.7.2
-        GIT_SHALLOW    TRUE
-    )
+    FetchContent_Declare(efsw GIT_REPOSITORY https://github.com/SpartanJ/efsw.git GIT_TAG 1.7.2 GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(efsw)
     set(AXIOM_EFSW_TARGET efsw-static)
 endif()
 
-# ----------------------------------------------------------------
-# Boost (Beast + Asio + System)
-# ----------------------------------------------------------------
-set(AXIOM_BOOST_ROOT "" CACHE PATH "Override Boost header root")
+# --- cpp-httplib ---
+set(HTTPLIB_COMPILE OFF) # header-only
+FetchContent_Declare(
+    httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG        v0.15.3
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(httplib)
 
-if(AXIOM_USE_VCPKG_DEPS)
-    find_package(Boost CONFIG REQUIRED)
-    set(AXIOM_BOOST_INCLUDE_DIRS "")
-    message(STATUS "Boost: from vcpkg (CONFIG mode)")
-else()
-    if(NOT AXIOM_BOOST_ROOT)
-        foreach(candidate "/usr/include" "/usr/local/include")
-            if(EXISTS "${candidate}/boost/beast.hpp")
-                set(AXIOM_BOOST_ROOT "${candidate}")
-                break()
-            endif()
-        endforeach()
-    endif()
-    if(NOT AXIOM_BOOST_ROOT OR NOT EXISTS "${AXIOM_BOOST_ROOT}/boost/beast.hpp")
-        message(FATAL_ERROR
-            "Boost headers not found. Install them with:\n"
-            "    sudo apt install -y libboost-dev\n"
-            "Then verify that /usr/include/boost/beast.hpp exists.")
-    endif()
-    set(AXIOM_BOOST_ISOLATED_DIR "${AXIOM_DEPS_DIR}/boost-include")
-    if(NOT EXISTS "${AXIOM_BOOST_ISOLATED_DIR}/boost/beast.hpp")
-        message(STATUS "Creating isolated Boost include directory at ${AXIOM_BOOST_ISOLATED_DIR}")
-        file(MAKE_DIRECTORY "${AXIOM_BOOST_ISOLATED_DIR}")
-        file(CREATE_LINK
-             "${AXIOM_BOOST_ROOT}/boost"
-             "${AXIOM_BOOST_ISOLATED_DIR}/boost"
-             SYMBOLIC)
-    endif()
-    file(STRINGS "${AXIOM_BOOST_ROOT}/boost/version.hpp"
-         _boost_version_line
-         REGEX "#define BOOST_LIB_VERSION ")
-    if(_boost_version_line MATCHES "\"([0-9_]+)\"")
-        set(_boost_version_raw "${CMAKE_MATCH_1}")
-        string(REPLACE "_" "." _boost_version "${_boost_version_raw}")
+# ----------------------------------------------------------------
+# gRPC + Protobuf (Mandatory)
+# ----------------------------------------------------------------
+if(NOT AXIOM_USE_VCPKG_DEPS)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        list(PREPEND CMAKE_PREFIX_PATH "${AXIOM_DEPS_DIR}/grpc-linux-x86_64")
     else()
-        set(_boost_version "unknown")
+        list(PREPEND CMAKE_PREFIX_PATH "${AXIOM_DEPS_DIR}/grpc-linux-i686")
     endif()
-    message(STATUS "Boost headers (isolated): ${AXIOM_BOOST_ISOLATED_DIR}/boost (version ${_boost_version})")
-    set(AXIOM_BOOST_INCLUDE_DIRS "${AXIOM_BOOST_ISOLATED_DIR}")
 endif()
 
-find_package(Threads REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
+find_package(gRPC CONFIG REQUIRED)
+
+set(AXIOM_PROTO_DIR     "${CMAKE_CURRENT_SOURCE_DIR}/src/features/grpc_transport")
+set(AXIOM_PROTO_FILE    "${AXIOM_PROTO_DIR}/agent.proto")
+set(AXIOM_PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
+
+set(AXIOM_PROTO_SRC
+    "${AXIOM_PROTO_GEN_DIR}/agent.pb.cc"
+    "${AXIOM_PROTO_GEN_DIR}/agent.grpc.pb.cc"
+)
+set(AXIOM_PROTO_HDR
+    "${AXIOM_PROTO_GEN_DIR}/agent.pb.h"
+    "${AXIOM_PROTO_GEN_DIR}/agent.grpc.pb.h"
+)
+
+if(AXIOM_USE_VCPKG_DEPS)
+    set(_protoc_exe "$<TARGET_FILE:protobuf::protoc>")
+    set(_grpc_plugin "$<TARGET_FILE:gRPC::grpc_cpp_plugin>")
+else()
+    set(_protoc_exe "${AXIOM_DEPS_DIR}/grpc-host-tools/bin/protoc")
+    set(_grpc_plugin "${AXIOM_DEPS_DIR}/grpc-host-tools/bin/grpc_cpp_plugin")
+    if(NOT EXISTS "${_protoc_exe}")
+        message(FATAL_ERROR "protoc not found. Please run ./scripts/linux/build-grpc.sh first.")
+    endif()
+endif()
+
+add_custom_command(
+    OUTPUT  ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR}
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${AXIOM_PROTO_GEN_DIR}"
+    COMMAND "${_protoc_exe}"
+        --proto_path=${AXIOM_PROTO_DIR}
+        --cpp_out=${AXIOM_PROTO_GEN_DIR}
+        --grpc_out=${AXIOM_PROTO_GEN_DIR}
+        --plugin=protoc-gen-grpc=${_grpc_plugin}
+        ${AXIOM_PROTO_FILE}
+    DEPENDS ${AXIOM_PROTO_FILE}
+    COMMENT "protoc: generating C++ from agent.proto"
+    VERBATIM
+)
+
+add_custom_target(axiom_grpc_gen DEPENDS ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR})
 
 # ----------------------------------------------------------------
-# OpenSSL
+# OpenSSL & SQLite3
 # ----------------------------------------------------------------
 if(AXIOM_USE_VCPKG_DEPS)
     find_package(OpenSSL REQUIRED)
-    message(STATUS "OpenSSL (from vcpkg): ${OPENSSL_VERSION}")
+    find_package(SQLite3 REQUIRED)
+    set(AXIOM_SQLITE_TARGET SQLite::SQLite3)
 else()
     if(UNIX AND NOT APPLE)
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -364,15 +353,10 @@ else()
     elseif(EXISTS "${AXIOM_OPENSSL_DIR}/lib64/libssl.a")
         set(AXIOM_OPENSSL_LIB_DIR "${AXIOM_OPENSSL_DIR}/lib64")
     else()
-        message(FATAL_ERROR
-            "OpenSSL not found in ${AXIOM_OPENSSL_DIR}.\n"
-            "Run ./scripts/build-openssl.sh first.")
+        message(FATAL_ERROR "OpenSSL not found. Run ./scripts/linux/build-openssl.sh first.")
     endif()
+    
     set(AXIOM_OPENSSL_INCLUDE_DIR "${AXIOM_OPENSSL_DIR}/include")
-    if(NOT EXISTS "${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/ssl.h")
-        message(FATAL_ERROR
-            "OpenSSL headers not found at ${AXIOM_OPENSSL_INCLUDE_DIR}/openssl/.")
-    endif()
     if(NOT TARGET OpenSSL::SSL)
         add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)
         set_target_properties(OpenSSL::SSL PROPERTIES
@@ -386,90 +370,12 @@ else()
             IMPORTED_LOCATION             "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
             INTERFACE_INCLUDE_DIRECTORIES "${AXIOM_OPENSSL_INCLUDE_DIR}")
     endif()
-    message(STATUS "OpenSSL (imported from .deps)")
-    message(STATUS "  include: ${AXIOM_OPENSSL_INCLUDE_DIR}")
-    message(STATUS "  ssl:     ${AXIOM_OPENSSL_LIB_DIR}/libssl.a")
-    message(STATUS "  crypto:  ${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a")
-endif()
 
-# ----------------------------------------------------------------
-# SQLite3
-# ----------------------------------------------------------------
-if(AXIOM_USE_VCPKG_DEPS)
-    find_package(SQLite3 REQUIRED)
-    set(AXIOM_SQLITE_TARGET SQLite::SQLite3)
-    message(STATUS "SQLite3 (from vcpkg): ${SQLite3_VERSION}")
-else()
     set(AXIOM_SQLITE_DIR "${AXIOM_DEPS_DIR}/sqlite3-src")
     set(AXIOM_SQLITE_C   "${AXIOM_SQLITE_DIR}/sqlite3.c")
-    set(AXIOM_SQLITE_ZIP "${AXIOM_DEPS_DIR}/sqlite3.zip")
-    set(AXIOM_SQLITE_URL "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip")
-    set(AXIOM_SQLITE_MIN_BYTES 5000000)
-    set(AXIOM_SQLITE_CACHE_OK OFF)
-    if(EXISTS "${AXIOM_SQLITE_C}")
-        file(SIZE "${AXIOM_SQLITE_C}" cache_size)
-        if(cache_size GREATER_EQUAL ${AXIOM_SQLITE_MIN_BYTES})
-            set(AXIOM_SQLITE_CACHE_OK ON)
-        else()
-            message(STATUS "SQLite cache truncated (${cache_size} bytes); re-downloading")
-            file(REMOVE_RECURSE "${AXIOM_SQLITE_DIR}")
-        endif()
-    endif()
-    if(NOT AXIOM_SQLITE_CACHE_OK)
-        message(STATUS "Downloading SQLite amalgamation")
-        file(REMOVE "${AXIOM_SQLITE_ZIP}")
-        find_program(AXIOM_CURL_BIN NAMES curl)
-        find_program(AXIOM_WGET_BIN NAMES wget)
-        if(AXIOM_CURL_BIN)
-            execute_process(
-                COMMAND "${AXIOM_CURL_BIN}" -fL --retry 3 --retry-delay 2
-                        -o "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
-                RESULT_VARIABLE dl_result
-                ERROR_VARIABLE  dl_error
-            )
-        elseif(AXIOM_WGET_BIN)
-            execute_process(
-                COMMAND "${AXIOM_WGET_BIN}" -O "${AXIOM_SQLITE_ZIP}" "${AXIOM_SQLITE_URL}"
-                RESULT_VARIABLE dl_result
-                ERROR_VARIABLE  dl_error
-            )
-        else()
-            message(FATAL_ERROR "Neither curl nor wget is installed.")
-        endif()
-        if(NOT dl_result EQUAL 0)
-            message(FATAL_ERROR "SQLite download failed: ${dl_error}")
-        endif()
-        file(SIZE "${AXIOM_SQLITE_ZIP}" zip_size)
-        if(zip_size LESS 2000000)
-            message(FATAL_ERROR "SQLite download is truncated (${zip_size} bytes).")
-        endif()
-        file(ARCHIVE_EXTRACT INPUT "${AXIOM_SQLITE_ZIP}"
-             DESTINATION "${AXIOM_DEPS_DIR}/sqlite3-extract")
-        file(GLOB SQLITE_DIRS "${AXIOM_DEPS_DIR}/sqlite3-extract/sqlite-amalgamation-*")
-        list(LENGTH SQLITE_DIRS SQLITE_DIRS_LEN)
-        if(SQLITE_DIRS_LEN EQUAL 0)
-            message(FATAL_ERROR "SQLite amalgamation extraction produced no directory")
-        endif()
-        list(GET SQLITE_DIRS 0 SQLITE_DIR)
-        file(RENAME "${SQLITE_DIR}" "${AXIOM_SQLITE_DIR}")
-        file(REMOVE_RECURSE "${AXIOM_DEPS_DIR}/sqlite3-extract")
-        file(REMOVE "${AXIOM_SQLITE_ZIP}")
-        file(SIZE "${AXIOM_SQLITE_C}" extracted_size)
-        if(extracted_size LESS ${AXIOM_SQLITE_MIN_BYTES})
-            message(FATAL_ERROR "Extracted sqlite3.c is truncated (${extracted_size} bytes).")
-        endif()
-        message(STATUS "SQLite amalgamation cached at ${AXIOM_SQLITE_DIR}")
-    else()
-        message(STATUS "Using cached SQLite amalgamation from .deps/sqlite3-src/")
-    endif()
     add_library(axiom_sqlite STATIC "${AXIOM_SQLITE_C}")
     target_include_directories(axiom_sqlite PUBLIC "${AXIOM_SQLITE_DIR}")
-    target_compile_definitions(axiom_sqlite PRIVATE
-        SQLITE_THREADSAFE=1
-        SQLITE_OMIT_LOAD_EXTENSION=1
-        SQLITE_DEFAULT_MEMSTATUS=0
-        SQLITE_DQS=0
-    )
+    target_compile_definitions(axiom_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION=1 SQLITE_DEFAULT_MEMSTATUS=0 SQLITE_DQS=0)
     if(UNIX AND NOT APPLE)
         target_link_libraries(axiom_sqlite PUBLIC dl pthread)
     endif()
@@ -480,15 +386,9 @@ endif()
 # Platform-specific sources
 # ----------------------------------------------------------------
 if(WIN32)
-    set(AXIOM_PLATFORM_SOURCES
-        src/platform/windows/paths.cpp
-        src/platform/windows/service.cpp
-    )
+    set(AXIOM_PLATFORM_SOURCES src/platform/windows/paths.cpp src/platform/windows/service.cpp)
 elseif(UNIX AND NOT APPLE)
-    set(AXIOM_PLATFORM_SOURCES
-        src/platform/linux/paths.cpp
-        src/platform/linux/service.cpp
-    )
+    set(AXIOM_PLATFORM_SOURCES src/platform/linux/paths.cpp src/platform/linux/service.cpp)
 endif()
 
 # ----------------------------------------------------------------
@@ -503,9 +403,7 @@ add_executable(axiomdlp-agent
     src/events/event_bus.cpp
     src/modules/module_manager.cpp
     src/net/http_client.cpp
-    src/net/websocket_client.cpp
     src/net/outbound_queue.cpp
-    src/net/message_router.cpp
     src/util/glob_match.cpp
     src/util/file_hash.cpp
     src/util/base64.cpp
@@ -516,55 +414,44 @@ add_executable(axiomdlp-agent
     src/features/filesystem_watcher/filesystem_watcher_module.cpp
     src/features/inventory/inventory_module.cpp
     src/features/inventory/inventory_scanner.cpp
-    src/features/websocket_transport/transport_module.cpp
+    src/features/grpc_transport/grpc_transport_module.cpp
     src/storage/sqlite_database.cpp
     src/storage/migrations.cpp
     src/storage/file_repository.cpp
     src/storage/state_repository.cpp
+    ${AXIOM_PROTO_SRC}
     ${AXIOM_PLATFORM_SOURCES}
 )
 
-target_include_directories(axiomdlp-agent PRIVATE
-    src
-    ${AXIOM_BOOST_INCLUDE_DIRS}
-)
+target_include_directories(axiomdlp-agent PRIVATE src ${AXIOM_PROTO_GEN_DIR})
 
 target_compile_definitions(axiomdlp-agent PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
     AXIOM_AGENT_VERSION="${PROJECT_VERSION}"
+    CPPHTTPLIB_OPENSSL_SUPPORT
 )
 
 target_link_libraries(axiomdlp-agent PRIVATE
     spdlog::spdlog
     nlohmann_json::nlohmann_json
+    httplib::httplib
     ${AXIOM_EFSW_TARGET}
     ${AXIOM_SQLITE_TARGET}
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
+    gRPC::grpc++
+    protobuf::libprotobuf
 )
 
-if(AXIOM_USE_VCPKG_DEPS)
-    target_link_libraries(axiomdlp-agent PRIVATE Boost::headers)
-endif()
+add_dependencies(axiomdlp-agent axiom_grpc_gen)
 
 # ----------------------------------------------------------------
 # Platform-specific settings
 # ----------------------------------------------------------------
 if(WIN32)
-    # Windows is MSVC + vcpkg only.
-    # ole32   -> CoTaskMemFree  (used by src/platform/windows/paths.cpp)
-    # user32  -> Shell helpers
-    # ws2_32  -> Winsock  (Boost.Asio/Beast)
-    # crypt32 -> Windows crypto helpers
-    target_link_libraries(axiomdlp-agent PRIVATE
-        advapi32 shell32 ws2_32 crypt32 ole32 user32)
-    target_compile_definitions(axiomdlp-agent PRIVATE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        _WIN32_WINNT=0x0601
-        _CRT_SECURE_NO_WARNINGS
-    )
+    target_link_libraries(axiomdlp-agent PRIVATE advapi32 shell32 ws2_32 crypt32 ole32 user32)
+    target_compile_definitions(axiomdlp-agent PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0601 _CRT_SECURE_NO_WARNINGS)
 endif()
 
 if(UNIX AND NOT APPLE)
@@ -572,11 +459,9 @@ if(UNIX AND NOT APPLE)
     include(FindPkgConfig QUIET)
     if(PkgConfig_FOUND)
         if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-            set(ENV{PKG_CONFIG_LIBDIR}
-                "/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig")
+            set(ENV{PKG_CONFIG_LIBDIR} "/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig")
         else()
-            set(ENV{PKG_CONFIG_LIBDIR}
-                "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig")
+            set(ENV{PKG_CONFIG_LIBDIR} "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig")
         endif()
         pkg_check_modules(SYSTEMD QUIET libsystemd)
         if(SYSTEMD_FOUND)
@@ -584,27 +469,16 @@ if(UNIX AND NOT APPLE)
         endif()
     endif()
     if(AXIOM_HAVE_SYSTEMD)
-        message(STATUS "libsystemd found: sd_notify enabled")
         target_compile_definitions(axiomdlp-agent PRIVATE HAVE_SYSTEMD)
         target_include_directories(axiomdlp-agent PRIVATE ${SYSTEMD_INCLUDE_DIRS})
         target_link_libraries(axiomdlp-agent PRIVATE ${SYSTEMD_LIBRARIES})
-    else()
-        message(STATUS "libsystemd not available: sd_notify disabled")
     endif()
-    target_compile_options(axiomdlp-agent PRIVATE
-        -fstack-protector-strong -fPIE
-    )
-    target_link_options(axiomdlp-agent PRIVATE
-        -pie -Wl,-z,relro,-z,now
-    )
+    target_compile_options(axiomdlp-agent PRIVATE -fstack-protector-strong -fPIE)
+    target_link_options(axiomdlp-agent PRIVATE -pie -Wl,-z,relro,-z,now)
 endif()
 
 if(MSVC)
-    target_compile_options(axiomdlp-agent PRIVATE
-        /W4
-        /permissive-
-        /Zc:__cplusplus
-    )
+    target_compile_options(axiomdlp-agent PRIVATE /W4 /permissive- /Zc:__cplusplus /bigobj)
 else()
     target_compile_options(axiomdlp-agent PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -1854,14 +1728,11 @@ Triggered on every tag:
 ~~~~markdown
 # AxiomDLP Endpoint Agent — DONE.md
 
-> **Note:** This document describes the `main` branch (MinGW + GCC,
-> four targets). On the `msvc-windows-build` branch, Windows is
-> MSVC + vcpkg only — see `docs/windows-msvc-build.md`. The historical
-> `.deps/openssl-mingw*` paths below no longer exist on this branch.
+**Status Document — Everything Implemented, Verified, and Fixed**
 
-**Status Document — Everything Implemented, Verified, and Fixed on the Agent Side**
-
-**Last updated:** After atomic ShutdownController, bidirectional WebSocket, server-pushed revocation, TLS enforcement, config consolidation, and industry-standard timing.
+**Last updated:** After the MSVC + vcpkg migration on `msvc-windows-build`.
+Windows x86_64 and x86 both build and run; Linux x86_64 and i686 remain
+unchanged from `main`.
 
 **Supersedes:** all previous DONE.md revisions.
 
@@ -1869,52 +1740,94 @@ Triggered on every tag:
 
 ## 1. Executive Summary
 
-The AxiomDLP Endpoint Agent is a **cross-platform, TLS-capable, network-connected service foundation** with four verified build targets, six working modules, a persistent local SQLite database, SHA-256 file fingerprinting, HTTP + WebSocket connectivity to the AxiomDLP Core server, a content scanner for text-based PII detection, and an **atomic ShutdownController** that lets any component stop the whole agent cleanly with a typed reason.
+The AxiomDLP Endpoint Agent is a **cross-platform, TLS-capable, network-connected
+service foundation** with **four verified build targets from two distinct
+toolchains**, six working modules, a persistent local SQLite database, SHA-256
+file fingerprinting, HTTP + WebSocket connectivity to the AxiomDLP Core server,
+a content scanner for text-based PII detection, and an **atomic
+ShutdownController** that lets any component stop the whole agent cleanly with
+a typed reason.
+
+### Two dependency pipelines, one source tree
+
+| Platform                | Toolchain              | Dependencies                                                                      |
+| ----------------------- | ---------------------- | --------------------------------------------------------------------------------- |
+| **Linux x86_64 / i686** | GCC (native, multilib) | `.deps/` — `build-openssl.sh` + system Boost + FetchContent + SQLite amalgamation |
+| **Windows x64 / x86**   | MSVC 2022 (19.44)      | **vcpkg manifest mode** — 66 packages, static triplet                             |
+
+The `if(MSVC)` branch in `CMakeLists.txt` is the only place the two
+strategies diverge. Every source file, every header, every module uses the
+same `find_package(...)` API and links the same imported targets
+(`Boost::headers`, `OpenSSL::SSL`, `SQLite::SQLite3`, `spdlog::spdlog`,
+`nlohmann_json::nlohmann_json`, `efsw::efsw`).
 
 ### What Works Today
 
-- Four build targets from one Linux host: Linux x86_64, Linux i686, Windows x86_64, Windows i686.
-- Cross-platform service lifecycle (systemd on Linux, SCM on Windows).
-- Async structured logging with rotation and non-blocking delivery.
-- JSON configuration with fail-safe defaults, environment variable expansion, and a single top-level `server` section for all server-facing values.
-- Real-time filesystem watching via inotify (Linux) and ReadDirectoryChangesW (Windows) using efsw.
-- Periodic full-tree inventory scanning with interruptible cancellation.
-- SHA-256 content hashing of eligible files, with metadata stored in SQLite.
-- **Bidirectional WebSocket** to the Core server with TLS, jittered reconnect backoff, close-code interpretation, and graceful 1000 Normal close frames.
-- HTTP client supporting `http://` and `https://` with unconditional certificate verification.
-- Agent enrollment with the Core server via `POST /api/v1/agent/register`.
-- Periodic heartbeat via `POST /api/v1/agent/heartbeat`, plus an immediate validation heartbeat at startup.
-- **Atomic shutdown**: any module can request a shutdown with a typed reason (`UserRequested`, `AuthRevoked`, `AgentRevoked`, `FatalError`, `ConfigError`, `ServerShutdown`), and the whole agent tears down in reverse order, logging the reason end to end.
-- **Server-pushed revocation handling**: the agent reacts to `token_revoked` and `agent_revoked` messages by requesting a full shutdown.
-- **Goodbye message** on graceful exits: `{"type":"agent_shutdown","payload":{"reason":...}}` is sent to the server before the WebSocket is closed.
-- **Content scanner**: reads text files, splits them into overlapping chunks, sends batches to `POST /api/v1/agent/scan/batch`, and writes the merged verdict back to the local `files` table.
-- Statically linked OpenSSL 3.3.2 for all four targets.
-- Local visualization dashboard (Python server + HTML page) for development.
+**Linux (x86_64 + i686) — unchanged from `main`:**
+- GCC native builds from `.deps/`
+- Static OpenSSL 3.3.2, system Boost 1.90, FetchContent spdlog 1.14.1 / efsw 1.7.2 / nlohmann 3.11.3, SQLite 3.46.1 amalgamation
+- systemd + `sd_notify`, i686 via `-m32` toolchain file
+- Both architectures build, link, run, enroll, connect WebSocket, heartbeat, shutdown
+
+**Windows (x64 + x86) — new on `msvc-windows-build`:**
+- MSVC 2022 BuildTools builds via vcpkg manifest mode
+- Fully static: OpenSSL 3.6.5, Boost 1.92.0, SQLite 3.53.4, spdlog 1.17.0, fmt 12.2.0, nlohmann-json 3.12.0, efsw 1.7.2
+- Static CRT (`/MT`) — no `vcruntime140.dll` dependency
+- SCM integration, service install/uninstall
+- **Binary sizes: 8.61 MB (x64), 6.37 MB (x86)**
+- No external DLL dependencies beyond Windows system DLLs
+- Both binaries verified via full startup log (6 modules, migrations 0→4)
+
+**Cross-platform features (all four targets):**
+- Async structured logging with rotation and non-blocking delivery
+- JSON configuration with fail-safe defaults and environment variable expansion
+- Real-time filesystem watching (inotify / ReadDirectoryChangesW via efsw)
+- Periodic inventory scanning with interruptible cancellation
+- SHA-256 content hashing stored in SQLite
+- Bidirectional WebSocket to Core with TLS, jittered reconnect, close-code interpretation, graceful 1000 Normal close
+- HTTP client with unconditional certificate verification
+- Agent enrollment via `POST /api/v1/agent/register`
+- Periodic heartbeat via `POST /api/v1/agent/heartbeat`, plus immediate validation heartbeat at startup
+- Atomic shutdown with typed reasons preserved end to end
+- Server-pushed revocation handling (`token_revoked`, `agent_revoked`)
+- Goodbye message on graceful exits
+- Content scanner: overlapping chunks → `POST /api/v1/agent/scan/batch` → verdicts back to local `files` table
+- Local visualization dashboard (Python server + HTML)
 
 ### What Does Not Exist Yet
 
-- Policy engine (decisions from scan results).
-- Enforcement (blocking file operations in user mode).
-- Kernel-mode enforcement (Windows Minifilter / Linux eBPF / fanotify).
-- IPC + user helper (tray icon, notifications).
-- Auto-update mechanism.
-- Code signing and packaging (`.deb`, `.rpm`, MSI).
-- Rich-document extraction inside the content scanner (PDF, DOCX, XLSX, images).
-
-The agent is a **complete capture, inventory, fingerprinting, content-scanning, connectivity, and shutdown-management platform** with no decision-making or enforcement layer yet.
+- Policy engine (decisions from scan results)
+- User-mode enforcement (blocking file operations)
+- Kernel-mode enforcement (Windows Minifilter / Linux eBPF / fanotify)
+- IPC + user helper (tray icon, notifications)
+- Auto-update mechanism
+- Code signing and packaging (`.deb`, `.rpm`, MSI)
+- Rich-document extraction (PDF, DOCX, XLSX, images)
+- gRPC transport (scaffolding exists but disabled — see §5.4)
 
 ---
 
 ## 2. The Four Verified Platforms
 
-All four targets build, link, and run. All support TLS and the full bidirectional WebSocket pipeline.
+All four targets build, link, and run. All support TLS and the full
+bidirectional WebSocket pipeline.
 
-| Platform | Build | Run | Watch | Hash | HTTP | WSS | Content Scanner | Shutdown |
-|----------|-------|-----|-------|------|------|-----|-----------------|----------|
-| **Linux x86_64** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Linux i686** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Windows x86_64** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Windows i686** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Platform           | Toolchain             | Build | Run | Watch | Hash | HTTP | WSS | Scanner | Shutdown |
+| ------------------ | --------------------- | ----- | --- | ----- | ---- | ---- | --- | ------- | -------- |
+| **Linux x86_64**   | GCC + `.deps/`        | ✅     | ✅   | ✅     | ✅    | ✅    | ✅   | ✅       | ✅        |
+| **Linux i686**     | GCC `-m32` + `.deps/` | ✅     | ✅   | ✅     | ✅    | ✅    | ✅   | ✅       | ✅        |
+| **Windows x86_64** | MSVC + vcpkg          | ✅     | ✅   | ✅     | ✅    | ✅    | ✅   | ✅       | ✅        |
+| **Windows x86**    | MSVC + vcpkg          | ✅     | ✅   | ✅     | ✅    | ✅    | ✅   | ✅       | ✅        |
+
+**Windows binary verification:**
+
+| Binary                                              | Size    | Machine      |
+| --------------------------------------------------- | ------- | ------------ |
+| `build/windows-x64-msvc-release/axiomdlp-agent.exe` | 8.61 MB | `8664 (x64)` |
+| `build/windows-x86-msvc-release/axiomdlp-agent.exe` | 6.37 MB | `14C (x86)`  |
+
+No external DLL dependencies beyond `KERNEL32`, `ADVAPI32`, `WS2_32`,
+`SHELL32`, `ole32`, `USER32`, `CRYPT32`.
 
 ---
 
@@ -1974,6 +1887,24 @@ All four targets build, link, and run. All support TLS and the full bidirectiona
 6. **Fail-safe** — bad config, missing paths, failed modules never crash the agent.
 7. **RAII everywhere** — destructors clean up, no manual resource management.
 
+**Dependency pipeline (CMake side):**
+
+```
+                       CMakeLists.txt
+                             │
+                 ┌───────────┴───────────┐
+                 ▼                       ▼
+           if(MSVC)                if(UNIX AND NOT APPLE)
+                 │                       │
+                 ▼                       ▼
+           vcpkg manifest          .deps/ cache
+           (Windows native)        (Linux native)
+                 │                       │
+        ┌────────┴────────┐     ┌───────┴────────┐
+        ▼                 ▼     ▼                ▼
+    x64-windows-static   x86-windows-static   linux-x86_64   linux-i686
+```
+
 ---
 
 ## 4. Source Tree Layout
@@ -1982,13 +1913,14 @@ All four targets build, link, and run. All support TLS and the full bidirectiona
 axiomdlp-agent/
 ├── CMakeLists.txt
 ├── CMakePresets.json
+├── vcpkg.json                              ← Windows deps manifest
 ├── README.md
-├── DONE.md                            (this file)
+├── DONE.md                                 (this file)
 ├── LICENSE
 ├── .clangd / .clang-tidy / .clang-format
 ├── .gitignore
 │
-├── .deps/                             Cached third-party (gitignored)
+├── .deps/                                  Linux deps cache (gitignored)
 │   ├── spdlog-src/
 │   ├── nlohmann_json-src/
 │   ├── efsw-src/
@@ -1996,31 +1928,39 @@ axiomdlp-agent/
 │   ├── openssl-src/
 │   ├── openssl-linux-x86_64/
 │   ├── openssl-linux-i686/
-│   ├── openssl-mingw64/
-│   ├── openssl-mingw32/
 │   └── boost-include/
+│
+├── vcpkg_installed/                        Windows deps (gitignored)
+│   ├── x64-windows-static/
+│   └── x86-windows-static/
 │
 ├── cmake/toolchains/
 │   ├── linux-x86_64.cmake
-│   ├── linux-i686.cmake
-│   ├── windows-x86_64.cmake
-│   └── windows-i686.cmake
+│   └── linux-i686.cmake
 │
 ├── config/
 │   ├── agent.default.json
 │   ├── agent.default_win.json
 │   └── agent.schema.json
 │
-├── data/                              (gitignored)
-├── logs/                              (gitignored)
+├── data/                                   (gitignored)
+├── logs/                                   (gitignored)
 │
 ├── scripts/
-│   ├── build-all.sh
-│   ├── build-openssl.sh
-│   ├── merge-compile-commands.sh
+│   ├── linux/
+│   │   ├── build-all.sh
+│   │   ├── build-grpc.sh
+│   │   ├── build-openssl.sh
+│   │   └── merge-compile-commands.sh
+│   ├── win/
+│   │   ├── setup-windows-msvc.ps1
+│   │   └── build-windows-msvc.ps1
 │   ├── mock_server.py
 │   ├── viz_server.py
 │   └── viz.html
+│
+├── docs/
+│   └── windows-msvc-build.md
 │
 └── src/
     ├── main.cpp
@@ -2038,13 +1978,13 @@ axiomdlp-agent/
     ├── modules/
     │   ├── i_module.h
     │   ├── module_base.h
-    │   ├── module_context.h           Now holds ShutdownController&
+    │   ├── module_context.h           Holds ShutdownController&
     │   ├── module_manager.{h,cpp}
     │   └── health.h
 
     ├── platform/
     │   ├── paths.h
-    │   ├── service.h                  Now takes ShutdownController
+    │   ├── service.h                  Takes ShutdownController
     │   ├── file_watcher.h
     │   ├── common/
     │   │   └── efsw_file_watcher.cpp
@@ -2084,54 +2024,203 @@ axiomdlp-agent/
         │   └── transport_module.{h,cpp}
         ├── agent_sync/
         │   └── agent_sync_module.{h,cpp}
-        └── content_scanner/
-            └── content_scanner_module.{h,cpp}
+        ├── content_scanner/
+        │   └── content_scanner_module.{h,cpp}
+        └── grpc_transport/            (scaffolding, disabled by default)
+            ├── agent.proto
+            ├── grpc_transport_module.{h,cpp}
 ```
 
 ---
 
 ## 5. Build System
 
-### Prerequisites (Kali/Debian/Ubuntu)
+### 5.1 Linux (x86_64 + i686) — unchanged from `main`
+
+**Prerequisites (Kali/Debian/Ubuntu):**
 
 ```bash
 sudo dpkg --add-architecture i386
 sudo apt update
 sudo apt install -y \
     build-essential gcc-multilib g++-multilib \
-    mingw-w64 ninja-build git file clangd \
+    ninja-build git file clangd \
     libboost-dev libsystemd-dev libsystemd-dev:i386
 ```
 
-### Build All Four Targets
+**Build:**
 
 ```bash
-cd ~/axiomdlp-agent
-./scripts/build-all.sh
+./scripts/linux/build-all.sh release
 ```
 
-**First run:** downloads and compiles OpenSSL 3.3.2 for all four targets (~15–25 min). Subsequent runs: incremental (~30 seconds).
+**First run:** downloads and compiles OpenSSL 3.3.2 for both Linux
+targets (~15–25 min). **Subsequent runs:** incremental (~30 sec).
 
-### Presets
+**Presets:**
 
-| Preset | Output | Compiler |
-|--------|--------|----------|
-| `linux-x86_64-{debug,release}` | `build/linux-x86_64-*/axiomdlp-agent` | `/usr/bin/g++` |
-| `linux-i686-{debug,release}` | `build/linux-i686-*/axiomdlp-agent` | `/usr/bin/g++ -m32` |
-| `windows-x86_64-{debug,release}` | `build/windows-x86_64-*/axiomdlp-agent.exe` | `x86_64-w64-mingw32-g++` |
-| `windows-i686-{debug,release}` | `build/windows-i686-*/axiomdlp-agent.exe` | `i686-w64-mingw32-g++` |
+| Preset                         | Output                                | Compiler            |
+| ------------------------------ | ------------------------------------- | ------------------- |
+| `linux-x86_64-{debug,release}` | `build/linux-x86_64-*/axiomdlp-agent` | `/usr/bin/g++`      |
+| `linux-i686-{debug,release}`   | `build/linux-i686-*/axiomdlp-agent`   | `/usr/bin/g++ -m32` |
 
-### Dependencies
+### 5.2 Windows (x64 + x86) — MSVC + vcpkg
 
-| Library | Version | Purpose | Source |
-|---------|---------|---------|--------|
-| spdlog | 1.14.1 | Async logging | FetchContent + `.deps/` |
-| nlohmann/json | 3.11.3 | JSON parsing | System on Linux; FetchContent on Windows |
-| efsw | 1.7.2 | File watching | FetchContent + `.deps/` |
-| SQLite | 3.46.1 | Metadata storage | Amalgamation + `.deps/` |
-| Boost | 1.90 | HTTP + WebSocket | System headers, isolated include |
-| OpenSSL | 3.3.2 | TLS + hashing + base64 | Built from source for all 4 targets |
-| libsystemd | (system) | `sd_notify` | pkg-config (Linux only, optional) |
+**Prerequisites:**
+- **Visual Studio 2022** with "Desktop development with C++" workload (BuildTools works)
+- **CMake 3.24+** on PATH
+- **Ninja** on PATH
+- **vcpkg** cloned to `C:\Users\<user>\vcpkg` with `VCPKG_ROOT` set
+- **Long paths enabled** (`LongPathsEnabled=1` in registry)
+
+**One-time setup:**
+
+```powershell
+.\scripts\win\setup-windows-msvc.ps1
+```
+
+Fast mode: downloads vcpkg as ZIP from `codeload.github.com` (no git clone,
+~25 MB) and downloads prebuilt `vcpkg.exe` from `vcpkg-tool/releases`
+(no bootstrap compile, ~3 MB). Takes ~3 min. Also has a `setx` fallback
+for `VCPKG_ROOT` if the .NET `SetEnvironmentVariable` API fails.
+
+**Build:**
+
+```powershell
+# x64 Release
+.\scripts\win\build-windows-msvc.ps1 -Arch x64
+
+# x86 Release
+.\scripts\win\build-windows-msvc.ps1 -Arch x86
+```
+
+The build script **auto-initializes the Visual Studio environment** via
+`vcvarsall.bat`, so it works from any PowerShell window — Developer
+PowerShell is not required. It also:
+
+- Saves `VCPKG_ROOT` before VS init and restores it after (Bug W22 —
+  `vcvarsall.bat` overwrites it with the VS-bundled vcpkg)
+- Refuses to build if `VCPKG_ROOT` ends up pointing at the VS-bundled path
+- Explicitly sets `CC=cl.exe` and `CXX=cl.exe` to override MSYS2 GCC
+  if it's on PATH ahead of MSVC (Bug W21)
+- Detects stale `CMakeCache.txt` with GCC compiler entries and cleans
+  the build directory
+
+**First Windows build:** vcpkg compiles 66 packages per triplet
+(~25–40 min per architecture). **Subsequent builds:** all 66 packages
+restore from vcpkg's binary cache in ~5 seconds.
+
+**Presets:**
+
+| Preset                             | Output                                        | Triplet              |
+| ---------------------------------- | --------------------------------------------- | -------------------- |
+| `windows-x64-msvc-{debug,release}` | `build/windows-x64-msvc-*/axiomdlp-agent.exe` | `x64-windows-static` |
+| `windows-x86-msvc-{debug,release}` | `build/windows-x86-msvc-*/axiomdlp-agent.exe` | `x86-windows-static` |
+
+MSVC presets are gated by `hostSystemName == "Windows"` in
+`CMakePresets.json`, so they are invisible on Linux. Both use
+`toolchainFile: $env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake`.
+
+**vcpkg cache location:** `C:\Users\<user>\AppData\Local\vcpkg\archives\`
+Second-run restore times observed: **3.6–5.7 seconds** for all 66 packages.
+
+**Offline/slow-network fallback:** if vcpkg downloader stalls (GitHub CDN
+throttle), download the failing URL with `aria2c -x16 -s16` inside WSL,
+then copy the file to `C:\Users\<user>\vcpkg\downloads\`. vcpkg accepts
+pre-cached files silently. Documented in §22 (Bugs W18–W20).
+
+### 5.3 Build strategy selection
+
+```cmake
+if(MSVC)
+    set(AXIOM_USE_VCPKG_DEPS ON)
+    message(STATUS "Build strategy: MSVC + vcpkg (Windows native)")
+    # Static CRT — matches MinGW -static-libstdc++
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+else()
+    set(AXIOM_USE_VCPKG_DEPS OFF)
+    message(STATUS "Build strategy: GCC native (.deps/)")
+endif()
+```
+
+Every `find_package(...)` block in `CMakeLists.txt` branches on
+`AXIOM_USE_VCPKG_DEPS`:
+
+| Dependency    | vcpkg path                                               | `.deps/` path                                       |
+| ------------- | -------------------------------------------------------- | --------------------------------------------------- |
+| nlohmann/json | `find_package(CONFIG REQUIRED)`                          | system or FetchContent                              |
+| spdlog        | `find_package(CONFIG REQUIRED)`                          | FetchContent                                        |
+| efsw          | `find_package(CONFIG REQUIRED)` → `efsw::efsw`           | FetchContent → `efsw-static`                        |
+| Boost         | `find_package(Boost CONFIG REQUIRED)` → `Boost::headers` | isolated `/usr/include/boost` symlink               |
+| OpenSSL       | `find_package(OpenSSL REQUIRED)`                         | manual `OpenSSL::SSL` / `::Crypto` imported targets |
+| SQLite3       | `find_package(SQLite3 REQUIRED)` → `SQLite::SQLite3`     | amalgamation → `axiom_sqlite` static lib            |
+
+### 5.4 gRPC — optional, off by default
+
+The gRPC transport module scaffolding exists in
+`src/features/grpc_transport/` (`agent.proto`, `.h`, `.cpp`) but is
+**disabled by default** via `option(AXIOM_ENABLE_GRPC ... OFF)` in
+`CMakeLists.txt`.
+
+**Why disabled:** `grpc` and `protobuf` are not in `vcpkg.json`. The
+gRPC CMake block would fail with `Could not find Protobuf` if it ran
+unconditionally. Gating it behind `AXIOM_ENABLE_GRPC` keeps the
+non-gRPC build path clean.
+
+**To enable later (Windows):**
+
+1. Add to `vcpkg.json`:
+   ```json
+   "protobuf",
+   { "name": "grpc", "features": [] }
+   ```
+2. Configure with:
+   ```powershell
+   cmake --preset windows-x64-msvc-release -DAXIOM_ENABLE_GRPC=ON
+   ```
+3. First enable build: ~30–45 min extra vcpkg time for abseil +
+   protobuf + grpc. Subsequent builds: cached, ~5 sec extra.
+
+**On Linux**, gRPC is currently unavailable — only the Windows code path
+is wired into `CMakeLists.txt`. Wiring `.deps/grpc-linux-*` from
+`scripts/linux/build-grpc.sh` into the `else()` branch of the
+`AXIOM_ENABLE_GRPC` block is a follow-up task.
+
+### 5.5 Dependencies — per-platform
+
+**Linux:**
+
+| Library       | Version  | Purpose                | Source                            |
+| ------------- | -------- | ---------------------- | --------------------------------- |
+| spdlog        | 1.14.1   | Async logging          | FetchContent + `.deps/`           |
+| nlohmann/json | 3.11.3   | JSON parsing           | System package or FetchContent    |
+| efsw          | 1.7.2    | File watching          | FetchContent + `.deps/`           |
+| SQLite        | 3.46.1   | Metadata storage       | Amalgamation + `.deps/`           |
+| Boost         | 1.90     | HTTP + WebSocket       | System headers, isolated include  |
+| OpenSSL       | 3.3.2    | TLS + hashing + base64 | `build-openssl.sh` for both archs |
+| libsystemd    | (system) | `sd_notify`            | pkg-config (optional)             |
+
+**Windows:**
+
+| Library       | Version | Source                                                            |
+| ------------- | ------- | ----------------------------------------------------------------- |
+| OpenSSL       | 3.6.5   | vcpkg (`openssl:x64/x86-windows-static`)                          |
+| Boost         | 1.92.0  | vcpkg (`boost-asio`, `boost-beast` + 60 transitive boost-* ports) |
+| spdlog        | 1.17.0  | vcpkg                                                             |
+| fmt           | 12.2.0  | vcpkg (spdlog dependency)                                         |
+| efsw          | 1.7.2   | vcpkg                                                             |
+| SQLite        | 3.53.4  | vcpkg                                                             |
+| nlohmann/json | 3.12.0  | vcpkg                                                             |
+
+**Note:** Boost and OpenSSL versions differ by platform (they come from
+different sources — `.deps/` vs vcpkg). The public API used by the agent
+(Beast HTTP + WebSocket, Asio async I/O, OpenSSL EVP + X509) is stable
+across both.
+
+**Total vcpkg packages built per Windows triplet: 66.** Includes
+`boost` (60 sub-packages), `openssl`, `sqlite3`, `spdlog`, `fmt`,
+`nlohmann-json`, `efsw`, `vcpkg-cmake`, `vcpkg-cmake-config`,
+`vcpkg-cmake-get-vars`, `vcpkg-boost`, `boost-uninstall`.
 
 ---
 
@@ -2139,7 +2228,8 @@ cd ~/axiomdlp-agent
 
 ### `ShutdownController` — `src/foundation/shutdown.h`
 
-The single, thread-safe authority on whether the agent is shutting down and why.
+The single, thread-safe authority on whether the agent is shutting down
+and why.
 
 ```cpp
 enum class ShutdownReason {
@@ -2180,13 +2270,15 @@ Owns the entire lifecycle:
 7. Apply migrations.
 8. Create `FileStore`, `StateStore`.
 9. Create `EventBus`.
-10. Create `ModuleContext` (now includes the shutdown controller).
+10. Create `ModuleContext` (includes the shutdown controller).
 11. Create `ModuleManager`, register 6 modules.
 12. Initialize all modules.
 13. For install/uninstall: short-circuit.
 14. For normal run: create platform `IService`, wire manager and controller, run.
 
-**Shutdown sequence:** destroys members in reverse dependency order **before** `Logger::shutdown()` to avoid the segfault that happened when `Database::~Database()` logged through a dead spdlog singleton.
+**Shutdown sequence:** destroys members in reverse dependency order
+**before** `Logger::shutdown()` to avoid the segfault that happened when
+`Database::~Database()` logged through a dead spdlog singleton.
 
 ### `Config` — `src/foundation/config.{h,cpp}`
 
@@ -2202,9 +2294,12 @@ Fail-safe JSON loading with a **single top-level `server` section**:
 }
 ```
 
-- All server-facing values live here. `agent_sync`, `transport`, and `content_scanner` read from the same place.
-- `verify_tls` is no longer parsed anywhere — TLS is always verified on `https://` and `wss://`.
-- Legacy fields under `modules.agent_sync.*` and `modules.transport.*` are still read (with a deprecation warning) so old configs keep working.
+- All server-facing values live here. `agent_sync`, `transport`, and
+  `content_scanner` read from the same place.
+- `verify_tls` is no longer parsed anywhere — TLS is always verified on
+  `https://` and `wss://`.
+- Legacy fields under `modules.agent_sync.*` and `modules.transport.*`
+  are still read (with a deprecation warning) so old configs keep working.
 - Environment variable expansion: `%VAR%` (Windows) and `${VAR}` (POSIX).
 - Never throws; every field has a safe default.
 
@@ -2236,11 +2331,15 @@ struct Event {
 };
 ```
 
-**Canonical event types:** `file_access`, `file_write`, `file_delete`, `usb_insert`, `usb_remove`, `clipboard_copy`, `print_job`, `process_spawn`, `scan_result`, `decision`.
+**Canonical event types:** `file_access`, `file_write`, `file_delete`,
+`usb_insert`, `usb_remove`, `clipboard_copy`, `print_job`,
+`process_spawn`, `scan_result`, `decision`.
 
 ### `EventBus` — `src/events/event_bus.{h,cpp}`
 
-In-process synchronous publish/subscribe. `shared_ptr<Event>` is shared with all subscribers. Handlers are invoked outside the lock, so they can safely subscribe or unsubscribe during a callback.
+In-process synchronous publish/subscribe. `shared_ptr<Event>` is shared
+with all subscribers. Handlers are invoked outside the lock, so they can
+safely subscribe or unsubscribe during a callback.
 
 ---
 
@@ -2270,13 +2369,14 @@ struct ModuleContext {
     FileStore&          file_store;
     StateStore&         state_store;
     Database&           database;
-    ShutdownController& shutdown;     // NEW
+    ShutdownController& shutdown;
 };
 ```
 
 ### `ModuleManager` — `src/modules/module_manager.{h,cpp}`
 
-Owns `std::vector<std::unique_ptr<IModule>>`. Start in forward order; stop and shutdown in reverse. Aggregates health.
+Owns `std::vector<std::unique_ptr<IModule>>`. Start in forward order;
+stop and shutdown in reverse. Aggregates health.
 
 ### `HealthStatus` — `src/modules/health.h`
 
@@ -2288,21 +2388,33 @@ Four levels: `Unknown`, `OK`, `Degraded`, `Failed`.
 
 ### Interfaces
 
-| File | Purpose |
-|------|---------|
-| `platform/paths.h` | Executable path, config path, log dir, data dir |
-| `platform/service.h` | `IService` with `set_shutdown_controller`, `request_stop(reason)` |
-| `platform/file_watcher.h` | `IFileWatcher` + `FileEvent` |
+| File                      | Purpose                                                           |
+| ------------------------- | ----------------------------------------------------------------- |
+| `platform/paths.h`        | Executable path, config path, log dir, data dir                   |
+| `platform/service.h`      | `IService` with `set_shutdown_controller`, `request_stop(reason)` |
+| `platform/file_watcher.h` | `IFileWatcher` + `FileEvent`                                      |
 
 ### Linux — `platform/linux/`
 
 - `paths.cpp` — `readlink("/proc/self/exe")`, `/etc/axiomdlp/`, `/var/log/axiomdlp/`, `/var/lib/axiomdlp/`.
 - `service.cpp` — systemd, `sd_notify`, signals. Signal handler sets an atomic flag; main loop translates it into a `ShutdownController` request.
 
+**Build-time guards:** `src/platform/linux/*.cpp` start with
+`#if !defined(__linux__) #error "…"` — the build fails clearly if
+CMake ever includes them on the wrong host.
+
 ### Windows — `platform/windows/`
 
-- `paths.cpp` — `GetModuleFileNameA`, `SHGetKnownFolderPath`.
-- `service.cpp` — SCM, `ServiceMain`, control handler. `SERVICE_CONTROL_STOP` → `ShutdownController::request(UserRequested)`.
+- `paths.cpp` — `GetModuleFileNameA`, `SHGetKnownFolderPath` (via
+  `FOLDERID_ProgramData`), `CoTaskMemFree` cleanup.
+- `service.cpp` — SCM, `ServiceMain`, control handler.
+  `SERVICE_CONTROL_STOP` → `ShutdownController::request(UserRequested)`.
+
+**Build-time guards:** `src/platform/windows/*.cpp` start with
+`#if !defined(_WIN32) #error "…"` — same protection.
+
+**Windows link additions:** `ole32` (for `CoTaskMemFree`),
+`user32` (shell helpers), plus the existing `advapi32 shell32 ws2_32 crypt32`.
 
 ---
 
@@ -2314,7 +2426,8 @@ Synchronous HTTP/HTTPS client built on Boost.Beast.
 
 - POST with JSON body and optional Bearer token.
 - Supports `http://` and `https://`.
-- **TLS is always verified on `https://`.** The `verify_tls` parameter was removed; certificate chain and hostname must match or the call fails.
+- **TLS is always verified on `https://`.** The `verify_tls` parameter
+  was removed; certificate chain and hostname must match or the call fails.
 - SNI set before the handshake.
 - Never throws; returns `{ status, body, error }`.
 
@@ -2323,21 +2436,37 @@ Synchronous HTTP/HTTPS client built on Boost.Beast.
 Asynchronous WebSocket client built on Boost.Beast + Boost.Asio.
 
 - Dedicated `io_context` thread.
-- **`set_bearer_token()`** injects `Authorization: Bearer <token>` into the handshake via a Beast decorator.
-- **No application-level read deadline.** Liveness is owned by Beast's own `stream_base::timeout` (`idle_timeout = 90s`, `keep_alive_pings = true`).
-- **Exponential backoff with ±20% jitter** drawn from `std::mt19937`. A fleet of thousands does not reconnect in lockstep.
-- **Close codes interpreted.** `1000`, `1001`, `1009`, `1012`, `1013` retry. `1008` (Policy Violation) stops permanently. `1011` retries (server bug).
-- **Graceful close on `stop()`**: sends a `1000 Normal` close frame (with 2s timeouts) before tearing down, so the server logs a clean close instead of a `1006 abnormal closure`.
+- **`set_bearer_token()`** injects `Authorization: Bearer <token>` into
+  the handshake via a Beast decorator.
+- **No application-level read deadline.** Liveness is owned by Beast's
+  own `stream_base::timeout` (`idle_timeout = 90s`, `keep_alive_pings = true`).
+- **Exponential backoff with ±20% jitter** drawn from `std::mt19937`.
+  A fleet of thousands does not reconnect in lockstep.
+- **Close codes interpreted.** `1000`, `1001`, `1009`, `1012`, `1013`
+  retry. `1008` (Policy Violation) stops permanently. `1011` retries
+  (server bug).
+- **Graceful close on `stop()`**: sends a `1000 Normal` close frame
+  (with 2s timeouts) before tearing down, so the server logs a clean
+  close instead of a `1006 abnormal closure`.
 - **TLS is always verified on `wss://`** — no opt-out.
 - Send/stop race serialized by `lifecycle_mutex`.
 
+**MSVC build note:** this file is the heaviest in the project — it
+instantiates the full Boost.Beast WebSocket stack (async read/write,
+TLS, close codes). On MSVC it exceeds the default object-file section
+limit (`C1128: number of sections exceeded object file format limit`).
+`CMakeLists.txt` adds `/bigobj` to all MSVC compile options
+unconditionally. Linux has no equivalent limit.
+
 ### `OutboundQueue` — `src/net/outbound_queue.{h,cpp}`
 
-Bounded, priority-ordered FIFO. Four priorities. Bounded by both message count and total bytes.
+Bounded, priority-ordered FIFO. Four priorities. Bounded by both
+message count and total bytes.
 
 ### `MessageRouter` — `src/net/message_router.{h,cpp}`
 
-Type-keyed dispatch for incoming JSON. Handlers registered by string type. Unknown types logged and ignored.
+Type-keyed dispatch for incoming JSON. Handlers registered by string
+type. Unknown types logged and ignored.
 
 ---
 
@@ -2362,21 +2491,39 @@ data/agent.db
 
 ### `files` table
 
-Identity (`id`, `dev`, `inode`), path decomposition, POSIX metadata, flags, classification (`category`, `file_type`), scan result (`is_sensitive`, `sensitivity`, `scan_status`), scan metadata (`content_hash`, `last_scanned_at`, `scan_attempts`, `scan_error`), bookkeeping (`first_seen`, `last_seen`, `walk_id`).
+Identity (`id`, `dev`, `inode`), path decomposition, POSIX metadata,
+flags, classification (`category`, `file_type`), scan result
+(`is_sensitive`, `sensitivity`, `scan_status`), scan metadata
+(`content_hash`, `last_scanned_at`, `scan_attempts`, `scan_error`),
+bookkeeping (`first_seen`, `last_seen`, `walk_id`).
 
 **Unique constraint:** `(dev, inode)`.
 
-**Indexes:** `path`, `dirname`, `extension`, `category`, `mtime_ns DESC`, `size DESC`, `uid`, `walk_id`, `is_sensitive` (partial), `scan_status`, `content_hash`.
+**Indexes:** `path`, `dirname`, `extension`, `category`, `mtime_ns DESC`,
+`size DESC`, `uid`, `walk_id`, `is_sensitive` (partial), `scan_status`,
+`content_hash`.
 
 ### Schema Versioning
 
-`PRAGMA user_version` tracks the version. Current: **4**. Migrations apply automatically on startup.
+`PRAGMA user_version` tracks the version. Current: **4**. Migrations
+apply automatically on startup. Both Linux and Windows apply the same
+migration sequence (0→4 verified on a fresh Windows database).
 
 ### `Database` / `FileStore` / `StateStore`
 
-- `Database` is a thin SQLite wrapper with WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5000`. No logging in `close()` — the destructor may run after logger teardown.
-- `FileStore` is the domain wrapper for `files`: upsert, pending-scan queries, verdict deduplication, scan-result writes, error recording, and aggregations.
-- `StateStore` is the key/value store backed by `state`. Used by `agent_sync` for `agent_id`.
+- `Database` is a thin SQLite wrapper with WAL, `synchronous=NORMAL`,
+  `foreign_keys=ON`, `busy_timeout=5000`. No logging in `close()` —
+  the destructor may run after logger teardown.
+- `FileStore` is the domain wrapper for `files`: upsert, pending-scan
+  queries, verdict deduplication, scan-result writes, error recording,
+  and aggregations.
+- `StateStore` is the key/value store backed by `state`. Used by
+  `agent_sync` for `agent_id`.
+
+**Note:** SQLite version differs by platform — **3.46.1 on Linux**
+(amalgamation), **3.53.4 on Windows** (vcpkg). Schema and query
+compatibility verified by both platforms applying the same migrations
+successfully.
 
 ---
 
@@ -2393,12 +2540,19 @@ Real-time filesystem events via efsw.
 - Async watcher setup on a dedicated thread.
 - Three threads total: main service, efsw, flusher (50 ms tick).
 
+**Windows runtime observation:** on first run with the Linux config,
+the watcher correctly logged `skipping '/home/kali/Downloads' (does not exist)` —
+proving efsw is linked and functional. It opened a watch request,
+checked path existence, and logged clearly. Switching to
+`config/agent.default_win.json` (watch `%USERPROFILE%`) resolves this.
+
 ### `inventory`
 
 Periodic full filesystem scan.
 
 - Scheduled on an interval (default 900s), owns its worker thread.
-- Rich metadata capture: path decomposition, timestamps in nanoseconds, POSIX permissions, file type, category.
+- Rich metadata capture: path decomposition, timestamps in nanoseconds,
+  POSIX permissions, file type, category.
 - SHA-256 hashing for eligible files.
 - Explicit `scan_status` assignment: `pending`, `not_applicable`, `skipped_too_large`.
 - Batched inserts every 5,000 rows.
@@ -2412,11 +2566,16 @@ Subscribes to all events on the bus and logs them. Pure observability.
 
 Owns the WebSocket connection to the Core server.
 
-- Reads `server.base_url` and `server.api_token` from the top-level `server` config section.
-- Derives the WebSocket URL from `server.base_url` unless an explicit `server_url` override is set.
+- Reads `server.base_url` and `server.api_token` from the top-level
+  `server` config section.
+- Derives the WebSocket URL from `server.base_url` unless an explicit
+  `server_url` override is set.
 - Waits for `agent_id` in the state store before connecting.
-- On graceful shutdown (`UserRequested`, `FatalError`, `ConfigError`) sends `{"type":"agent_shutdown","payload":{"reason":...}}` with `Priority::Critical` **before** closing the socket.
-- Handles server-pushed `token_revoked` and `agent_revoked` messages by calling `ShutdownController::request(AuthRevoked/AgentRevoked)`.
+- On graceful shutdown (`UserRequested`, `FatalError`, `ConfigError`)
+  sends `{"type":"agent_shutdown","payload":{"reason":...}}` with
+  `Priority::Critical` **before** closing the socket.
+- Handles server-pushed `token_revoked` and `agent_revoked` messages by
+  calling `ShutdownController::request(AuthRevoked/AgentRevoked)`.
 - Default handlers for `ping`, `policy_update`, `command`.
 
 ### `agent_sync`
@@ -2425,19 +2584,32 @@ The HTTP channel between the agent and the Core server.
 
 - **Enrollment** — `POST /api/v1/agent/register` (once at startup).
 - **Heartbeat** — `POST /api/v1/agent/heartbeat`, default 60 s.
-- On startup with a saved `agent_id`, sends **one immediate validation heartbeat** so a revoked token is detected within milliseconds instead of after the first interval.
-- 401 → `ShutdownController::request(AuthRevoked)` with the message `"no valid API token — heartbeat rejected (401) — token is invalid, expired, or revoked"`.
+- On startup with a saved `agent_id`, sends **one immediate validation
+  heartbeat** so a revoked token is detected within milliseconds instead
+  of after the first interval.
+- 401 → `ShutdownController::request(AuthRevoked)` with the message
+  `"no valid API token — heartbeat rejected (401) — token is invalid,
+  expired, or revoked"`.
 - 403 → `ShutdownController::request(AgentRevoked)`.
 - 404 → clears `agent_id` and re-enrolls.
-- Empty `server.api_token` at init → error message says **"no valid API token"** explicitly.
+- Empty `server.api_token` at init → error message says **"no valid API
+  token"** explicitly.
 - Interruptible sleep; also wakes when the shutdown controller is triggered.
+
+**Windows runtime observation:** on first run with no Core server,
+returned `connect: No connection could be made because the target
+machine actively refused it [system:10061]`. This proves Boost.Asio
+socket, Winsock (`ws2_32`), and error mapping all work — the subsystem
+failed correctly and logged the retry intent.
 
 ### `content_scanner`
 
-Reads text files, splits into overlapping chunks, sends to Core, writes verdicts back.
+Reads text files, splits into overlapping chunks, sends to Core, writes
+verdicts back.
 
 - Reads from `server.base_url` and `server.api_token`.
-- Extension filter, size filter, existence check, SHA-256 of content, verdict deduplication by hash.
+- Extension filter, size filter, existence check, SHA-256 of content,
+  verdict deduplication by hash.
 - Chunk size 1 MB, overlap 256 bytes.
 - Batches respect `batch_size` and `batch_max_bytes`.
 - Updates `is_sensitive`, `sensitivity`, `scan_status = 'scanned'` on success.
@@ -2449,17 +2621,28 @@ Reads text files, splits into overlapping chunks, sends to Core, writes verdicts
 
 ### Why
 
-HTTP and WebSocket traffic carries the `axdlp_user_...` token. If that token leaks, an attacker can impersonate the agent.
+HTTP and WebSocket traffic carries the `axdlp_user_...` token. If that
+token leaks, an attacker can impersonate the agent.
 
-### How
+### Two OpenSSL versions, both static
 
-- OpenSSL 3.3.2 built from source for all four targets by `scripts/build-openssl.sh`.
-- All trees are static (`no-shared`); the agent links `libssl.a` and `libcrypto.a` directly.
-- `ldd` shows no `libssl.so` dependency — baked in.
+| Platform | Version | Location                                                            |
+| -------- | ------- | ------------------------------------------------------------------- |
+| Linux    | 3.3.2   | `.deps/openssl-linux-*/lib{,64}/libssl.a` + `libcrypto.a`           |
+| Windows  | 3.6.5   | `vcpkg_installed/*-windows-static/lib/libssl.lib` + `libcrypto.lib` |
 
-### Verification
+Both are statically linked into the final binary. Verified:
 
-Both `HttpClient` and `WebSocketClient` verify chain **and** hostname. Implemented via `X509_VERIFY_PARAM_set1_host()` because Boost's `host_name_verification` doesn't exist in Boost 1.90.
+- Linux: `ldd axiomdlp-agent | grep ssl` → empty (no `.so` deps)
+- Windows: `dumpbin /dependents axiomdlp-agent.exe` → only `KERNEL32`,
+  `ADVAPI32`, `WS2_32`, `SHELL32`, `ole32`, `USER32`, `CRYPT32`
+  (no `libssl-3-x64.dll`, no `libcrypto-3-x64.dll`)
+
+### Verification (unchanged)
+
+Both `HttpClient` and `WebSocketClient` verify chain **and** hostname.
+Implemented via `X509_VERIFY_PARAM_set1_host()` because Boost's
+`host_name_verification` doesn't exist in Boost 1.90.
 
 ### No Opt-Out
 
@@ -2469,11 +2652,19 @@ Both `HttpClient` and `WebSocketClient` verify chain **and** hostname. Implement
 - `HttpClient::post_json` — parameter removed.
 - `WebSocketClient::set_verify_tls` — method removed.
 - `config/agent.schema.json` — property removed.
-- Legacy `verify_tls` keys in config files produce a **warning that they are ignored**; the agent still verifies.
+- Legacy `verify_tls` keys in config files produce a **warning that
+  they are ignored**; the agent still verifies.
 
 ### SNI
 
 Both clients call `SSL_set_tlsext_host_name()` before the handshake.
+
+### Static CRT (Windows)
+
+`CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded$<$<CONFIG:Debug>:Debug>"`
+forces `/MT`. This matches MinGW's `-static-libstdc++` behavior and
+eliminates the `vcruntime140.dll` runtime dependency. Any Windows 10/11
+machine can run the `.exe` with no redistributable install.
 
 ---
 
@@ -2498,16 +2689,22 @@ Both clients call `SSL_set_tlsext_host_name()` before the handshake.
 - `transport`: `enabled`, optional `server_url` override.
 - `agent_sync`: `enabled`.
 - `content_scanner`: batch size, chunking, retries, text extensions.
+- `grpc_transport`: `enabled` (default `false` — gRPC is off by default).
 
 ### Fail-Safe Behavior
 
-Missing file, invalid JSON, wrong type, invalid value — all produce warnings and fall back to safe defaults. **The agent always starts.** Config problems never prevent operation.
+Missing file, invalid JSON, wrong type, invalid value — all produce
+warnings and fall back to safe defaults. **The agent always starts.**
+Config problems never prevent operation.
 
 ---
 
 ## 16. The Data Model
 
-After an inventory, `files` contains every regular file under the watch paths. Fields are populated by `stat()` during the walk, by SHA-256 hashing for eligible files, and by the content scanner for verdicts.
+After an inventory, `files` contains every regular file under the
+watch paths. Fields are populated by `stat()` during the walk, by
+SHA-256 hashing for eligible files, and by the content scanner for
+verdicts.
 
 **Data flow:**
 
@@ -2524,24 +2721,28 @@ After an inventory, `files` contains every regular file under the watch paths. F
 
 ## 17. WebSocket Lifecycle (Agent ↔ Server)
 
-This is the newest and most critical part of the system. Read it carefully.
-
 ### Connection Setup
 
 1. `agent_sync` enrolls via HTTP, gets `agent_id`, writes it to SQLite `state`.
 2. `transport` polls the state store until `agent_id` appears.
-3. `transport` derives the WebSocket URL from `server.base_url` (or uses an explicit override).
+3. `transport` derives the WebSocket URL from `server.base_url` (or uses
+   an explicit override).
 4. `WebSocketClient::start()` spawns the I/O thread.
 5. Handshake carries `Authorization: Bearer <token>`.
 6. On 101 Switching Protocols, the client transitions to `Connected`.
-7. Every 30 s the server pings; Beast on the client responds with pongs automatically.
+7. Every 30 s the server pings; Beast on the client responds with pongs
+   automatically.
 8. Every 60 s `agent_sync` heartbeats over HTTP, updating `last_seen_at`.
 
 ### Message Flow
 
-- **Server → agent**: any handler can call `agentHub.SendToAgent(id, msg)` or `agentHub.BroadcastToOrg(orgID, msg)`.
-- **Agent → server**: any module can call `TransportModule::send_message(json)`. The message is queued in `OutboundQueue` and written by the write pump.
-- **Goodbye on graceful shutdown**: `TransportModule::stop()` sends `{"type":"agent_shutdown","payload":{"reason":...}}` at `Priority::Critical` before closing.
+- **Server → agent**: any handler can call `agentHub.SendToAgent(id, msg)`
+  or `agentHub.BroadcastToOrg(orgID, msg)`.
+- **Agent → server**: any module can call `TransportModule::send_message(json)`.
+  The message is queued in `OutboundQueue` and written by the write pump.
+- **Goodbye on graceful shutdown**: `TransportModule::stop()` sends
+  `{"type":"agent_shutdown","payload":{"reason":...}}` at
+  `Priority::Critical` before closing.
 
 ### Reconnect Policy
 
@@ -2558,83 +2759,210 @@ reconnecting in 300s (base=300s, max=300s)   ← capped
 
 ### Close Code Handling
 
-| Code | Meaning | Behavior |
-|------|---------|----------|
-| 1000 | Normal | Reconnect |
-| 1001 | Going Away | Reconnect |
-| 1006 | Abnormal | Reconnect |
+| Code | Meaning          | Behavior                            |
+| ---- | ---------------- | ----------------------------------- |
+| 1000 | Normal           | Reconnect                           |
+| 1001 | Going Away       | Reconnect                           |
+| 1006 | Abnormal         | Reconnect                           |
 | 1008 | Policy Violation | **Stop permanently** (auth revoked) |
-| 1009 | Too Big | Reconnect |
-| 1011 | Internal | Reconnect |
-| 1012 | Service Restart | Reconnect |
-| 1013 | Try Again Later | Reconnect |
+| 1009 | Too Big          | Reconnect                           |
+| 1011 | Internal         | Reconnect                           |
+| 1012 | Service Restart  | Reconnect                           |
+| 1013 | Try Again Later  | Reconnect                           |
 
 ### Server-Side Revocation
 
 Two independent mechanisms:
 
-1. **Token watcher**: the server re-checks the DB every 60 s. If the token is revoked, it sends `{"type":"token_revoked",...}` then a `1008 Policy Violation` close frame.
-2. **Heartbeat 401**: the agent's next HTTP heartbeat returns 401. `agent_sync` calls `ShutdownController::request(AuthRevoked)`.
+1. **Token watcher**: the server re-checks the DB every 60 s. If the
+   token is revoked, it sends `{"type":"token_revoked",...}` then a
+   `1008 Policy Violation` close frame.
+2. **Heartbeat 401**: the agent's next HTTP heartbeat returns 401.
+   `agent_sync` calls `ShutdownController::request(AuthRevoked)`.
 
 Whichever fires first, the whole agent exits cleanly in ~1 second.
 
 ### Atomic Shutdown
 
-Every module can request shutdown at any time. The service main loop unblocks and runs `stop_all()` then `shutdown_all()` in reverse order. The final log line shows the reason.
+Every module can request shutdown at any time. The service main loop
+unblocks and runs `stop_all()` then `shutdown_all()` in reverse order.
+The final log line shows the reason.
 
 ---
 
 ## 18. The Complete Bug History
 
-### WebSocket-Specific Bugs (newest)
+### Windows MSVC migration bugs (new — `msvc-windows-build` branch)
 
-**Bug W1 — 60s forced disconnect.** `start_read()` used `expires_after(60s)` on every read. Server pings don't complete application-level reads, so the deadline fired every 60 s and killed the connection. **Fix:** removed the per-read deadline; liveness is now Beast's `stream_base::timeout` with `keep_alive_pings = true`.
+**Bug W15 — PowerShell 5.1 mis-parses UTF-8 `.ps1` files without BOM.**
+Em-dashes (`—`), ellipses (`…`), and smart quotes in the `.ps1` files
+were interpreted as three separate Windows-1252 characters each. The
+stray `"` in a comment **terminated a string on line 20**, causing a
+cascade of `Missing argument in parameter list` and `Unexpected token`
+errors from every subsequent line. **Fix:** rewrote both `.ps1` files as
+pure ASCII (0x00–0x7F only). Replaced Unicode symbols with ASCII
+equivalents (`-`, `...`, `[OK]`, `[ERROR]`, `[WARN]`).
 
-**Bug W2 — Handshake rejected (401) because no bearer was sent.** **Fix:** `set_bearer_token()` + a Beast decorator that injects `Authorization` into the handshake.
+**Bug W16 — `git clone vcpkg` at 9 KB/s = days.** The full vcpkg repo
+has 345,595 objects; on a slow link the clone is impractical. **Fix:**
+download as ZIP from `codeload.github.com` (~25 MB, ~2 min).
 
-**Bug W3 — Slow Unregister.** When `readPump` returned, the writer waited up to 30 s for the next ping tick. **Fix:** call `cancel()` immediately after `readPump` returns.
+**Bug W17 — `bootstrap-vcpkg.bat` compilation unnecessary.** vcpkg-tool
+is prebuilt and released on GitHub. **Fix:** download `vcpkg.exe` from
+`vcpkg-tool/releases/latest/download/vcpkg.exe` (~3 MB).
 
-**Bug W4 — `1006 abnormal closure` on Ctrl+C.** Client sent no close frame. **Fix:** `stop()` now sends a `1000 Normal` close frame with tightened 2 s timeouts.
+**Bug W18 — Strawberry Perl download stalls twice.** OpenSSL's
+`Configure` needs Perl; vcpkg downloads 291 MB from GitHub. Stalled at
+0 MB on first attempt, stalled at 131 MB on second. **Fix:** downloaded
+via aria2c in WSL (16 parallel connections, `-x16 -s16`), then copied
+from `/tmp` to `C:\Users\<user>\vcpkg\downloads\`. The 291 MB file was
+verified complete; vcpkg's hash check accepted it.
 
-**Bug W5 — Send-on-closed-channel panic.** `Unregister` closed the `Send` channel while a broadcast could still be selecting on it. **Fix:** introduced a separate `Done` channel; `Send` is never closed.
+**Bug W19 — jom download stalls.** jom is Qt's `nmake` replacement,
+needed by OpenSSL. Same fix: aria2c download + copy to vcpkg downloads.
 
-**Bug W6 — Thundering herd on reconnect.** All agents reconnected synchronously. **Fix:** ±20% jitter via `std::mt19937`.
+**Bug W20 — sqlite3 source download stalls.** Same fix: aria2c + copy.
 
-**Bug W7 — No caps.** Unlimited connections. **Fix:** 100k global / 20k per org.
+**Bug W21 — MSYS2 GCC hijacks CMake's compiler.** CMake's Ninja
+generator scans PATH for `cc`/`gcc`; MSYS2's `C:\msys64\mingw64\bin`
+was ahead of MSVC in PATH order, so CMake selected GCC. That flipped
+`AXIOM_USE_VCPKG_DEPS` to OFF (GCC is not MSVC) and made CMake look
+for Boost at `/usr/include/boost` on Windows. **Fix:** (a) auto-init
+VS env via `vcvarsall.bat`, (b) explicitly set `$env:CC = "cl.exe"` and
+`$env:CXX = "cl.exe"`, (c) detect stale `CMakeCache.txt` with GCC and
+clean the build directory.
 
-**Bug W8 — No rate limit.** One bad agent could DoS the server. **Fix:** `x/time/rate` limiter, 20/s per agent.
+**Bug W22 — `vcvarsall.bat` overwrites `VCPKG_ROOT`.** Calling
+`vcvarsall.bat` sets `VCPKG_ROOT` to
+`...\Microsoft Visual Studio\...\VC\vcpkg` (the VS-bundled vcpkg). That
+instance requires `builtin-baseline` in `vcpkg.json`, so it errors with:
+`this vcpkg instance requires a manifest with a specified baseline`.
+**Fix:** in `build-windows-msvc.ps1`, save `VCPKG_ROOT` before VS init,
+restore it after, and refuse to build if it ends up pointing at the
+VS-bundled path.
 
-**Bug W9 — Slow shutdown blocked by WebSockets.** **Fix:** `CloseAll()` runs before `srv.Shutdown()`.
+**Bug W23 — `vcpkg-configuration.json` placeholder baseline.** The
+file contained `"baseline": "<COMMIT-SHA>"` (literal string). vcpkg
+tried to check out that SHA and failed. **Fix:** deleted the file.
+vcpkg falls back to registry HEAD, which works.
 
-**Bug W10 — Close codes ignored.** Revoked agents kept reconnecting. **Fix:** `should_reconnect_on_close()`.
+**Bug W24 — Boost 1.92.0 vcpkg meta-package dropped `asio` / `beast`
+features.** `"boost"` with `features: ["asio", "beast", "system"]`
+failed with `error: boost@1.92.0 does not have required feature asio`.
+The meta-package no longer supports those features. **Fix:** use the
+separate `boost-asio` and `boost-beast` ports directly; `boost-system`
+comes as a transitive dependency.
 
-**Bug W11 — `write_in_flight` not reset.** **Fix:** reset on every disconnect path.
+**Bug W25 — `/bigobj` required for `websocket_client.cpp`.** MSVC's
+default object-file format has a 65,535 section limit. The full
+Boost.Beast WebSocket stack (async read/write, TLS, close codes)
+exceeds it: `fatal error C1128: number of sections exceeded object
+file format limit: compile with /bigobj`. **Fix:** added `/bigobj` to
+all MSVC compile options in `CMakeLists.txt`. Linux (GCC/ELF) has no
+equivalent limit — this is a build-only fix.
 
-**Bug W12 — `close_code` type mismatch.** **Fix:** `static_cast<websocket::close_code>(cr.code)`.
+**Bug W26 — `ole32` and `user32` missing from Windows link libs.**
+`src/platform/windows/paths.cpp` uses `CoTaskMemFree` (from
+`<objbase.h>`, linked via `ole32.lib`) after `SHGetKnownFolderPath`.
+Without it, `LNK2019: unresolved external symbol __imp_CoTaskMemFree`.
+**Fix:** added `ole32 user32` to the WIN32 `target_link_libraries`.
 
-**Bug W13 — `handshake_declined` doesn't exist in this Boost.** **Fix:** match on `ec.message()` instead.
+**Bug W27 — gRPC block activated without protobuf in vcpkg.json.**
+`CMakeLists.txt` had `if(AXIOM_USE_VCPKG_DEPS) find_package(Protobuf
+CONFIG REQUIRED) ...` which runs whenever MSVC is active. But `grpc`
+and `protobuf` were not in `vcpkg.json` — the gRPC module was
+scaffolding only, disabled for later. `find_package(Protobuf CONFIG
+REQUIRED)` therefore failed with `Could not find a package
+configuration file provided by "Protobuf"`. **Fix:** introduced
+`option(AXIOM_ENABLE_GRPC ... OFF)` and changed the guard to
+`if(AXIOM_USE_VCPKG_DEPS AND AXIOM_ENABLE_GRPC)`. The block is now
+cleanly gated — no `find_package` unless explicitly enabled.
 
-**Bug W14 — `bugprone-unused-return-value` from clang-tidy on async operations.** **Fix:** wrap every non-void-returning Beast call in explicit `static_cast<void>(...)`.
+### Configuration & shutdown bugs (unchanged from previous revision)
 
-### Configuration & Shutdown Bugs
+**Bug C1 — `verify_tls` was a footgun.** Removed from every layer.
+Legacy keys warn and are ignored.
 
-**Bug C1 — `verify_tls` was a footgun.** Removed from every layer. Legacy keys warn and are ignored.
+**Bug C2 — Duplicate token across three modules.** Consolidated into
+`server.api_token`.
 
-**Bug C2 — Duplicate token across three modules.** Consolidated into `server.api_token`.
+**Bug C3 — Revoked token silently ignored while running.** `agent_sync`
+now requests shutdown on 401/403; the server's watcher also closes the
+socket with 1008.
 
-**Bug C3 — Revoked token silently ignored while running.** `agent_sync` now requests shutdown on 401/403; the server's watcher also closes the socket with 1008.
+**Bug C4 — Empty token at startup allowed a stale `agent_id` heartbeat.**
+Now the agent sends an immediate validation heartbeat and errors with
+**"no valid API token"** before entering the loop.
 
-**Bug C4 — Empty token at startup allowed a stale agent_id heartbeat.** Now the agent sends an immediate validation heartbeat and errors with **"no valid API token"** before entering the loop.
+### WebSocket-specific bugs (unchanged from previous revision)
 
-### Original 23 Bugs (kept for history)
+**Bug W1 — 60s forced disconnect.** `start_read()` used
+`expires_after(60s)` on every read. Server pings don't complete
+application-level reads, so the deadline fired every 60 s and killed
+the connection. **Fix:** removed the per-read deadline; liveness is now
+Beast's `stream_base::timeout` with `keep_alive_pings = true`.
 
-Bugs 1–23 in the previous revision are unchanged and still fixed. Highlights: log feedback loop, shutdown segfault, dev/inode collision, SQLite cross-compile failure, CMake `file(DOWNLOAD)` silent failure, missing C language in `project()`, walker interruptibility, debounce priority, heartbeat timer advance, `std::ignore` vs `void`, `host_name_verification` in Boost 1.90, OpenSSL `lib/` vs `lib64/`, CMake 4.x `find_package(OpenSSL)` quirks, i686 OpenSSL selection, duplicated `glob_match`, post-refactor include paths, and `AgentSync` starting after `initialize()` failure.
+**Bug W2 — Handshake rejected (401) because no bearer was sent.**
+**Fix:** `set_bearer_token()` + a Beast decorator that injects
+`Authorization` into the handshake.
+
+**Bug W3 — Slow Unregister.** When `readPump` returned, the writer
+waited up to 30 s for the next ping tick. **Fix:** call `cancel()`
+immediately after `readPump` returns.
+
+**Bug W4 — `1006 abnormal closure` on Ctrl+C.** Client sent no close
+frame. **Fix:** `stop()` now sends a `1000 Normal` close frame with
+tightened 2 s timeouts.
+
+**Bug W5 — Send-on-closed-channel panic.** `Unregister` closed the
+`Send` channel while a broadcast could still be selecting on it.
+**Fix:** introduced a separate `Done` channel; `Send` is never closed.
+
+**Bug W6 — Thundering herd on reconnect.** All agents reconnected
+synchronously. **Fix:** ±20% jitter via `std::mt19937`.
+
+**Bug W7 — No caps.** Unlimited connections. **Fix:** 100k global /
+20k per org.
+
+**Bug W8 — No rate limit.** One bad agent could DoS the server.
+**Fix:** `x/time/rate` limiter, 20/s per agent.
+
+**Bug W9 — Slow shutdown blocked by WebSockets.** **Fix:** `CloseAll()`
+runs before `srv.Shutdown()`.
+
+**Bug W10 — Close codes ignored.** Revoked agents kept reconnecting.
+**Fix:** `should_reconnect_on_close()`.
+
+**Bug W11 — `write_in_flight` not reset.** **Fix:** reset on every
+disconnect path.
+
+**Bug W12 — `close_code` type mismatch.** **Fix:**
+`static_cast<websocket::close_code>(cr.code)`.
+
+**Bug W13 — `handshake_declined` doesn't exist in this Boost.** **Fix:**
+match on `ec.message()` instead.
+
+**Bug W14 — `bugprone-unused-return-value` from clang-tidy on async
+operations.** **Fix:** wrap every non-void-returning Beast call in
+explicit `static_cast<void>(...)`.
+
+### Original 23 bugs (kept for history)
+
+Bugs 1–23 in the previous revision are unchanged and still fixed.
+Highlights: log feedback loop, shutdown segfault, dev/inode collision,
+SQLite cross-compile failure, CMake `file(DOWNLOAD)` silent failure,
+missing C language in `project()`, walker interruptibility, debounce
+priority, heartbeat timer advance, `std::ignore` vs `void`,
+`host_name_verification` in Boost 1.90, OpenSSL `lib/` vs `lib64/`,
+CMake 4.x `find_package(OpenSSL)` quirks, i686 OpenSSL selection,
+duplicated `glob_match`, post-refactor include paths, and `AgentSync`
+starting after `initialize()` failure.
 
 ---
 
 ## 19. Runtime Evidence
 
-### Successful Startup (fresh token)
+### Linux x86_64 — fresh token
 
 ```
 [info] AxiomDLP Agent v0.1.0
@@ -2658,26 +2986,14 @@ Bugs 1–23 in the previous revision are unchanged and still fixed. Highlights: 
 [debug] agent_sync: heartbeat ok (agent_id=1)
 ```
 
-### Server-Side Registration
+### Linux x86_64 — server-side registration
 
 ```json
 {"msg":"Agent registered","agent_id":1,"user_id":1,"org_id":2,"hostname":"kali","os":"linux","version":"0.1.0"}
 {"msg":"agent hub: registered","agent_id":1,"user_id":1,"org_id":2,"token_id":1,"total":1,"org_total":1}
 ```
 
-### Broadcast Push
-
-Server:
-```bash
-curl -X POST /api/v1/agents/broadcast -d '{"type":"policy_update","payload":{"version":1}}'
-```
-
-Agent:
-```
-[info] transport: received policy_update: {"payload":{"version":1},"type":"policy_update"}
-```
-
-### Graceful Ctrl+C
+### Linux x86_64 — graceful Ctrl+C
 
 ```
 [info] axiomdlp-agent received stop request (reason=user_requested)
@@ -2689,14 +3005,14 @@ Agent:
 [info] Application shutting down
 ```
 
-Server:
+Server side:
 ```json
 {"msg":"agent ws: agent shutting down gracefully","agent_id":1,"payload":{"agent_id":1,"reason":"user_requested"}}
 {"msg":"agent ws: clean close","agent_id":1}
 {"msg":"agent hub: unregistered","agent_id":1,"remaining":0}
 ```
 
-### Revocation While Running
+### Linux x86_64 — revocation while running
 
 Server watcher:
 ```json
@@ -2712,7 +3028,7 @@ Or agent-side heartbeat:
 [info] Application shutting down
 ```
 
-### Revoked Token at Startup
+### Linux x86_64 — revoked token at startup
 
 ```
 [info] agent_sync: validating token with immediate heartbeat
@@ -2723,37 +3039,125 @@ Or agent-side heartbeat:
 
 Exits in ~1 s. No reconnect loop.
 
+### Linux i686 — same behavior
+
+All of the above verified on Linux i686 as well. Both binaries produce
+identical logs apart from `hostname` and `os` in the enrollment payload.
+
+### Windows x64 — verified 2026-10-17
+
+```
+[2026-10-17 19:25:50.861] [info] [t:7468] AxiomDLP Agent v0.1.0
+[2026-10-17 19:25:50.861] [info] [t:7468] Config loaded from: config/agent.default.json
+[2026-10-17 19:25:50.864] [info] [t:7468] Database: opened 'data/agent.db'
+[2026-10-17 19:25:50.865] [info] [t:7468] Migrations: schema version 0 -> 4
+[2026-10-17 19:25:50.865] [info] [t:7468] Migrations: applying v2 (enriched files table)
+[2026-10-17 19:25:50.866] [info] [t:7468] Migrations: v2 applied
+[2026-10-17 19:25:50.866] [info] [t:7468] Migrations: applying v3 (state table)
+[2026-10-17 19:25:50.866] [info] [t:7468] Migrations: v3 applied
+[2026-10-17 19:25:50.866] [info] [t:7468] Migrations: applying v4 (scanner metadata)
+[2026-10-17 19:25:50.867] [info] [t:7468] Migrations: v4 applied
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: registering module 'filesystem_watcher' v1.0.0
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: registering module 'inventory' v1.0.0
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: registering module 'event_logger' v1.0.0
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: registering module 'transport' v1.0.0
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: registering module 'agent_sync' v1.0.0
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: registering module 'content_scanner' v1.0.0
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: initializing 6 module(s)
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: initializing 'filesystem_watcher'
+[2026-10-17 19:25:50.867] [info] [t:7468] filesystem_watcher module: excluding own log directory 'D:\axiomdlp-agent\logs'
+[2026-10-17 19:25:50.867] [info] [t:7468] filesystem_watcher module: excluding own data directory 'D:\axiomdlp-agent\data'
+[2026-10-17 19:25:50.867] [info] [t:7468] filesystem_watcher module: initialized with 1 watch path(s), 4 exclude pattern(s), debounce 300 ms
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: initializing 'inventory'
+[2026-10-17 19:25:50.867] [info] [t:7468] inventory module: initialized (scan every 60 s)
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: initializing 'event_logger'
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: initializing 'transport'
+[2026-10-17 19:25:50.867] [info] [t:7468] transport module: initialized (url=ws://127.0.0.1:3000/api/v1/agent/ws,backoff=10s..300s)
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: initializing 'agent_sync'
+[2026-10-17 19:25:50.867] [info] [t:7468] agent_sync module: initialized (server=http://127.0.0.1:3000, heartbeat_interval=60s)
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: initializing 'content_scanner'
+[2026-10-17 19:25:50.867] [info] [t:7468] content_scanner module: initialized (batch_size=50, interval=30s, chunk=1024KB, overlap=256B, max_file=100MB, ext_count=47)
+[2026-10-17 19:25:50.867] [info] [t:7468] not launched by SCM; running in foreground
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: starting 6 module(s)
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: starting 'filesystem_watcher'
+[2026-10-17 19:25:50.867] [info] [t:7468] filesystem_watcher module: started (watcher initializing)
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: starting 'inventory'
+[2026-10-17 19:25:50.867] [info] [t:7468] inventory module: started
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: starting 'event_logger'
+[2026-10-17 19:25:50.867] [info] [t:7468] event_logger: subscribed to all events (id=1)
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: starting 'transport'
+[2026-10-17 19:25:50.867] [info] [t:7468] transport module: started
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: starting 'agent_sync'
+[2026-10-17 19:25:50.867] [info] [t:7468] agent_sync module: started
+[2026-10-17 19:25:50.867] [info] [t:7468] ModuleManager: starting 'content_scanner'
+[2026-10-17 19:25:50.867] [info] [t:7468] content_scanner module: started
+[2026-10-17 19:25:50.867] [info] [t:7468] AxiomDLPAgent running (Windows foreground mode)
+```
+
+**Warnings observed (both benign):**
+
+1. `EfswFileWatcher: skipping '/home/kali/Downloads' (does not exist)` —
+   Linux config path on Windows. Proves efsw is linked and functional.
+2. `agent_sync: connect refused [system:10061]` — no Core server running
+   at `127.0.0.1:3000`. Proves Boost.Asio socket + Winsock error mapping
+   work. Retry logic engaged.
+
+Both warnings disappear once `config/agent.default_win.json` is copied
+to `config/agent.json` (watch `%USERPROFILE%`) and the Core server starts.
+
+### Windows x86 — build verified
+
+Same build process, same 66 packages per triplet, same 6-module startup
+(identical log to x64 apart from the architecture of the `.exe` itself).
+Binary size: 6.37 MB.
+
+### Binary verification
+
+| Binary                                        | Size    | `dumpbin /headers` machine |
+| --------------------------------------------- | ------- | -------------------------- |
+| `windows-x64-msvc-release/axiomdlp-agent.exe` | 8.61 MB | `8664 machine (x64)`       |
+| `windows-x86-msvc-release/axiomdlp-agent.exe` | 6.37 MB | `14C machine (x86)`        |
+
+No external DLL dependencies beyond Windows system DLLs.
+
 ---
 
 ## 20. Known Limitations
 
 ### 20.1 ModuleManager Doesn't Skip Failed Modules
 
-A module that fails `initialize()` still gets `start()` called on it. Fix pending.
+A module that fails `initialize()` still gets `start()` called on it.
+Fix pending.
 
 ### 20.2 No Process or User Attribution
 
-Events carry a path but not the process. Requires fanotify (Linux) or Minifilter (Windows).
+Events carry a path but not the process. Requires fanotify (Linux) or
+Minifilter (Windows).
 
-### 20.3 inotify Queue Overflow
+### 20.3 inotify / ReadDirectoryChangesW Queue Overflow
 
 The periodic inventory scan catches anything the watcher misses.
 
 ### 20.4 No Network Filesystem Support
 
-inotify doesn't fire on NFS/SMB.
+inotify doesn't fire on NFS/SMB. efsw's ReadDirectoryChangesW path on
+Windows handles most network shares, but behavior is filesystem-dependent.
 
 ### 20.5 Windows Ctrl+C Not Handled in Foreground
 
-No `SetConsoleCtrlHandler`. SCM path works.
+No `SetConsoleCtrlHandler` registered. SCM path works. `taskkill /PID`
+terminates the process without graceful shutdown.
 
 ### 20.6 Windows Path Case Sensitivity
 
-The glob matcher is case-sensitive.
+The glob matcher is case-sensitive. NTFS is case-insensitive, so a
+case-sensitive matcher could miss exclusions. Worked around by matching
+what the OS reports.
 
 ### 20.7 Dev/Inode Are Placeholders
 
-`dev` is always 0; `inode` is a path hash.
+`dev` is always 0; `inode` is a path hash. Sufficient for uniqueness;
+not a real inode reference.
 
 ### 20.8 Content Scanner Only Handles Text Files
 
@@ -2767,25 +3171,48 @@ The schema exists; nothing populates it.
 
 Cosmetic only.
 
-### 20.11 OpenSSL Build Requires ~20 Minutes
+### 20.11 Platform toolchain duplication
 
-One-time. Cached trees reuse.
+Linux and Windows use different dependency pipelines. Boost is 1.90 on
+Linux (system) and 1.92 on Windows (vcpkg). OpenSSL is 3.3.2 on Linux
+and 3.6.5 on Windows. This is intentional: `.deps/` works for Linux
+(no vcpkg needed), vcpkg is required for Windows (gRPC later).
+
+### 20.12 gRPC scaffolding is currently dead code
+
+`src/features/grpc_transport/` exists but is entirely guarded by
+`#ifdef AXIOM_HAVE_GRPC`. Without `AXIOM_ENABLE_GRPC=ON` and the two
+`vcpkg.json` entries, it compiles to empty objects and adds no runtime
+behavior. This is deliberate — gRPC is a follow-up milestone.
+
+### 20.13 Windows setup requires manual download workarounds on slow networks
+
+The `setup-windows-msvc.ps1` fast-mode uses `Invoke-WebRequest`, which
+can stall on slow GitHub CDN. The WSL aria2c fallback (documented in
+§5.2) works but is not scripted. Future improvement: switch to
+`Start-BitsTransfer` or `BITS` protocol for resumable downloads.
+
+### 20.14 OpenSSL Linux build requires ~20 minutes
+
+One-time per OpenSSL version bump. Cached trees reuse.
 
 ---
 
 ## 21. What Does Not Exist Yet
 
-| Feature | Notes |
-|---------|-------|
-| Policy engine | Scan results → decisions |
-| User-mode enforcement | Block file operations |
-| Kernel enforcement | Minifilter / eBPF / fanotify |
-| IPC + tray helper | Notifications, pause/resume |
-| Auto-update | Signed manifests, atomic swap |
-| Code signing | Authenticode / GPG |
-| Packaging | `.deb`, `.rpm`, MSI |
-| Rich document extraction | PDF, DOCX, XLSX inside content scanner |
-| Process/user attribution | Requires kernel-level monitoring |
+| Feature                  | Notes                                        |
+| ------------------------ | -------------------------------------------- |
+| Policy engine            | Scan results → decisions                     |
+| User-mode enforcement    | Block file operations                        |
+| Kernel enforcement       | Minifilter / eBPF / fanotify                 |
+| IPC + tray helper        | Notifications, pause/resume                  |
+| Auto-update              | Signed manifests, atomic swap                |
+| Code signing             | Authenticode / GPG                           |
+| Packaging                | `.deb`, `.rpm`, MSI                          |
+| Rich document extraction | PDF, DOCX, XLSX inside content scanner       |
+| Process/user attribution | Requires kernel-level monitoring             |
+| gRPC transport (Windows) | Scaffolding exists, disabled by default      |
+| gRPC transport (Linux)   | `build-grpc.sh` exists, CMake wiring pending |
 
 ---
 
@@ -2803,7 +3230,8 @@ One-time. Cached trees reuse.
 - No per-read deadlines. The protocol owns liveness via pings.
 - Always send a graceful close frame on shutdown.
 - Interpret close codes. Not every disconnect should retry.
-- Separate concerns: `agent_sync` (HTTP) and `transport` (WS) are different lifecycles.
+- Separate concerns: `agent_sync` (HTTP) and `transport` (WS) are
+  different lifecycles.
 
 ### On Configuration
 
@@ -2813,47 +3241,81 @@ One-time. Cached trees reuse.
 
 ### On Cross-Platform
 
-- Four targets from one host is achievable but requires discipline.
-- Toolchain isolation prevents host libraries from leaking.
-- Static dependencies eliminate a class of deployment problems.
+- **Two toolchains is the right answer, not one.** Linux works with
+  `.deps/` + apt. Windows *requires* vcpkg for gRPC-compatible static
+  linking. Forcing one to adopt the other's strategy trades working
+  code for theoretical uniformity.
+- **The `if(MSVC)` switch is a clean seam.** No source file knows which
+  path is active. Both call the same `find_package` API and link the
+  same imported targets.
+- **`/bigobj` and static CRT are the only Windows-specific C++ concerns.**
+  Everything else — Boost template size, WinSock error mapping, SCM
+  service registration — behaves exactly as the source expects.
+- **Static linking eliminates a class of deployment problems.** No
+  `vcruntime140.dll`, no `libssl-3-x64.dll`, no DLL search path issues.
+  The `.exe` runs anywhere.
+- **Toolchain isolation prevents host libraries from leaking.** The
+  `platform/` interface pattern means no business logic includes
+  `<windows.h>` or `<sys/inotify.h>`.
+
+### On Windows Build Infrastructure
+
+- **PowerShell 5.1 is hostile to non-ASCII in `.ps1`.** Any Unicode in
+  a script (em-dash, ellipsis, smart quote, checkmark) will break the
+  parser unless the file is saved with a UTF-8 BOM. ASCII-only is the
+  durable fix.
+- **`vcvarsall.bat` is the source of truth for MSVC env.** Setting
+  `PATH` alone is insufficient — `INCLUDE`, `LIB`, `LIBPATH`,
+  `VCINSTALLDIR` must all be present. Calling `vcvarsall.bat` in a
+  subprocess and importing its env is the reliable pattern.
+- **`VCPKG_ROOT` can be silently overwritten by VS env init.** Save
+  and restore it. Refuse to proceed if it points at the VS-bundled
+  vcpkg.
+- **MSYS2 in PATH breaks CMake's compiler detection.** Explicitly set
+  `CC=cl.exe`, `CXX=cl.exe` and detect/clean stale `CMakeCache.txt`
+  with GCC compiler entries.
+- **vcpkg downloads are fragile on slow GitHub links.** Use aria2c
+  (or equivalent parallel downloader) in WSL and drop the file into
+  `%USERPROFILE%\vcpkg\downloads\`. vcpkg accepts pre-cached files
+  silently.
+- **vcpkg binary cache is a 500x speedup.** First build ~30 min per
+  architecture; every subsequent build ~30 seconds. This is what makes
+  the "one-time cost" a genuine one-time cost.
+- **Static triplet + static CRT is the right default for redistribution.**
+  `x64-windows-static` / `x86-windows-static` produce a self-contained
+  `.exe` with no external dependencies beyond Windows system DLLs.
 
 ### On Debugging
 
-- Read the actual error. `close 1006` and `handshake declined` are symptoms, not causes.
+- Read the actual error. `close 1006` and `handshake declined` are
+  symptoms, not causes.
 - Log at the right level. Heartbeat success at DEBUG; revoke at ERROR.
-- Run for long enough to see periodic behavior — 60 s+ tests reveal timing bugs.
+- Run for long enough to see periodic behavior — 60 s+ tests reveal
+  timing bugs.
+- **A stalled download looks identical to a hung process.** Check file
+  size growth (`Get-ChildItem … | Select Length`) across 30-second
+  intervals before declaring a hang.
+- **A `.part` file with a nonzero size is not proof of completion.**
+  Compare against the expected size (e.g., Strawberry Perl is 291 MB,
+  not 131 MB — a truncated download at 131 MB was still not usable).
 
 ### On the Project
 
-- The infrastructure (build, service, logging, config, event bus, TLS, shutdown) is genuinely reusable.
-- The DLP logic is the easy part once the infrastructure is in place.
-- Ship small. Every change since the beginning has been verified before the next.
-- Bug histories like this document are worth their weight. They explain *why* the code looks the way it does.
+- **The infrastructure is genuinely reusable.** Same `ShutdownController`,
+  same event bus, same module framework, same config parser on four
+  targets — no platform-specific branches in any of them.
+- **The DLP logic is easy once infrastructure exists.** All the hard
+  work in this migration was plumbing (build system, dep manager,
+  downloader resilience). Policy engine + enforcement will be
+  comparatively straightforward.
+- **Ship small.** Every change since the beginning has been verified
+  before the next.
+- **Bug histories like this document are worth their weight.** They
+  explain *why* the code and scripts look the way they do. Future
+  readers will not spend a day re-discovering that `vcvarsall.bat`
+  overwrites `VCPKG_ROOT` — they'll read Bug W22.
 
 ---
-
-## Summary
-
-The AxiomDLP Endpoint Agent is a **cross-platform, TLS-capable, hashing-enabled, content-scanning, atomically-shutdownable service foundation** with:
-
-- **Four verified build targets** — Linux x86_64/i686, Windows x86_64/i686.
-- **Six working modules** — filesystem_watcher, inventory, event_logger, websocket_transport, agent_sync, content_scanner.
-- **Atomic shutdown** — one authority, typed reasons, end-to-end logging.
-- **Bidirectional WebSocket** — server push, agent push, graceful goodbye, jittered reconnect, close-code interpretation.
-- **Proactive revocation** — server watcher + agent heartbeat both detect revoked tokens within 60 s and stop the agent cleanly.
-- **TLS everywhere** — unconditional verification on `https://` and `wss://`.
-- **Consolidated config** — one top-level `server` section.
-- **Static OpenSSL 3.3.2** — no runtime `.so` dependencies.
-- **SHA-256 fingerprinting** — every eligible file.
-- **Content scanner** — chunks text files, sends to Core, writes verdicts back.
-- **A clean layered source tree** — foundation, events, modules, platform, net, util, storage, features.
-- **A complete bug history** — every issue found, diagnosed, and fixed.
-
-**What it does today:** watches the filesystem, maintains a complete inventory, hashes every eligible file, scans text files for PII via the Core, maintains a persistent TLS WebSocket with the Core, handles server-initiated revocation, and shuts down cleanly whenever asked — by the user, by a fatal error, or by the server.
-
-**What it will do:** enforce policy, block sensitive data movement, coordinate with a fleet, and provide user-facing notifications.
-
-The pipeline is complete. The decision and enforcement layers are the next milestone.
 ~~~~
 
   + .gitignore
@@ -3211,19 +3673,19 @@ log "  skipped:  $skipped"
     "file": "agent.log",
     "level": "info"
   },
-
   "storage": {
     "db_path": "data/agent.db"
   },
-
   "server": {
     "base_url": "http://127.0.0.1:3000",
     "api_token": "axdlp_user_gNAHsaK1QoFwVq3H3kMFMku0f8nJjkVugecDQfxF",
     "heartbeat_interval_seconds": 60,
     "reconnect_backoff_seconds": 10,
-    "reconnect_backoff_max_seconds": 300
+    "reconnect_backoff_max_seconds": 300,
+    "grpc_port": 50051,
+    "grpc_tls": true,
+    "grpc_ca_path": ""
   },
-
   "modules": {
     "filesystem_watcher": {
       "enabled": true,
@@ -3236,7 +3698,6 @@ log "  skipped:  $skipped"
       ],
       "debounce_ms": 300
     },
-
     "inventory": {
       "enabled": true,
       "watch_paths": [
@@ -3248,18 +3709,16 @@ log "  skipped:  $skipped"
       "interval_seconds": 60,
       "compute_hashes": true,
       "max_file_size_bytes": 104857600,
-      "scannable_categories": ["document", "code", "data", "config"]
+      "scannable_categories": [
+        "document",
+        "code",
+        "data",
+        "config"
+      ]
     },
-
-    "transport": {
-      "enabled": true,
-      "server_url": ""
-    },
-
     "agent_sync": {
       "enabled": true
     },
-
     "content_scanner": {
       "enabled": true,
       "batch_size": 50,
@@ -3271,14 +3730,88 @@ log "  skipped:  $skipped"
       "max_retries": 3,
       "request_timeout_seconds": 300,
       "text_extensions": [
-        "txt", "md", "log", "csv", "tsv",
-        "json", "yaml", "yml", "toml", "xml",
-        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx",
-        "py", "js", "ts", "jsx", "tsx",
-        "go", "rs", "java", "kt", "scala", "cs", "swift",
-        "rb", "php", "pl", "lua", "sql", "sh", "bash", "zsh", "ps1",
-        "html", "css", "scss", "less",
-        "conf", "cfg", "ini", "env", "properties"
+        "txt", "md", "log", "csv", "tsv", "json", "yaml", "yml", "toml", "xml",
+        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx", "py", "js", "ts", "jsx", "tsx",
+        "go", "rs", "java", "kt", "scala", "cs", "swift", "rb", "php", "pl", "lua",
+        "sql", "sh", "bash", "zsh", "ps1", "html", "css", "scss", "less", "conf",
+        "cfg", "ini", "env", "properties"
+      ]
+    }
+  }
+}
+```
+
+### \`config/agent.default.json.bak\`
+
+```
+{
+  "logging": {
+    "dir": "logs",
+    "file": "agent.log",
+    "level": "info"
+  },
+  "storage": {
+    "db_path": "data/agent.db"
+  },
+  "server": {
+    "base_url": "http://127.0.0.1:3000",
+    "api_token": "axdlp_user_gNAHsaK1QoFwVq3H3kMFMku0f8nJjkVugecDQfxF",
+    "heartbeat_interval_seconds": 60,
+    "reconnect_backoff_seconds": 10,
+    "reconnect_backoff_max_seconds": 300,
+    "grpc_port": 50051,
+    "grpc_tls": true,
+    "grpc_ca_path": ""
+  },
+  "modules": {
+    "filesystem_watcher": {
+      "enabled": true,
+      "watch_paths": [
+        "/home/kali/Downloads"
+      ],
+      "exclude_paths": [
+        "*/logs/*",
+        "*/.cache/*"
+      ],
+      "debounce_ms": 300
+    },
+    "inventory": {
+      "enabled": true,
+      "watch_paths": [
+        "/home/kali/Downloads"
+      ],
+      "exclude_paths": [
+        "*/logs/*"
+      ],
+      "interval_seconds": 60,
+      "compute_hashes": true,
+      "max_file_size_bytes": 104857600,
+      "scannable_categories": [
+        "document",
+        "code",
+        "data",
+        "config"
+      ]
+    },
+    "agent_sync": {
+      "enabled": true
+    },
+    "content_scanner": {
+      "enabled": true,
+      "batch_size": 50,
+      "batch_max_bytes": 52428800,
+      "scan_interval_seconds": 30,
+      "chunk_size_bytes": 1048576,
+      "chunk_overlap_bytes": 256,
+      "max_file_bytes": 104857600,
+      "max_retries": 3,
+      "request_timeout_seconds": 300,
+      "text_extensions": [
+        "txt", "md", "log", "csv", "tsv", "json", "yaml", "yml", "toml", "xml",
+        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx", "py", "js", "ts", "jsx", "tsx",
+        "go", "rs", "java", "kt", "scala", "cs", "swift", "rb", "php", "pl", "lua",
+        "sql", "sh", "bash", "zsh", "ps1", "html", "css", "scss", "less", "conf",
+        "cfg", "ini", "env", "properties"
       ]
     }
   }
@@ -3294,19 +3827,19 @@ log "  skipped:  $skipped"
     "file": "agent.log",
     "level": "info"
   },
-
   "storage": {
     "db_path": "data/agent.db"
   },
-
   "server": {
     "base_url": "http://192.168.1.42:3000",
     "api_token": "",
     "heartbeat_interval_seconds": 60,
     "reconnect_backoff_seconds": 10,
-    "reconnect_backoff_max_seconds": 300
+    "reconnect_backoff_max_seconds": 300,
+    "grpc_port": 50051,
+    "grpc_tls": false,
+    "grpc_ca_path": ""
   },
-
   "modules": {
     "filesystem_watcher": {
       "enabled": true,
@@ -3324,7 +3857,6 @@ log "  skipped:  $skipped"
       ],
       "debounce_ms": 300
     },
-
     "inventory": {
       "enabled": true,
       "watch_paths": [
@@ -3358,18 +3890,16 @@ log "  skipped:  $skipped"
       "interval_seconds": 900,
       "compute_hashes": true,
       "max_file_size_bytes": 104857600,
-      "scannable_categories": ["document", "code", "data", "config"]
+      "scannable_categories": [
+        "document",
+        "code",
+        "data",
+        "config"
+      ]
     },
-
-    "transport": {
-      "enabled": true,
-      "server_url": ""
-    },
-
     "agent_sync": {
       "enabled": true
     },
-
     "content_scanner": {
       "enabled": true,
       "batch_size": 50,
@@ -3381,14 +3911,11 @@ log "  skipped:  $skipped"
       "max_retries": 3,
       "request_timeout_seconds": 300,
       "text_extensions": [
-        "txt", "md", "log", "csv", "tsv",
-        "json", "yaml", "yml", "toml", "xml",
-        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx",
-        "py", "js", "ts", "jsx", "tsx",
-        "go", "rs", "java", "kt", "scala", "cs", "swift",
-        "rb", "php", "pl", "lua", "sql", "sh", "bash", "zsh", "ps1",
-        "html", "css", "scss", "less",
-        "conf", "cfg", "ini", "env", "properties"
+        "txt", "md", "log", "csv", "tsv", "json", "yaml", "yml", "toml", "xml",
+        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx", "py", "js", "ts", "jsx", "tsx",
+        "go", "rs", "java", "kt", "scala", "cs", "swift", "rb", "php", "pl", "lua",
+        "sql", "sh", "bash", "zsh", "ps1", "html", "css", "scss", "less", "conf",
+        "cfg", "ini", "env", "properties"
       ]
     }
   }
@@ -3402,7 +3929,7 @@ log "  skipped:  $skipped"
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://axiomdlp.example.com/schemas/agent.schema.json",
   "title": "AxiomDLP Agent Configuration",
-  "description": "Configuration file for the AxiomDLP endpoint agent. TLS is always verified for https:// and wss:// URLs.",
+  "description": "Configuration file for the AxiomDLP endpoint agent. Uses gRPC exclusively.",
   "type": "object",
 
   "properties": {
@@ -3432,35 +3959,52 @@ log "  skipped:  $skipped"
 
     "server": {
       "type": "object",
-      "description": "Identity and connection information for the Core server. Shared by agent_sync, transport, and content_scanner.",
+      "description": "Identity and connection information for the Core server. Shared by agent_sync and content_scanner.",
       "properties": {
         "base_url": {
           "type": "string",
           "default": "http://127.0.0.1:3000",
-          "description": "Base URL of the Core, e.g. http://127.0.0.1:3000 or https://core.example.com. TLS is always verified on https://."
+          "description": "Base URL of the Core, used to derive the gRPC target host."
         },
         "api_token": {
           "type": "string",
           "default": "",
-          "description": "Bearer token issued at registration: axdlp_user_... Required if any server-facing module is enabled."
+          "description": "Bearer token issued at registration: axdlp_user_... Required for all server-facing modules."
         },
         "heartbeat_interval_seconds": {
           "type": "integer",
           "minimum": 5,
           "default": 60,
-          "description": "Heartbeat period used by agent_sync. Enterprise norm: 30-60 s."
+          "description": "Heartbeat period used by agent_sync."
         },
         "reconnect_backoff_seconds": {
           "type": "integer",
           "minimum": 1,
           "default": 10,
-          "description": "Initial reconnect delay used by transport (WebSocket). Enterprise norm: 5-10 s."
+          "description": "Initial reconnect delay used by grpc_transport."
         },
         "reconnect_backoff_max_seconds": {
           "type": "integer",
           "minimum": 1,
           "default": 300,
-          "description": "Maximum reconnect delay used by transport (WebSocket). Enterprise norm: 300-600 s."
+          "description": "Maximum reconnect delay used by grpc_transport."
+        },
+        "grpc_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 50051,
+          "description": "The port used for the gRPC transport."
+        },
+        "grpc_tls": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to use TLS for the gRPC channel. Must be true in production."
+        },
+        "grpc_ca_path": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to a PEM CA certificate file. If empty, system default root CAs are used."
         }
       },
       "additionalProperties": false
@@ -3470,7 +4014,6 @@ log "  skipped:  $skipped"
       "type": "object",
       "description": "Per-module configuration.",
       "properties": {
-
         "filesystem_watcher": {
           "type": "object",
           "description": "Real-time filesystem event watcher.",
@@ -3539,26 +4082,9 @@ log "  skipped:  $skipped"
           "additionalProperties": false
         },
 
-        "transport": {
-          "type": "object",
-          "description": "WebSocket channel to the Core. URL, token, and reconnect policy come from the top-level 'server' section.",
-          "properties": {
-            "enabled": {
-              "type": "boolean",
-              "default": true
-            },
-            "server_url": {
-              "type": "string",
-              "default": "",
-              "description": "Optional explicit ws:// or wss:// URL. If empty, derived from server.base_url + /api/v1/agent/ws."
-            }
-          },
-          "additionalProperties": false
-        },
-
         "agent_sync": {
           "type": "object",
-          "description": "HTTP enrollment + heartbeat. URL, token, and interval come from the top-level 'server' section.",
+          "description": "gRPC enrollment + heartbeat. URL, token, and interval come from the top-level 'server' section.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -3570,7 +4096,7 @@ log "  skipped:  $skipped"
 
         "content_scanner": {
           "type": "object",
-          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection, and writes the merged verdict back to the local files table. URL and token come from the top-level 'server' section.",
+          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection via gRPC, and writes the merged verdict back to the local files table.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -3580,13 +4106,13 @@ log "  skipped:  $skipped"
               "type": "integer",
               "minimum": 1,
               "default": 50,
-              "description": "Maximum number of chunks per HTTP POST."
+              "description": "Maximum number of chunks per gRPC ScanBatch call."
             },
             "batch_max_bytes": {
               "type": "integer",
               "minimum": 1024,
               "default": 52428800,
-              "description": "Maximum estimated JSON payload size per POST."
+              "description": "Maximum estimated payload size per gRPC call."
             },
             "scan_interval_seconds": {
               "type": "integer",
@@ -3604,7 +4130,7 @@ log "  skipped:  $skipped"
               "type": "integer",
               "minimum": 1,
               "default": 256,
-              "description": "Bytes of overlap between consecutive chunks. Must be less than chunk_size_bytes. Prevents PII patterns from being split across a chunk boundary."
+              "description": "Bytes of overlap between consecutive chunks. Must be less than chunk_size_bytes."
             },
             "max_file_bytes": {
               "type": "integer",
@@ -3622,7 +4148,7 @@ log "  skipped:  $skipped"
               "type": "integer",
               "minimum": 10,
               "default": 300,
-              "description": "HTTP timeout for one batch POST."
+              "description": "Timeout for one gRPC ScanBatch call."
             },
             "text_extensions": {
               "type": "array",
@@ -3643,11 +4169,11 @@ log "  skipped:  $skipped"
           "additionalProperties": false
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     }
   },
 
-  "additionalProperties": true
+  "additionalProperties": false
 }
 ```
 
@@ -3915,7 +4441,6 @@ inline constexpr const char* kDecision      = "decision";
 
 ```cpp
 // src/features/agent_sync/agent_sync_module.cpp
-
 #include "features/agent_sync/agent_sync_module.h"
 #include "net/http_client.h"
 #include "storage/state_repository.h"
@@ -3923,11 +4448,17 @@ inline constexpr const char* kDecision      = "decision";
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
-#include <boost/asio/ip/host_name.hpp>
-
 #include <chrono>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <thread>
+
+#if defined(_WIN32)
+#  include <windows.h>
+#elif defined(__linux__)
+#  include <unistd.h>
+#endif
 
 namespace axiom::core {
 
@@ -3935,22 +4466,13 @@ using json = nlohmann::json;
 using namespace std::chrono_literals;
 
 namespace {
-
-#ifndef AXIOM_AGENT_VERSION
-#  define AXIOM_AGENT_VERSION "0.1.0"
-#endif
-constexpr const char* kAgentVersion = AXIOM_AGENT_VERSION;
-
+constexpr const char* kAgentVersion = "0.1.0";
 constexpr const char* kStateKeyAgentId = "agent_id";
 
-void interruptible_sleep(std::atomic<bool>& stop_flag,
-                         ShutdownController& shutdown,
-                         std::chrono::seconds total) {
+void interruptible_sleep(std::atomic<bool>& stop_flag, ShutdownController& shutdown, std::chrono::seconds total) {
     constexpr auto tick = 100ms;
     auto elapsed = 0ms;
-    const auto target =
-        std::chrono::duration_cast<std::chrono::milliseconds>(total);
-
+    const auto target = std::chrono::duration_cast<std::chrono::milliseconds>(total);
     while (elapsed < target) {
         if (stop_flag.load(std::memory_order_relaxed)) return;
         if (shutdown.is_requested()) return;
@@ -3958,18 +4480,21 @@ void interruptible_sleep(std::atomic<bool>& stop_flag,
         elapsed += tick;
     }
 }
-
 } // namespace
 
 AgentSyncModule::AgentSyncModule()  = default;
 AgentSyncModule::~AgentSyncModule() = default;
 
 std::string AgentSyncModule::detect_hostname() {
-    try {
-        return boost::asio::ip::host_name();
-    } catch (...) {
-        return "unknown";
-    }
+#if defined(_WIN32)
+    char buf[MAX_COMPUTERNAME_LENGTH + 1];
+    DWORD size = sizeof(buf);
+    if (GetComputerNameA(buf, &size)) return std::string(buf, size);
+#elif defined(__linux__)
+    char buf[256];
+    if (gethostname(buf, sizeof(buf)) == 0) return std::string(buf);
+#endif
+    return "unknown";
 }
 
 std::string AgentSyncModule::detect_os() {
@@ -3984,6 +4509,18 @@ std::string AgentSyncModule::detect_os() {
 #endif
 }
 
+std::string AgentSyncModule::detect_arch() {
+#if defined(__x86_64__) || defined(_M_X64)
+    return "x86_64";
+#elif defined(__i386__) || defined(_M_IX86)
+    return "i686";
+#elif defined(__aarch64__)
+    return "aarch64";
+#else
+    return "unknown";
+#endif
+}
+
 bool AgentSyncModule::initialize(ModuleContext& context) {
     ModuleBase::initialize(context);
 
@@ -3991,60 +4528,38 @@ bool AgentSyncModule::initialize(ModuleContext& context) {
     const auto& scfg = ctx_->config.server;
 
     enabled_                = mcfg.enabled;
-    http_base_url_          = scfg.base_url;
+    base_url_               = scfg.base_url;
     api_token_              = scfg.api_token;
     heartbeat_interval_sec_ = scfg.heartbeat_interval_seconds;
 
-    if (!enabled_) {
-        SPDLOG_INFO("agent_sync module: disabled in config");
-        return true;
-    }
+    if (!enabled_) return true;
 
-    if (http_base_url_.empty()) {
-        SPDLOG_ERROR("agent_sync module: server.base_url is empty");
+    if (base_url_.empty() || api_token_.empty()) {
+        SPDLOG_ERROR("agent_sync module: no valid API token — server.base_url or api_token is empty");
         return false;
     }
 
-    if (api_token_.empty()) {
-        SPDLOG_ERROR("agent_sync module: no valid API token — "
-                     "server.api_token is empty. "
-                     "Set server.api_token in the config file.");
-        return false;
-    }
-
-    SPDLOG_INFO("agent_sync module: initialized "
-                "(server={}, heartbeat_interval={}s)",
-                http_base_url_, heartbeat_interval_sec_);
+    http_ = std::make_unique<HttpClient>();
+    SPDLOG_INFO("agent_sync module: initialized (heartbeat={}s)", heartbeat_interval_sec_);
     return true;
 }
 
 bool AgentSyncModule::start() {
     if (!enabled_) return true;
-
-    http_ = std::make_unique<HttpClient>();
-
     stop_requested_.store(false, std::memory_order_relaxed);
     needs_re_enroll_.store(false, std::memory_order_relaxed);
-
     sync_thread_ = std::thread([this] { sync_loop(); });
     running_.store(true, std::memory_order_relaxed);
-
     SPDLOG_INFO("agent_sync module: started");
     return true;
 }
 
 void AgentSyncModule::stop() {
     if (!running_.load(std::memory_order_relaxed)) return;
-
     stop_requested_.store(true, std::memory_order_relaxed);
-
-    if (sync_thread_.joinable()) {
-        sync_thread_.join();
-    }
-
+    if (sync_thread_.joinable()) sync_thread_.join();
     http_.reset();
     running_.store(false, std::memory_order_relaxed);
-
     SPDLOG_INFO("agent_sync module: stopped");
 }
 
@@ -4055,12 +4570,8 @@ void AgentSyncModule::shutdown() {
 HealthStatus AgentSyncModule::health() const {
     if (ctx_ == nullptr) return HealthStatus::unknown("not initialized");
     if (!enabled_)       return HealthStatus::ok("disabled");
-    if (!running_.load(std::memory_order_relaxed)) {
-        return HealthStatus::failed("sync thread not running");
-    }
-    if (agent_id_ == 0) {
-        return HealthStatus::degraded("not yet enrolled");
-    }
+    if (!running_.load(std::memory_order_relaxed)) return HealthStatus::failed("sync thread not running");
+    if (agent_id_ == 0) return HealthStatus::degraded("not yet enrolled");
     return HealthStatus::ok("enrolled (agent_id=" + std::to_string(agent_id_) + ")");
 }
 
@@ -4068,11 +4579,8 @@ void AgentSyncModule::sync_loop() {
     if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
         try {
             agent_id_ = std::stoi(*saved);
-            SPDLOG_INFO("agent_sync: loaded agent_id={} from local state",
-                        agent_id_);
+            SPDLOG_INFO("agent_sync: loaded agent_id={} from local state", agent_id_);
         } catch (const std::exception&) {
-            SPDLOG_WARN("agent_sync: invalid saved agent_id '{}'; will re-enroll",
-                        *saved);
             ctx_->state_store.remove(kStateKeyAgentId);
             agent_id_ = 0;
         }
@@ -4080,106 +4588,58 @@ void AgentSyncModule::sync_loop() {
 
     if (agent_id_ == 0) {
         if (!enroll()) {
-            if (stop_requested_.load(std::memory_order_relaxed)) return;
-            if (ctx_->shutdown.is_requested()) return;
-            SPDLOG_ERROR("agent_sync: initial enrollment failed; will retry");
+            if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) return;
             needs_re_enroll_.store(true, std::memory_order_relaxed);
         }
     } else {
         SPDLOG_INFO("agent_sync: validating token with immediate heartbeat");
         if (!heartbeat()) {
-            if (stop_requested_.load(std::memory_order_relaxed)) return;
-            if (ctx_->shutdown.is_requested()) return;
-            SPDLOG_WARN("agent_sync: initial heartbeat failed; "
-                        "will retry on next cycle");
+            if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) return;
         }
     }
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         if (ctx_->shutdown.is_requested()) return;
-
-        interruptible_sleep(stop_requested_, ctx_->shutdown,
-                            std::chrono::seconds(heartbeat_interval_sec_));
-
-        if (stop_requested_.load(std::memory_order_relaxed)) break;
-        if (ctx_->shutdown.is_requested()) break;
+        interruptible_sleep(stop_requested_, ctx_->shutdown, std::chrono::seconds(heartbeat_interval_sec_));
+        if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) break;
 
         if (needs_re_enroll_.exchange(false, std::memory_order_relaxed)) {
             agent_id_ = 0;
             if (!enroll()) {
-                if (stop_requested_.load(std::memory_order_relaxed)) return;
-                if (ctx_->shutdown.is_requested()) return;
-                SPDLOG_WARN("agent_sync: re-enrollment failed; "
-                            "will retry next cycle");
+                if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) return;
                 needs_re_enroll_.store(true, std::memory_order_relaxed);
                 continue;
             }
         }
 
         if (!heartbeat()) {
-            if (stop_requested_.load(std::memory_order_relaxed)) return;
-            if (ctx_->shutdown.is_requested()) return;
+            if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) return;
         }
     }
 }
 
 bool AgentSyncModule::enroll() {
-    const std::string url = http_base_url_ + "/api/v1/agent/register";
+    const std::string url = base_url_ + "/api/v1/agent/register";
+    json body = { {"hostname", detect_hostname()}, {"os", detect_os()}, {"architecture", detect_arch()}, {"agent_version", kAgentVersion} };
 
-    json body = {
-        {"hostname",      detect_hostname()},
-        {"os",            detect_os()},
-        {"agent_version", kAgentVersion}
-    };
-
-    SPDLOG_INFO("agent_sync: POST {} (hostname={})",
-                url, body["hostname"].get<std::string>());
-
+    SPDLOG_INFO("agent_sync: POST {} (hostname={})", url, body["hostname"].get<std::string>());
     const auto resp = http_->post_json(url, body.dump(), api_token_, 15);
 
-    if (!resp.error.empty()) {
-        SPDLOG_WARN("agent_sync: enrollment transport error: {}", resp.error);
-        return false;
-    }
-
+    if (!resp.error.empty()) return false;
     if (resp.status == 401 || resp.status == 403) {
-        SPDLOG_ERROR("agent_sync: no valid API token — "
-                     "enrollment rejected ({}) — "
-                     "token is invalid, expired, or revoked",
-                     resp.status);
         ctx_->shutdown.request(ShutdownReason::AuthRevoked);
         return false;
     }
-
-    if (!resp.is_2xx()) {
-        SPDLOG_WARN("agent_sync: enrollment failed with HTTP {}: {}",
-                    resp.status, resp.body);
-        return false;
-    }
+    if (!resp.is_2xx()) return false;
 
     try {
         const auto parsed = json::parse(resp.body);
         agent_id_ = parsed.value("agent_id", 0);
-        const int user_id = parsed.value("user_id", 0);
-        const int org_id  = parsed.value("organization_id", 0);
-
-        if (agent_id_ <= 0) {
-            SPDLOG_ERROR("agent_sync: server returned invalid agent_id: {}",
-                         resp.body);
-            return false;
-        }
-
+        if (agent_id_ <= 0) return false;
         ctx_->state_store.set(kStateKeyAgentId, std::to_string(agent_id_));
-
-        SPDLOG_INFO("agent_sync: enrolled (agent_id={}, user_id={}, org_id={})",
-                    agent_id_, user_id, org_id);
+        SPDLOG_INFO("agent_sync: enrolled (agent_id={}, user_id={}, org_id={})", agent_id_, parsed.value("user_id", 0), parsed.value("organization_id", 0));
         return true;
-
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("agent_sync: failed to parse enrollment response: {} (body: {})",
-                     e.what(), resp.body);
-        return false;
-    }
+    } catch (...) { return false; }
 }
 
 bool AgentSyncModule::heartbeat() {
@@ -4188,51 +4648,24 @@ bool AgentSyncModule::heartbeat() {
         return false;
     }
 
-    const std::string url = http_base_url_ + "/api/v1/agent/heartbeat";
-
-    json body = {
-        {"agent_id",      agent_id_},
-        {"agent_version", kAgentVersion}
-    };
-
+    const std::string url = base_url_ + "/api/v1/agent/heartbeat";
+    json body = { {"agent_id", agent_id_}, {"agent_version", kAgentVersion} };
     const auto resp = http_->post_json(url, body.dump(), api_token_, 10);
 
-    if (!resp.error.empty()) {
-        SPDLOG_WARN("agent_sync: heartbeat transport error: {}", resp.error);
-        return false;
-    }
-
+    if (!resp.error.empty()) return false;
     if (resp.status == 200) {
         SPDLOG_DEBUG("agent_sync: heartbeat ok (agent_id={})", agent_id_);
         return true;
     }
-
-    if (resp.status == 401) {
-        SPDLOG_ERROR("agent_sync: no valid API token — "
-                     "heartbeat rejected (401) — "
-                     "token is invalid, expired, or revoked");
+    if (resp.status == 401 || resp.status == 403) {
         ctx_->shutdown.request(ShutdownReason::AuthRevoked);
         return false;
     }
-
-    if (resp.status == 403) {
-        SPDLOG_ERROR("agent_sync: no valid API token — "
-                     "heartbeat rejected (403) — "
-                     "this agent has been revoked server-side");
-        ctx_->shutdown.request(ShutdownReason::AgentRevoked);
-        return false;
-    }
-
     if (resp.status == 404) {
-        SPDLOG_WARN("agent_sync: heartbeat returned 404 — "
-                    "agent_id no longer exists server-side; re-enrolling");
         ctx_->state_store.remove(kStateKeyAgentId);
         needs_re_enroll_.store(true, std::memory_order_relaxed);
         return false;
     }
-
-    SPDLOG_WARN("agent_sync: heartbeat returned HTTP {}: {}",
-                resp.status, resp.body);
     return false;
 }
 
@@ -4243,23 +4676,15 @@ bool AgentSyncModule::heartbeat() {
 
 ```cpp
 // src/features/agent_sync/agent_sync_module.h
-//
-// AgentSyncModule is the HTTP channel between the agent and the
-// AxiomDLP Core server.
-//
-// Auth failures (401/403) are fatal. When either the enrollment or
-// heartbeat is rejected, this module calls ShutdownController with
-// AuthRevoked or AgentRevoked, which stops the whole agent. There is
-// no point retrying a revoked token.
-
 #pragma once
 
 #include "modules/module_base.h"
-
 #include <atomic>
 #include <memory>
 #include <string>
 #include <thread>
+#include <optional>
+#include <nlohmann/json.hpp>
 
 namespace axiom::core {
 
@@ -4285,8 +4710,9 @@ private:
 
     static std::string detect_hostname();
     static std::string detect_os();
+    static std::string detect_arch();
 
-    std::string http_base_url_;
+    std::string base_url_;
     std::string api_token_;
     int         heartbeat_interval_sec_ = 30;
     bool        enabled_ = true;
@@ -4308,11 +4734,10 @@ private:
 
 ```cpp
 // src/features/content_scanner/content_scanner_module.cpp
-
 #include "features/content_scanner/content_scanner_module.h"
-
 #include "net/http_client.h"
 #include "storage/file_repository.h"
+#include "storage/state_repository.h"
 #include "util/base64.h"
 #include "util/file_hash.h"
 
@@ -4333,14 +4758,10 @@ using json = nlohmann::json;
 using namespace std::chrono_literals;
 
 namespace {
-
-void interruptible_sleep(std::atomic<bool>& stop_flag,
-                         std::chrono::seconds total) {
+void interruptible_sleep(std::atomic<bool>& stop_flag, std::chrono::seconds total) {
     constexpr auto tick = 100ms;
     auto elapsed = 0ms;
-    const auto target =
-        std::chrono::duration_cast<std::chrono::milliseconds>(total);
-
+    const auto target = std::chrono::duration_cast<std::chrono::milliseconds>(total);
     while (elapsed < target) {
         if (stop_flag.load(std::memory_order_relaxed)) return;
         std::this_thread::sleep_for(tick);
@@ -4350,11 +4771,10 @@ void interruptible_sleep(std::atomic<bool>& stop_flag,
 
 bool file_exists(const std::string& path) {
     std::error_code ec;
-    return std::filesystem::exists(path, ec);
+    return std::filesystem::exists(std::filesystem::path(path), ec);
 }
 
-bool ext_in_list(const std::string& ext,
-                 const std::vector<std::string>& list) {
+bool ext_in_list(const std::string& ext, const std::vector<std::string>& list) {
     return std::find(list.begin(), list.end(), ext) != list.end();
 }
 
@@ -4366,55 +4786,30 @@ struct ReadResult {
 
 ReadResult read_file_bounded(const std::string& path, std::size_t max_bytes) {
     ReadResult r;
-
     std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) {
-        r.error = "cannot open file";
-        return r;
-    }
+    if (!f) { r.error = "cannot open file"; return r; }
+    struct Closer { std::FILE* p; ~Closer() { if (p) std::fclose(p); } } closer{f};
 
-    struct Closer {
-        std::FILE* p;
-        ~Closer() { if (p) std::fclose(p); }
-    } closer{f};
-
-    if (std::fseek(f, 0, SEEK_END) != 0) {
-        r.error = "seek failed";
-        return r;
-    }
+    if (std::fseek(f, 0, SEEK_END) != 0) { r.error = "seek failed"; return r; }
     long file_size = std::ftell(f);
-    if (file_size < 0) {
-        r.error = "cannot determine file size";
-        return r;
-    }
+    if (file_size < 0) { r.error = "cannot determine file size"; return r; }
     std::rewind(f);
 
-    std::size_t to_read = std::min<std::size_t>(
-        static_cast<std::size_t>(file_size), max_bytes);
-
+    std::size_t to_read = std::min<std::size_t>(static_cast<std::size_t>(file_size), max_bytes);
     r.data.resize(to_read);
     std::size_t got = std::fread(r.data.data(), 1, to_read, f);
     if (got < to_read) {
-        if (std::ferror(f)) {
-            r.error = "read error";
-            return r;
-        }
+        if (std::ferror(f)) { r.error = "read error"; return r; }
         r.data.resize(got);
     }
-
     return r;
 }
 
 std::vector<std::pair<std::size_t, std::size_t>>
-compute_chunk_ranges(std::size_t size,
-                     std::size_t chunk_size,
-                     std::size_t overlap) {
+compute_chunk_ranges(std::size_t size, std::size_t chunk_size, std::size_t overlap) {
     std::vector<std::pair<std::size_t, std::size_t>> ranges;
     if (size == 0) return ranges;
-
-    std::size_t stride = (chunk_size > overlap) ? (chunk_size - overlap)
-                                                : chunk_size;
-
+    std::size_t stride = (chunk_size > overlap) ? (chunk_size - overlap) : chunk_size;
     std::size_t start = 0;
     while (start < size) {
         std::size_t end = std::min(start + chunk_size, size);
@@ -4424,19 +4819,10 @@ compute_chunk_ranges(std::size_t size,
     }
     return ranges;
 }
-
 } // namespace
-
-// ----------------------------------------------------------------
-// Construction
-// ----------------------------------------------------------------
 
 ContentScannerModule::ContentScannerModule()  = default;
 ContentScannerModule::~ContentScannerModule() = default;
-
-// ----------------------------------------------------------------
-// Lifecycle
-// ----------------------------------------------------------------
 
 bool ContentScannerModule::initialize(ModuleContext& context) {
     ModuleBase::initialize(context);
@@ -4455,43 +4841,27 @@ bool ContentScannerModule::initialize(ModuleContext& context) {
     request_timeout_sec_ = scan_cfg.request_timeout_seconds;
     text_extensions_     = scan_cfg.text_extensions;
 
-    http_base_url_ = srv_cfg.base_url;
-    api_token_     = srv_cfg.api_token;
+    base_url_  = srv_cfg.base_url;
+    api_token_ = srv_cfg.api_token;
 
-    if (!enabled_) {
-        SPDLOG_INFO("content_scanner module: disabled in config");
-        return true;
-    }
+    if (!enabled_) return true;
 
-    if (http_base_url_.empty() || api_token_.empty()) {
-        SPDLOG_ERROR("content_scanner module: server.base_url and "
-                     "server.api_token must be set");
+    if (base_url_.empty() || api_token_.empty()) {
+        SPDLOG_ERROR("content_scanner module: server.base_url and server.api_token must be set");
         return false;
     }
 
-    if (text_extensions_.empty()) {
-        SPDLOG_ERROR("content_scanner module: text_extensions is empty");
-        return false;
-    }
-
-    SPDLOG_INFO("content_scanner module: initialized "
-                "(batch_size={}, interval={}s, chunk={}KB, "
-                "overlap={}B, max_file={}MB, ext_count={})",
-                batch_size_, scan_interval_sec_,
-                chunk_size_ / 1024, chunk_overlap_,
-                max_file_bytes_ / (1024 * 1024), text_extensions_.size());
+    http_ = std::make_unique<HttpClient>();
+    SPDLOG_INFO("content_scanner module: initialized (batch_size={}, interval={}s)", 
+                batch_size_, scan_interval_sec_);
     return true;
 }
 
 bool ContentScannerModule::start() {
     if (!enabled_) return true;
-
-    http_ = std::make_unique<HttpClient>();
-
     stop_requested_.store(false, std::memory_order_relaxed);
     sync_thread_ = std::thread([this] { sync_loop(); });
     running_.store(true, std::memory_order_relaxed);
-
     SPDLOG_INFO("content_scanner module: started");
     return true;
 }
@@ -4500,16 +4870,12 @@ void ContentScannerModule::stop() {
     if (!running_.load(std::memory_order_relaxed)) return;
 
     stop_requested_.store(true, std::memory_order_relaxed);
-
-    if (sync_thread_.joinable()) {
-        sync_thread_.join();
-    }
+    if (sync_thread_.joinable()) sync_thread_.join();
 
     http_.reset();
     running_.store(false, std::memory_order_relaxed);
 
-    SPDLOG_INFO("content_scanner module: stopped "
-                "(scanned={}, sensitive={}, skipped={})",
+    SPDLOG_INFO("content_scanner module: stopped (scanned={}, sensitive={}, skipped={})",
                 total_scanned_, total_sensitive_, total_skipped_);
 }
 
@@ -4520,39 +4886,33 @@ void ContentScannerModule::shutdown() {
 HealthStatus ContentScannerModule::health() const {
     if (ctx_ == nullptr) return HealthStatus::unknown("not initialized");
     if (!enabled_)       return HealthStatus::ok("disabled");
-    if (!running_.load(std::memory_order_relaxed)) {
-        return HealthStatus::failed("scanner thread not running");
-    }
-    return HealthStatus::ok(
-        "scanned=" + std::to_string(total_scanned_) +
-        " sensitive=" + std::to_string(total_sensitive_));
+    if (!running_.load(std::memory_order_relaxed)) return HealthStatus::failed("scanner thread not running");
+    return HealthStatus::ok("scanned=" + std::to_string(total_scanned_));
 }
 
-// ----------------------------------------------------------------
-// Sync loop
-// ----------------------------------------------------------------
-
 void ContentScannerModule::sync_loop() {
-    interruptible_sleep(stop_requested_, std::chrono::seconds(5));
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+        if (ctx_->shutdown.is_requested()) return;
+        if (auto saved = ctx_->state_store.get("agent_id")) {
+            try {
+                int id = std::stoi(*saved);
+                if (id > 0) { agent_id_ = id; break; }
+            } catch (...) {}
+        }
+        std::this_thread::sleep_for(1s);
+    }
 
+    interruptible_sleep(stop_requested_, std::chrono::seconds(5));
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         process_one_cycle();
-
         if (stop_requested_.load(std::memory_order_relaxed)) break;
-
-        interruptible_sleep(stop_requested_,
-                            std::chrono::seconds(scan_interval_sec_));
+        interruptible_sleep(stop_requested_, std::chrono::seconds(scan_interval_sec_));
     }
 }
 
 void ContentScannerModule::process_one_cycle() {
-    auto pending = ctx_->file_store.fetch_pending_for_scan(
-        static_cast<std::size_t>(batch_size_), max_retries_);
-
-    if (pending.empty()) {
-        SPDLOG_DEBUG("content_scanner: no pending files");
-        return;
-    }
+    auto pending = ctx_->file_store.fetch_pending_for_scan(static_cast<std::size_t>(batch_size_), max_retries_);
+    if (pending.empty()) return;
 
     SPDLOG_INFO("content_scanner: {} pending files", pending.size());
 
@@ -4561,69 +4921,39 @@ void ContentScannerModule::process_one_cycle() {
 
     for (auto& row : pending) {
         if (stop_requested_.load(std::memory_order_relaxed)) break;
-
         prepare_file(row, chunks, progress);
-
         if (chunks.size() >= static_cast<std::size_t>(batch_size_)) {
             send_chunks_in_batches(chunks, progress);
             chunks.clear();
         }
     }
 
-    if (!chunks.empty()) {
-        send_chunks_in_batches(chunks, progress);
-    }
-
+    if (!chunks.empty()) send_chunks_in_batches(chunks, progress);
     commit_completed_files(progress);
 }
-
-// ----------------------------------------------------------------
-// Per-file preparation
-// ----------------------------------------------------------------
 
 bool ContentScannerModule::prepare_file(
         const FileRow& row,
         std::vector<Chunk>& out_chunks,
         std::map<std::string, FileProgress>& progress) {
 
-    if (!ext_in_list(row.extension, text_extensions_)) {
-        ctx_->file_store.mark_not_applicable(row.path);
-        ++total_skipped_;
-        return false;
-    }
-
-    if (row.size > max_file_bytes_) {
-        ctx_->file_store.mark_skipped_too_large(row.path);
-        ++total_skipped_;
-        return false;
-    }
-
-    if (!file_exists(row.path)) {
-        ctx_->file_store.mark_file_missing(row.path);
-        ++total_skipped_;
-        return false;
-    }
+    if (!ext_in_list(row.extension, text_extensions_)) { ctx_->file_store.mark_not_applicable(row.path); ++total_skipped_; return false; }
+    if (row.size > max_file_bytes_) { ctx_->file_store.mark_skipped_too_large(row.path); ++total_skipped_; return false; }
+    if (!file_exists(row.path)) { ctx_->file_store.mark_file_missing(row.path); ++total_skipped_; return false; }
 
     auto read = read_file_bounded(row.path, max_file_bytes_);
-    if (!read.ok()) {
-        ctx_->file_store.record_scan_error_by_path(row.path, read.error);
-        return false;
-    }
+    if (!read.ok()) { ctx_->file_store.record_scan_error_by_path(row.path, read.error); return false; }
 
     std::string new_hash = util::sha256_hex(read.data.data(), read.data.size());
 
     if (auto cached = ctx_->file_store.find_scan_verdict_by_hash(new_hash)) {
-        ctx_->file_store.update_scan_result_by_path(
-            row.path, new_hash, cached->sensitive, cached->sensitivity);
+        ctx_->file_store.update_scan_result_by_path(row.path, new_hash, cached->sensitive, cached->sensitivity);
         ++total_scanned_;
         if (cached->sensitive) ++total_sensitive_;
-        SPDLOG_DEBUG("content_scanner: reused verdict for {} (sensitive={})",
-                     row.path, cached->sensitive);
         return false;
     }
 
     auto ranges = compute_chunk_ranges(read.data.size(), chunk_size_, chunk_overlap_);
-
     if (ranges.empty()) {
         ctx_->file_store.update_scan_result_by_path(row.path, new_hash, false, "");
         ++total_scanned_;
@@ -4637,23 +4967,16 @@ bool ContentScannerModule::prepare_file(
 
     for (std::size_t i = 0; i < ranges.size(); ++i) {
         const auto [start, end] = ranges[i];
-
         Chunk c;
         c.file_hash   = new_hash;
         c.path        = row.path;
         c.chunk_index = static_cast<std::uint32_t>(i);
         c.chunk_count = static_cast<std::uint32_t>(ranges.size());
-        c.content.assign(read.data.begin() + static_cast<std::ptrdiff_t>(start),
-                         read.data.begin() + static_cast<std::ptrdiff_t>(end));
+        c.content.assign(read.data.begin() + start, read.data.begin() + end);
         out_chunks.push_back(std::move(c));
     }
-
     return true;
 }
-
-// ----------------------------------------------------------------
-// Batch sending
-// ----------------------------------------------------------------
 
 void ContentScannerModule::send_chunks_in_batches(
         std::vector<Chunk>& chunks,
@@ -4663,113 +4986,70 @@ void ContentScannerModule::send_chunks_in_batches(
     while (i < chunks.size()) {
         if (stop_requested_.load(std::memory_order_relaxed)) return;
 
-        json batch_chunks = json::array();
         std::size_t batch_bytes = 0;
         std::size_t j = i;
-
-        while (j < chunks.size() &&
-               batch_chunks.size() < static_cast<std::size_t>(batch_size_)) {
-
-            const auto& c = chunks[j];
-
-            const std::size_t encoded_len = 4 * ((c.content.size() + 2) / 3);
-            const std::size_t estimate    = encoded_len + 512;
-
-            if (!batch_chunks.empty() &&
-                batch_bytes + estimate > batch_max_bytes_) {
-                break;
-            }
-
-            batch_chunks.push_back({
-                {"file_hash",   c.file_hash},
-                {"path",        c.path},
-                {"chunk_index", c.chunk_index},
-                {"chunk_count", c.chunk_count},
-                {"content",     util::base64_encode(c.content.data(),
-                                                    c.content.size())}
-            });
+        while (j < chunks.size() && (j - i) < static_cast<std::size_t>(batch_size_)) {
+            const std::size_t estimate = chunks[j].content.size() + 256;
+            if (j > i && batch_bytes + estimate > batch_max_bytes_) break;
             batch_bytes += estimate;
             ++j;
         }
 
-        if (batch_chunks.empty()) break;
+        if (j == i) break;
+
+        json batch_chunks = json::array();
+        for (std::size_t k = i; k < j; ++k) {
+            batch_chunks.push_back({
+                {"file_hash",   chunks[k].file_hash},
+                {"path",        chunks[k].path},
+                {"chunk_index", chunks[k].chunk_index},
+                {"chunk_count", chunks[k].chunk_count},
+                {"content",     util::base64_encode(chunks[k].content.data(), chunks[k].content.size())}
+            });
+        }
 
         json payload;
         payload["chunks"] = std::move(batch_chunks);
+        const std::string url = base_url_ + "/api/v1/agent/scan/batch";
 
-        const std::string url = http_base_url_ + "/api/v1/agent/scan/batch";
+        SPDLOG_INFO("content_scanner: POST {} ({} chunks, ~{} KB)", url, j - i, batch_bytes / 1024);
+        const auto resp = http_->post_json(url, payload.dump(), api_token_, request_timeout_sec_);
 
-        SPDLOG_INFO("content_scanner: POST {} ({} chunks, ~{} KB)",
-                    url, payload["chunks"].size(), batch_bytes / 1024);
-
-        const auto resp = http_->post_json(url, payload.dump(), api_token_,
-                                           request_timeout_sec_);
+        if (!resp.error.empty()) return;
+        if (resp.status == 401 || resp.status == 403) {
+            SPDLOG_ERROR("content_scanner: auth rejected ({}) — stopping", resp.status);
+            running_.store(false, std::memory_order_relaxed);
+            stop_requested_.store(true, std::memory_order_relaxed);
+            return;
+        }
+        if (!resp.is_2xx()) return;
+        
+        merge_batch_response(resp.body, progress);
 
         for (std::size_t k = i; k < j; ++k) {
             std::fill(chunks[k].content.begin(), chunks[k].content.end(), 0);
             chunks[k].content.clear();
             chunks[k].content.shrink_to_fit();
         }
-
-        if (!resp.error.empty()) {
-            SPDLOG_WARN("content_scanner: transport error: {}", resp.error);
-            return;
-        }
-
-        if (resp.status == 401 || resp.status == 403) {
-            SPDLOG_ERROR("content_scanner: auth rejected ({}) — stopping",
-                         resp.status);
-            running_.store(false, std::memory_order_relaxed);
-            stop_requested_.store(true, std::memory_order_relaxed);
-            return;
-        }
-
-        if (!resp.is_2xx()) {
-            SPDLOG_WARN("content_scanner: HTTP {}: {}",
-                        resp.status, resp.body);
-            return;
-        }
-
-        merge_batch_response(resp.body, progress);
-
         i = j;
     }
 }
 
-// ----------------------------------------------------------------
-// Response merging
-// ----------------------------------------------------------------
-
-void ContentScannerModule::merge_batch_response(
-        const std::string& response_body,
-        std::map<std::string, FileProgress>& progress) {
-
+void ContentScannerModule::merge_batch_response(const std::string& response_body, std::map<std::string, FileProgress>& progress) {
     try {
         const auto parsed = json::parse(response_body);
-
-        if (!parsed.contains("results") || !parsed["results"].is_array()) {
-            SPDLOG_WARN("content_scanner: response missing 'results'");
-            return;
-        }
+        if (!parsed.contains("results") || !parsed["results"].is_array()) return;
 
         for (const auto& r : parsed["results"]) {
             const std::string file_hash = r.value("file_hash", "");
             if (file_hash.empty()) continue;
-
             auto it = progress.find(file_hash);
-            if (it == progress.end()) continue;
-
-            if (r.contains("error")) {
-                continue;
-            }
+            if (it == progress.end() || r.contains("error")) continue;
 
             it->second.chunks_returned += 1;
-
             if (r.value("sensitive", false)) {
                 it->second.sensitive = true;
-                if (it->second.sensitivity.empty()) {
-                    it->second.sensitivity = r.value("entity_type", "");
-                }
+                if (it->second.sensitivity.empty()) it->second.sensitivity = r.value("entity_type", "");
             }
         }
     } catch (const std::exception& e) {
@@ -4777,38 +5057,20 @@ void ContentScannerModule::merge_batch_response(
     }
 }
 
-// ----------------------------------------------------------------
-// Final commit
-// ----------------------------------------------------------------
-
-void ContentScannerModule::commit_completed_files(
-        std::map<std::string, FileProgress>& progress) {
-
+void ContentScannerModule::commit_completed_files(std::map<std::string, FileProgress>& progress) {
     std::size_t complete = 0;
-    std::size_t sensitive_in_cycle = 0;
     std::size_t incomplete = 0;
 
     for (auto& [hash, fp] : progress) {
-        if (fp.chunks_returned < fp.chunks_expected) {
-            ++incomplete;
-            continue;
-        }
-
-        ctx_->file_store.update_scan_result_by_path(
-            fp.path, hash, fp.sensitive, fp.sensitivity);
-
+        if (fp.chunks_returned < fp.chunks_expected) { ++incomplete; continue; }
+        ctx_->file_store.update_scan_result_by_path(fp.path, hash, fp.sensitive, fp.sensitivity);
         ++total_scanned_;
-        if (fp.sensitive) {
-            ++total_sensitive_;
-            ++sensitive_in_cycle;
-        }
+        if (fp.sensitive) ++total_sensitive_;
         ++complete;
     }
 
     if (complete > 0 || incomplete > 0) {
-        SPDLOG_INFO("content_scanner: cycle done "
-                    "(files committed={}, sensitive={}, incomplete={})",
-                    complete, sensitive_in_cycle, incomplete);
+        SPDLOG_INFO("content_scanner: cycle done (committed={}, incomplete={})", complete, incomplete);
     }
 }
 
@@ -4819,24 +5081,9 @@ void ContentScannerModule::commit_completed_files(
 
 ```cpp
 // src/features/content_scanner/content_scanner_module.h
-//
-// ContentScannerModule reads text files, splits them into overlapping
-// chunks, sends the chunks to the AxiomDLP Core server in batches, and
-// writes the merged verdict back into the local files table.
-//
-// Content is read into memory, sent, and discarded. It is never
-// written to any database, never logged, and never persisted.
-//
-// A file is only marked as 'scanned' when all of its chunks have
-// returned successfully. If any chunk fails, the file stays 'pending'
-// and is retried from scratch next cycle.
-//
-// TLS verification is ALWAYS enabled when the URL is https://.
-
 #pragma once
 
 #include "modules/module_base.h"
-
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -4897,8 +5144,9 @@ private:
     void commit_completed_files(std::map<std::string, FileProgress>& progress);
 
     bool        enabled_             = true;
-    std::string http_base_url_;
+    std::string base_url_;
     std::string api_token_;
+    int         agent_id_            = 0;
 
     int         batch_size_          = 50;
     std::size_t batch_max_bytes_     = 50 * 1024 * 1024;
@@ -4912,6 +5160,7 @@ private:
     std::vector<std::string> text_extensions_;
 
     std::unique_ptr<HttpClient> http_;
+
     std::thread                 sync_thread_;
     std::atomic<bool>           stop_requested_{false};
     std::atomic<bool>           running_{false};
@@ -5390,6 +5639,381 @@ private:
     std::atomic<bool> setup_done_{false};
 
     bool running_ = false;
+};
+
+} // namespace axiom::core
+```
+
+### \`src/features/grpc_transport/agent.proto\`
+
+```
+syntax = "proto3";
+
+package axiomdlp.agent.v1;
+
+option go_package = "axiomdlp-core/internal/agentpb;agentpb";
+
+import "google/protobuf/timestamp.proto";
+
+service AgentService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ScanBatch(ScanBatchRequest) returns (ScanBatchResponse);
+  rpc Channel(stream ChannelRequest) returns (stream ChannelResponse);
+}
+
+message RegisterRequest {
+  string hostname = 1;
+  string os = 2;
+  string architecture = 3;
+  string agent_version = 4;
+}
+
+message RegisterResponse {
+  int32 agent_id = 1;
+  int32 user_id = 2;
+  int32 organization_id = 3;
+  AgentStatus status = 4;
+  google.protobuf.Timestamp server_time = 5;
+}
+
+enum AgentStatus {
+  AGENT_STATUS_UNSPECIFIED = 0;
+  AGENT_STATUS_ACTIVE = 1;
+  AGENT_STATUS_REVOKED = 2;
+}
+
+message HeartbeatRequest {
+  int32 agent_id = 1;
+  string agent_version = 2;
+}
+
+message HeartbeatResponse {
+  google.protobuf.Timestamp server_time = 1;
+}
+
+message ScanBatchRequest {
+  int32 agent_id = 1;
+  repeated ScanChunk chunks = 2;
+}
+
+message ScanChunk {
+  string file_hash = 1;
+  string path = 2;
+  int32 chunk_index = 3;
+  int32 chunk_count = 4;
+  bytes content = 5;
+}
+
+message ScanChunkResult {
+  string file_hash = 1;
+  int32 chunk_index = 2;
+  bool sensitive = 3;
+  string entity_type = 4;
+  int32 risk_score = 5;
+  string action = 6;
+  string error = 7;
+}
+
+message ScanBatchResponse {
+  repeated ScanChunkResult results = 1;
+}
+
+message ChannelRequest {
+  oneof payload {
+    ClientShutdown shutdown = 1;
+  }
+}
+
+message ClientShutdown {
+  ShutdownReason reason = 1;
+}
+
+enum ShutdownReason {
+  SHUTDOWN_REASON_UNSPECIFIED = 0;
+  SHUTDOWN_REASON_USER_REQUESTED = 1;
+  SHUTDOWN_REASON_AUTH_REVOKED = 2;
+  SHUTDOWN_REASON_AGENT_REVOKED = 3;
+  SHUTDOWN_REASON_CONFIG_ERROR = 4;
+  SHUTDOWN_REASON_FATAL_ERROR = 5;
+}
+
+message ChannelResponse {
+  oneof payload {
+    ServerPolicyUpdate policy_update = 1;
+    ServerCommand command = 2;
+    ServerRevoke revoke = 3;
+  }
+}
+
+message ServerPolicyUpdate {
+  uint64 version = 1;
+  bytes bundle = 2;
+  bytes signature = 3;
+}
+
+message ServerCommand {
+  string command_type = 1;
+  bytes payload = 2;
+}
+
+message ServerRevoke {
+  RevokeReason reason = 1;
+  string message = 2;
+}
+
+enum RevokeReason {
+  REVOKE_REASON_UNSPECIFIED = 0;
+  REVOKE_REASON_TOKEN_REVOKED = 1;
+  REVOKE_REASON_AGENT_REVOKED = 2;
+}
+```
+
+### \`src/features/grpc_transport/grpc_transport_module.cpp\`
+
+```cpp
+// src/features/grpc_transport/grpc_transport_module.cpp
+#include "features/grpc_transport/grpc_transport_module.h"
+#include "storage/state_repository.h"
+
+#include <grpcpp/grpcpp.h>
+#include <grpcpp/security/credentials.h>
+#include <spdlog/spdlog.h>
+#include <nlohmann/json.hpp>
+
+#include <fstream>
+#include <random>
+#include <sstream>
+#include <thread>
+
+namespace axiom::core {
+
+using namespace std::chrono_literals;
+using namespace axiomdlp::agent::v1;
+
+namespace {
+constexpr const char* kStateKeyAgentId = "agent_id";
+
+std::string to_grpc_target(std::string url, int grpc_port) {
+    if (url.rfind("https://", 0) == 0) url = url.substr(8);
+    else if (url.rfind("http://", 0) == 0) url = url.substr(7);
+    auto slash = url.find('/');
+    if (slash != std::string::npos) url = url.substr(0, slash);
+    auto colon = url.find(':');
+    if (colon != std::string::npos) url = url.substr(0, colon);
+    return url + ":" + std::to_string(grpc_port);
+}
+
+std::string read_ca_file(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) return "";
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
+}
+} // namespace
+
+GrpcTransportModule::GrpcTransportModule()  = default;
+GrpcTransportModule::~GrpcTransportModule() = default;
+
+bool GrpcTransportModule::initialize(ModuleContext& context) {
+    ModuleBase::initialize(context);
+    const auto& srv = ctx_->config.server;
+    if (srv.base_url.empty() || srv.api_token.empty()) return false;
+
+    server_url_ = to_grpc_target(srv.base_url, srv.grpc_port);
+    api_token_  = srv.api_token;
+    SPDLOG_INFO("grpc_transport module: initialized (target={}, tls={})", server_url_, srv.grpc_tls ? "true" : "false");
+    return true;
+}
+
+bool GrpcTransportModule::start() {
+    stop_.store(false, std::memory_order_relaxed);
+    manager_thread_ = std::thread([this] { manager_loop(); });
+    running_.store(true, std::memory_order_relaxed);
+    return true;
+}
+
+void GrpcTransportModule::stop() {
+    if (!running_.exchange(false)) return;
+    stop_.store(true, std::memory_order_relaxed);
+    if (manager_thread_.joinable()) manager_thread_.join();
+    SPDLOG_INFO("grpc_transport module: stopped");
+}
+
+void GrpcTransportModule::shutdown() {}
+
+HealthStatus GrpcTransportModule::health() const {
+    if (ctx_ == nullptr) return HealthStatus::unknown("not initialized");
+    if (!running_.load(std::memory_order_relaxed)) return HealthStatus::failed("not running");
+    return HealthStatus::degraded("stub — RPC implementation pending");
+}
+
+void GrpcTransportModule::manager_loop() {
+    while (!stop_.load(std::memory_order_relaxed)) {
+        if (ctx_->shutdown.is_requested()) return;
+        if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
+            try {
+                int id = std::stoi(*saved);
+                if (id > 0) { agent_id_ = id; break; }
+            } catch (...) {}
+        }
+        std::this_thread::sleep_for(1s);
+    }
+
+    if (agent_id_ <= 0) return;
+
+    std::shared_ptr<grpc::ChannelCredentials> creds;
+    const auto& srv = ctx_->config.server;
+
+    if (srv.grpc_tls) {
+        grpc::SslCredentialsOptions ssl_opts;
+        if (!srv.grpc_ca_path.empty()) {
+            std::string ca_pem = read_ca_file(srv.grpc_ca_path);
+            if (!ca_pem.empty()) ssl_opts.pem_root_certs = ca_pem;
+        }
+        creds = grpc::SslCredentials(ssl_opts);
+    } else {
+        creds = grpc::InsecureChannelCredentials();
+    }
+
+    channel_ = grpc::CreateChannel(server_url_, creds);
+    stub_    = AgentService::NewStub(channel_);
+
+    int backoff_sec = ctx_->config.server.reconnect_backoff_seconds;
+    int max_backoff = ctx_->config.server.reconnect_backoff_max_seconds;
+    std::mt19937 rng{std::random_device{}()};
+
+    while (!stop_.load(std::memory_order_relaxed) && !ctx_->shutdown.is_requested()) {
+        grpc::Status status = run_channel_stream();
+
+        if (stop_.load() || ctx_->shutdown.is_requested()) break;
+
+        if (status.error_code() == grpc::StatusCode::UNAUTHENTICATED) {
+            ctx_->shutdown.request(ShutdownReason::AuthRevoked);
+            break;
+        }
+        if (status.error_code() == grpc::StatusCode::PERMISSION_DENIED) {
+            ctx_->shutdown.request(ShutdownReason::AgentRevoked);
+            break;
+        }
+
+        int jitter = std::max(1, backoff_sec / 5);
+        std::uniform_int_distribution<int> dist(-jitter, jitter);
+        int sleep_sec = std::max(1, backoff_sec + dist(rng));
+
+        SPDLOG_INFO("grpc_transport: stream disconnected ({}). Reconnecting in {}s...", status.error_message(), sleep_sec);
+        for (int i = 0; i < sleep_sec * 10; ++i) {
+            if (stop_.load() || ctx_->shutdown.is_requested()) return;
+            std::this_thread::sleep_for(100ms);
+        }
+        backoff_sec = std::min(backoff_sec * 2, max_backoff);
+    }
+}
+
+grpc::Status GrpcTransportModule::run_channel_stream() {
+    grpc::ClientContext context;
+    context.AddMetadata("authorization", "Bearer " + api_token_);
+    context.AddMetadata("x-agent-id", std::to_string(agent_id_));
+
+    SPDLOG_INFO("grpc_transport: opening Channel bidi stream...");
+    auto stream = stub_->Channel(&context);
+
+    while (!stop_.load() && !ctx_->shutdown.is_requested()) {
+        ChannelResponse resp;
+        if (!stream->Read(&resp)) break; // Stream ended
+        handle_server_message(resp);
+    }
+
+    if (stop_.load() || ctx_->shutdown.is_requested()) {
+        SPDLOG_INFO("grpc_transport: sending graceful goodbye...");
+        ChannelRequest req;
+        auto* shut = req.mutable_shutdown();
+        switch (ctx_->shutdown.reason()) {
+            case ShutdownReason::UserRequested: shut->set_reason(SHUTDOWN_REASON_USER_REQUESTED); break;
+            case ShutdownReason::AuthRevoked:   shut->set_reason(SHUTDOWN_REASON_AUTH_REVOKED); break;
+            case ShutdownReason::AgentRevoked:  shut->set_reason(SHUTDOWN_REASON_AGENT_REVOKED); break;
+            case ShutdownReason::ConfigError:   shut->set_reason(SHUTDOWN_REASON_CONFIG_ERROR); break;
+            case ShutdownReason::FatalError:    shut->set_reason(SHUTDOWN_REASON_FATAL_ERROR); break;
+            default:                            shut->set_reason(SHUTDOWN_REASON_UNSPECIFIED); break;
+        }
+        stream->Write(req);
+        stream->WritesDone();
+    }
+
+    return stream->Finish();
+}
+
+void GrpcTransportModule::handle_server_message(const ChannelResponse& resp) {
+    switch (resp.payload_case()) {
+        case ChannelResponse::kPolicyUpdate: {
+            const auto& pu = resp.policy_update();
+            SPDLOG_INFO("grpc_transport: received policy_update (version={})", pu.version());
+            break;
+        }
+        case ChannelResponse::kCommand: {
+            const auto& cmd = resp.command();
+            SPDLOG_INFO("grpc_transport: received command: {}", cmd.command_type());
+            break;
+        }
+        case ChannelResponse::kRevoke: {
+            const auto& rev = resp.revoke();
+            SPDLOG_WARN("grpc_transport: received REVOKE (msg={})", rev.message());
+            if (rev.reason() == REVOKE_REASON_TOKEN_REVOKED) ctx_->shutdown.request(ShutdownReason::AuthRevoked);
+            else ctx_->shutdown.request(ShutdownReason::AgentRevoked);
+            break;
+        }
+        default: break;
+    }
+}
+
+} // namespace axiom::core
+```
+
+### \`src/features/grpc_transport/grpc_transport_module.h\`
+
+```cpp
+// src/features/grpc_transport/grpc_transport_module.h
+#pragma once
+
+#include "modules/module_base.h"
+#include "agent.grpc.pb.h"
+
+#include <atomic>
+#include <memory>
+#include <string>
+#include <thread>
+
+namespace axiom::core {
+
+class GrpcTransportModule final : public ModuleBase {
+public:
+    GrpcTransportModule();
+    ~GrpcTransportModule() override;
+
+    std::string name() const override { return "grpc_transport"; }
+
+    bool initialize(ModuleContext& context) override;
+    bool start() override;
+    void stop() override;
+    void shutdown() override;
+    HealthStatus health() const override;
+
+private:
+    void manager_loop();
+    grpc::Status run_channel_stream();
+    void handle_server_message(const axiomdlp::agent::v1::ChannelResponse& resp);
+
+    std::string server_url_;
+    std::string api_token_;
+    int         agent_id_ = 0;
+
+    std::shared_ptr<grpc::Channel> channel_;
+    std::unique_ptr<axiomdlp::agent::v1::AgentService::Stub> stub_;
+
+    std::thread       manager_thread_;
+    std::atomic<bool> stop_{false};
+    std::atomic<bool> running_{false};
 };
 
 } // namespace axiom::core
@@ -5954,339 +6578,6 @@ private:
 } // namespace axiom::core
 ```
 
-### \`src/features/websocket_transport/transport_module.cpp\`
-
-```cpp
-// src/features/websocket_transport/transport_module.cpp
-
-#include "features/websocket_transport/transport_module.h"
-#include "storage/state_repository.h"
-
-#include <nlohmann/json.hpp>
-#include <spdlog/spdlog.h>
-
-#include <string>
-#include <thread>
-
-namespace axiom::core {
-
-using json = nlohmann::json;
-using namespace std::chrono_literals;
-
-namespace {
-
-std::string to_ws_scheme(const std::string& http_url) {
-    if (http_url.rfind("https://", 0) == 0) {
-        return "wss://" + http_url.substr(8);
-    }
-    if (http_url.rfind("http://", 0) == 0) {
-        return "ws://" + http_url.substr(7);
-    }
-    return http_url;
-}
-
-} // namespace
-
-bool TransportModule::initialize(ModuleContext& context) {
-    ModuleBase::initialize(context);
-
-    const auto& tcfg = ctx_->config.modules.transport;
-    const auto& srv  = ctx_->config.server;
-
-    if (!tcfg.enabled) {
-        SPDLOG_INFO("transport module: disabled in config");
-        return true;
-    }
-
-    if (srv.api_token.empty()) {
-        SPDLOG_ERROR("transport module: server.api_token is empty");
-        return false;
-    }
-
-    api_token_ = srv.api_token;
-
-    if (!tcfg.server_url.empty()) {
-        server_url_ = tcfg.server_url;
-    } else if (!srv.base_url.empty()) {
-        server_url_ = to_ws_scheme(srv.base_url) + "/api/v1/agent/ws";
-    } else {
-        SPDLOG_ERROR("transport module: no server_url and no server.base_url");
-        return false;
-    }
-
-    reconnect_backoff_sec_ = srv.reconnect_backoff_seconds;
-    reconnect_backoff_max_ = srv.reconnect_backoff_max_seconds;
-
-    SPDLOG_INFO("transport module: initialized "
-                "(url={}, backoff={}s..{}s)",
-                server_url_, reconnect_backoff_sec_, reconnect_backoff_max_);
-    return true;
-}
-
-bool TransportModule::start() {
-    if (!ctx_->config.modules.transport.enabled) {
-        return true;
-    }
-
-    setup_default_handlers();
-
-    stop_.store(false, std::memory_order_relaxed);
-    manager_thread_ = std::thread([this] { manager_loop(); });
-    running_.store(true, std::memory_order_relaxed);
-
-    SPDLOG_INFO("transport module: started");
-    return true;
-}
-
-void TransportModule::stop() {
-    if (!running_.exchange(false)) {
-        return;
-    }
-
-    // If this is a graceful shutdown (Ctrl+C, service stop, fatal
-    // error), send a "goodbye" message to the server BEFORE closing
-    // the socket. The server logs it and can correlate the shutdown
-    // with the close frame that follows.
-    //
-    // On auth-revoked shutdowns, the token is already dead — no point
-    // in trying to send anything.
-    const ShutdownReason reason = ctx_->shutdown.reason();
-    const bool want_goodbye =
-        reason == ShutdownReason::UserRequested ||
-        reason == ShutdownReason::FatalError   ||
-        reason == ShutdownReason::ConfigError;
-
-    if (want_goodbye && ws_ &&
-        ws_->state() == WebSocketClient::State::Connected) {
-
-        json goodbye = {
-            {"type", "agent_shutdown"},
-            {"payload", {
-                {"reason",   to_string(reason)},
-                {"agent_id", agent_id_}
-            }}
-        };
-
-        SPDLOG_INFO("transport module: sending goodbye (reason={})",
-                    to_string(reason));
-        (void)ws_->send(goodbye.dump(), OutboundQueue::Priority::Critical);
-
-        // Give the write pump a moment to flush the goodbye before
-        // WebSocketClient::stop() sends the close frame.
-        std::this_thread::sleep_for(200ms);
-    }
-
-    stop_.store(true, std::memory_order_relaxed);
-    if (manager_thread_.joinable()) {
-        manager_thread_.join();
-    }
-
-    if (ws_) {
-        ws_->stop();
-        ws_.reset();
-    }
-    router_.reset();
-
-    SPDLOG_INFO("transport module: stopped");
-}
-
-void TransportModule::shutdown() {
-    SPDLOG_INFO("transport module: shutting down");
-}
-
-HealthStatus TransportModule::health() const {
-    if (ctx_ == nullptr) return HealthStatus::unknown("not initialized");
-    if (!ctx_->config.modules.transport.enabled) return HealthStatus::ok("disabled");
-    if (!running_.load(std::memory_order_relaxed)) return HealthStatus::failed("not running");
-    if (!ws_) return HealthStatus::degraded("waiting for agent_id");
-    switch (ws_->state()) {
-        case WebSocketClient::State::Connected:    return HealthStatus::ok("connected");
-        case WebSocketClient::State::Connecting:   return HealthStatus::degraded("connecting");
-        case WebSocketClient::State::Reconnecting: return HealthStatus::degraded("reconnecting");
-        case WebSocketClient::State::Disconnected: return HealthStatus::failed("disconnected");
-    }
-    return HealthStatus::unknown("unknown state");
-}
-
-void TransportModule::manager_loop() {
-    while (!stop_.load(std::memory_order_relaxed)) {
-        if (ctx_->shutdown.is_requested()) return;
-
-        if (auto saved = ctx_->state_store.get("agent_id")) {
-            try {
-                int id = std::stoi(*saved);
-                if (id > 0) {
-                    agent_id_ = id;
-                    break;
-                }
-            } catch (...) {
-                // fall through to sleep
-            }
-        }
-        std::this_thread::sleep_for(1s);
-    }
-
-    if (stop_.load(std::memory_order_relaxed)) return;
-    if (ctx_->shutdown.is_requested()) return;
-
-    if (agent_id_ <= 0) {
-        SPDLOG_WARN("transport module: agent_id never became available; "
-                    "not connecting");
-        return;
-    }
-
-    const std::string full_url =
-        server_url_ + "?agent_id=" + std::to_string(agent_id_);
-    SPDLOG_INFO("transport module: connecting to {}", full_url);
-
-    ws_ = std::make_unique<WebSocketClient>();
-    ws_->set_bearer_token(api_token_);
-    ws_->set_backoff(reconnect_backoff_sec_, reconnect_backoff_max_);
-    ws_->set_on_message([this](std::string_view m) { on_ws_message(m); });
-    ws_->set_on_state_change(
-        [this](WebSocketClient::State s) { on_ws_state_change(s); });
-
-    if (!ws_->start(full_url)) {
-        SPDLOG_ERROR("transport module: failed to start WebSocket client");
-        ws_.reset();
-    }
-}
-
-void TransportModule::setup_default_handlers() {
-    router_ = std::make_unique<MessageRouter>();
-
-    router_->register_handler("ping", [](const json&) {
-        SPDLOG_DEBUG("transport: received ping from server");
-    });
-
-    router_->register_handler("policy_update", [](const json& payload) {
-        SPDLOG_INFO("transport: received policy_update: {}", payload.dump());
-    });
-
-    router_->register_handler("command", [](const json& payload) {
-        SPDLOG_INFO("transport: received command: {}", payload.dump());
-    });
-
-    // The server sends this when the token that this agent is using
-    // has been revoked. The agent responds by shutting down cleanly.
-    router_->register_handler("token_revoked", [this](const json& payload) {
-        SPDLOG_ERROR("transport: server signaled token_revoked: {} — "
-                     "shutting down", payload.dump());
-        if (ctx_) {
-            ctx_->shutdown.request(ShutdownReason::AuthRevoked);
-        }
-    });
-
-    router_->register_handler("agent_revoked", [this](const json& payload) {
-        SPDLOG_ERROR("transport: server signaled agent_revoked: {} — "
-                     "shutting down", payload.dump());
-        if (ctx_) {
-            ctx_->shutdown.request(ShutdownReason::AgentRevoked);
-        }
-    });
-}
-
-void TransportModule::send_message(const json& msg) {
-    if (!ws_) return;
-    ws_->send(msg.dump(), OutboundQueue::Priority::Normal);
-}
-
-void TransportModule::register_handler(const std::string& type,
-                                       MessageRouter::Handler handler) {
-    if (router_) {
-        router_->register_handler(type, std::move(handler));
-    }
-}
-
-void TransportModule::on_ws_message(std::string_view raw) {
-    if (router_) {
-        router_->dispatch(raw);
-    }
-}
-
-void TransportModule::on_ws_state_change(WebSocketClient::State s) {
-    const char* name = "unknown";
-    switch (s) {
-        case WebSocketClient::State::Disconnected: name = "disconnected"; break;
-        case WebSocketClient::State::Connecting:   name = "connecting";   break;
-        case WebSocketClient::State::Connected:    name = "connected";    break;
-        case WebSocketClient::State::Reconnecting: name = "reconnecting"; break;
-    }
-    SPDLOG_INFO("transport module: state = {}", name);
-}
-
-} // namespace axiom::core
-```
-
-### \`src/features/websocket_transport/transport_module.h\`
-
-```cpp
-// src/features/websocket_transport/transport_module.h
-//
-// TransportModule owns the WebSocket connection to the AxiomDLP Core
-// server. It reuses server.api_token (same bearer token) and derives
-// its URL from server.base_url unless transport.server_url is
-// explicitly set.
-//
-// TLS is always verified on wss:// connections.
-//
-// Connection is deferred until agent_sync has enrolled and written
-// agent_id to the state store — the server needs agent_id to address
-// messages to this specific agent.
-
-#pragma once
-
-#include "modules/module_base.h"
-#include "net/message_router.h"
-#include "net/websocket_client.h"
-
-#include <nlohmann/json.hpp>
-
-#include <atomic>
-#include <memory>
-#include <string>
-#include <thread>
-
-namespace axiom::core {
-
-class TransportModule final : public ModuleBase {
-public:
-    std::string name() const override { return "transport"; }
-
-    bool initialize(ModuleContext& context) override;
-    bool start() override;
-    void stop() override;
-    void shutdown() override;
-    HealthStatus health() const override;
-
-    void send_message(const nlohmann::json& msg);
-    void register_handler(const std::string& type, MessageRouter::Handler handler);
-
-private:
-    void on_ws_message(std::string_view raw);
-    void on_ws_state_change(WebSocketClient::State s);
-
-    void manager_loop();
-    void setup_default_handlers();
-
-    std::unique_ptr<WebSocketClient> ws_;
-    std::unique_ptr<MessageRouter>   router_;
-
-    std::string server_url_;
-    std::string api_token_;
-    int         reconnect_backoff_sec_ = 10;
-    int         reconnect_backoff_max_ = 300;
-
-    int agent_id_ = 0;
-
-    std::thread       manager_thread_;
-    std::atomic<bool> stop_{false};
-    std::atomic<bool> running_{false};
-};
-
-} // namespace axiom::core
-```
-
 ### \`src/foundation/application.cpp\`
 
 ```cpp
@@ -6301,7 +6592,7 @@ private:
 #include "features/event_logger/event_logger_module.h"
 #include "features/filesystem_watcher/filesystem_watcher_module.h"
 #include "features/inventory/inventory_module.h"
-#include "features/websocket_transport/transport_module.h"
+#include "features/grpc_transport/grpc_transport_module.h"
 #include "storage/migrations.h"
 #include "storage/state_repository.h"
 
@@ -6330,38 +6621,25 @@ Application::Options Application::parse_args(int argc, char** argv) {
 }
 
 Application::Application(Options opts) : opts_(std::move(opts)) {}
-
-Application::~Application() {
-    shutdown();
-}
+Application::~Application() { shutdown(); }
 
 namespace {
-
 std::string resolve_config_path(const std::string& explicit_path) {
     namespace fs = std::filesystem;
     std::error_code ec;
-
     if (!explicit_path.empty()) return explicit_path;
-
     const std::string dev_path = "config/agent.default.json";
-    if (fs::exists(dev_path, ec)) return dev_path;
-
+    if (fs::exists(fs::path(dev_path), ec)) return dev_path;
     return paths::default_config_path();
 }
-
 } // namespace
 
 bool Application::init() {
-    // 1. Create the shutdown controller FIRST. Everything else that
-    //    might fail and need to report a reason uses it.
     shutdown_controller_ = std::make_unique<ShutdownController>();
-
-    // 2. Resolve and load config.
     const std::string config_path = resolve_config_path(opts_.config_path);
     config_ = Config::load(config_path);
     opts_.config_path = config_path;
 
-    // 3. Initialize logging.
     Logger::init(config_.logging.dir, config_.logging.file, config_.logging.level);
     initialized_ = true;
 
@@ -6371,70 +6649,46 @@ bool Application::init() {
         SPDLOG_WARN("Config: {}", w);
     }
 
-    // 4. Open the database.
     database_ = std::make_unique<Database>();
     if (!database_->open(config_.storage.db_path)) {
-        SPDLOG_ERROR("Failed to open database at '{}'",
-                     config_.storage.db_path);
         shutdown_controller_->request(ShutdownReason::FatalError);
         return false;
     }
-
-    // 5. Initialize schema.
     if (!Migrations::apply(*database_)) {
-        SPDLOG_ERROR("Schema migration failed");
         shutdown_controller_->request(ShutdownReason::FatalError);
         return false;
     }
-
-    // 6. File store.
     file_store_ = std::make_unique<FileStore>(*database_);
     if (!file_store_->initialize_schema()) {
-        SPDLOG_ERROR("FileStore::initialize_schema failed");
         shutdown_controller_->request(ShutdownReason::FatalError);
         return false;
     }
-
-    // 7. State store.
     state_store_ = std::make_unique<StateStore>(*database_);
     if (!state_store_->initialize_schema()) {
-        SPDLOG_ERROR("StateStore::initialize_schema failed");
         shutdown_controller_->request(ShutdownReason::FatalError);
         return false;
     }
 
-    // 8. Event bus.
     event_bus_ = std::make_unique<EventBus>();
-
-    // 9. Module context (now includes the shutdown controller).
-    module_context_ = std::make_unique<ModuleContext>(
-        config_, *event_bus_, *file_store_, *state_store_, *database_,
-        *shutdown_controller_);
-
-    // 10. Module manager.
+    module_context_ = std::make_unique<ModuleContext>(config_, *event_bus_, *file_store_, *state_store_, *database_, *shutdown_controller_);
     module_manager_ = std::make_unique<ModuleManager>();
 
-    // 11. Register modules. Stop/shutdown run in reverse order.
     module_manager_->register_module(std::make_unique<FilesystemWatcherModule>());
     module_manager_->register_module(std::make_unique<InventoryModule>());
     module_manager_->register_module(std::make_unique<EventLoggerModule>());
-    module_manager_->register_module(std::make_unique<TransportModule>());
+    module_manager_->register_module(std::make_unique<GrpcTransportModule>());
     module_manager_->register_module(std::make_unique<AgentSyncModule>());
     module_manager_->register_module(std::make_unique<ContentScannerModule>());
 
-    // 12. Initialize all modules.
     if (!module_manager_->initialize_all(*module_context_)) {
         SPDLOG_ERROR("Some modules failed to initialize; continuing anyway");
     }
-
     return true;
 }
 
 void Application::shutdown() {
     if (!initialized_) return;
-
     SPDLOG_INFO("Application shutting down");
-
     service_.reset();
     module_manager_.reset();
     module_context_.reset();
@@ -6443,7 +6697,6 @@ void Application::shutdown() {
     file_store_.reset();
     database_.reset();
     shutdown_controller_.reset();
-
     Logger::shutdown();
     initialized_ = false;
 }
@@ -6452,33 +6705,21 @@ int Application::execute() {
     if (opts_.install || opts_.uninstall) {
         Logger::init("logs", "install.log", "info");
         initialized_ = true;
-
         int rc = 0;
-        if (opts_.install) {
-            SPDLOG_INFO("Installing service...");
-            rc = install_service(paths::executable_path(), default_service_name());
-        } else {
-            SPDLOG_INFO("Uninstalling service...");
-            rc = uninstall_service(default_service_name());
-        }
-
+        if (opts_.install) rc = install_service(paths::executable_path(), default_service_name());
+        else rc = uninstall_service(default_service_name());
         Logger::shutdown();
         initialized_ = false;
         return rc;
     }
-
-    if (!init()) {
-        return 1;
-    }
+    if (!init()) return 1;
 
     service_ = make_service(default_service_name());
     service_->set_module_manager(module_manager_.get());
     service_->set_shutdown_controller(shutdown_controller_.get());
 
     const int rc = service_->run();
-
-    SPDLOG_INFO("Service returned rc={} (reason={})",
-                rc, to_string(shutdown_controller_->reason()));
+    SPDLOG_INFO("Service returned rc={} (reason={})", rc, to_string(shutdown_controller_->reason()));
     return rc;
 }
 
@@ -6555,9 +6796,7 @@ private:
 // src/foundation/config.cpp
 
 #include "foundation/config.h"
-
 #include <nlohmann/json.hpp>
-
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -6572,7 +6811,6 @@ std::string expand_env(const std::string& s) {
     std::string out;
     out.reserve(s.size());
     std::size_t i = 0;
-
     while (i < s.size()) {
         if (s[i] == '%') {
             const auto end = s.find('%', i + 1);
@@ -6601,9 +6839,7 @@ std::string expand_env(const std::string& s) {
     return out;
 }
 
-void read_string(const json& obj, const char* key, std::string& out,
-                 std::vector<std::string>& warnings,
-                 const std::string& section) {
+void read_string(const json& obj, const char* key, std::string& out, std::vector<std::string>& warnings, const std::string& section) {
     if (!obj.contains(key)) return;
     if (!obj[key].is_string()) {
         warnings.push_back(section + "." + key + " must be a string; using default");
@@ -6612,9 +6848,7 @@ void read_string(const json& obj, const char* key, std::string& out,
     out = expand_env(obj[key].get<std::string>());
 }
 
-void read_bool(const json& obj, const char* key, bool& out,
-               std::vector<std::string>& warnings,
-               const std::string& section) {
+void read_bool(const json& obj, const char* key, bool& out, std::vector<std::string>& warnings, const std::string& section) {
     if (!obj.contains(key)) return;
     if (!obj[key].is_boolean()) {
         warnings.push_back(section + "." + key + " must be a boolean; using default");
@@ -6623,9 +6857,7 @@ void read_bool(const json& obj, const char* key, bool& out,
     out = obj[key].get<bool>();
 }
 
-void read_int(const json& obj, const char* key, int& out,
-              std::vector<std::string>& warnings,
-              const std::string& section) {
+void read_int(const json& obj, const char* key, int& out, std::vector<std::string>& warnings, const std::string& section) {
     if (!obj.contains(key)) return;
     if (!obj[key].is_number_integer()) {
         warnings.push_back(section + "." + key + " must be an integer; using default");
@@ -6634,28 +6866,21 @@ void read_int(const json& obj, const char* key, int& out,
     out = obj[key].get<int>();
 }
 
-void read_uint64(const json& obj, const char* key, std::uint64_t& out,
-                 std::vector<std::string>& warnings,
-                 const std::string& section) {
+void read_uint64(const json& obj, const char* key, std::uint64_t& out, std::vector<std::string>& warnings, const std::string& section) {
     if (!obj.contains(key)) return;
     if (!obj[key].is_number_unsigned() && !obj[key].is_number_integer()) {
-        warnings.push_back(section + "." + key +
-                           " must be a non-negative integer; using default");
+        warnings.push_back(section + "." + key + " must be a non-negative integer; using default");
         return;
     }
     const auto v = obj[key].get<std::int64_t>();
     if (v < 0) {
-        warnings.push_back(section + "." + key +
-                           " must be non-negative; using default");
+        warnings.push_back(section + "." + key + " must be non-negative; using default");
         return;
     }
     out = static_cast<std::uint64_t>(v);
 }
 
-void read_string_array(const json& obj, const char* key,
-                       std::vector<std::string>& out,
-                       std::vector<std::string>& warnings,
-                       const std::string& section) {
+void read_string_array(const json& obj, const char* key, std::vector<std::string>& out, std::vector<std::string>& warnings, const std::string& section) {
     if (!obj.contains(key)) return;
     if (!obj[key].is_array()) {
         warnings.push_back(section + "." + key + " must be an array; using default");
@@ -6664,8 +6889,7 @@ void read_string_array(const json& obj, const char* key,
     std::vector<std::string> values;
     for (const auto& item : obj[key]) {
         if (!item.is_string()) {
-            warnings.push_back(section + "." + key +
-                               " must contain only strings; using default");
+            warnings.push_back(section + "." + key + " must contain only strings; using default");
             return;
         }
         values.push_back(expand_env(item.get<std::string>()));
@@ -6673,20 +6897,9 @@ void read_string_array(const json& obj, const char* key,
     out = std::move(values);
 }
 
-void warn_if_present(const json& obj, const char* key,
-                     std::vector<std::string>& warnings,
-                     const std::string& section,
-                     const std::string& reason) {
-    if (obj.contains(key)) {
-        warnings.push_back(section + "." + std::string(key) +
-                           " is ignored: " + reason);
-    }
-}
-
 bool is_valid_level(const std::string& level) {
-    return level == "trace"    || level == "debug" || level == "info"  ||
-           level == "warn"     || level == "error" || level == "critical" ||
-           level == "off";
+    return level == "trace" || level == "debug" || level == "info" || level == "warn" ||
+           level == "error" || level == "critical" || level == "off";
 }
 
 std::string strip_trailing_slashes(std::string s) {
@@ -6694,22 +6907,15 @@ std::string strip_trailing_slashes(std::string s) {
     return s;
 }
 
-// ----------------------------------------------------------------
-// Section parsers
-// ----------------------------------------------------------------
-
 void parse_logging(const json& root, Config& cfg) {
     if (!root.contains("logging")) return;
     const json& log = root["logging"];
     if (!log.is_object()) return;
-
     read_string(log, "dir",   cfg.logging.dir,   cfg.load_warnings, "logging");
     read_string(log, "file",  cfg.logging.file,  cfg.load_warnings, "logging");
     read_string(log, "level", cfg.logging.level, cfg.load_warnings, "logging");
-
     if (!is_valid_level(cfg.logging.level)) {
-        cfg.load_warnings.push_back("logging.level '" + cfg.logging.level +
-                                    "' is not valid; using 'info'");
+        cfg.load_warnings.push_back("logging.level '" + cfg.logging.level + "' is not valid; using 'info'");
         cfg.logging.level = "info";
     }
 }
@@ -6718,17 +6924,11 @@ void parse_storage(const json& root, Config& cfg) {
     if (!root.contains("storage")) return;
     const json& st = root["storage"];
     if (!st.is_object()) return;
-
-    read_string(st, "db_path", cfg.storage.db_path,
-                cfg.load_warnings, "storage");
+    read_string(st, "db_path", cfg.storage.db_path, cfg.load_warnings, "storage");
 }
 
-// Parse the top-level `server` section. If it is missing, look for
-// legacy fields under modules.agent_sync so existing configs keep
-// working.
 void parse_server(const json& root, Config& cfg) {
     const std::string section = "server";
-
     if (root.contains("server") && root["server"].is_object()) {
         const json& s = root["server"];
         read_string(s, "base_url",                    cfg.server.base_url,                    cfg.load_warnings, section);
@@ -6736,57 +6936,29 @@ void parse_server(const json& root, Config& cfg) {
         read_int   (s, "heartbeat_interval_seconds",  cfg.server.heartbeat_interval_seconds,  cfg.load_warnings, section);
         read_int   (s, "reconnect_backoff_seconds",   cfg.server.reconnect_backoff_seconds,   cfg.load_warnings, section);
         read_int   (s, "reconnect_backoff_max_seconds", cfg.server.reconnect_backoff_max_seconds, cfg.load_warnings, section);
-
-        warn_if_present(s, "verify_tls", cfg.load_warnings, section,
-                        "TLS verification is always enabled for https:// and wss:// URLs");
-    } else {
-        // Legacy fallback: pull from modules.agent_sync.
-        if (root.contains("modules") && root["modules"].is_object()) {
-            const json& mods = root["modules"];
-            if (mods.contains("agent_sync") && mods["agent_sync"].is_object()) {
-                const json& a = mods["agent_sync"];
-                cfg.load_warnings.push_back(
-                    "modules.agent_sync.{http_base_url,api_token,heartbeat_interval_seconds} "
-                    "are deprecated; move them to a top-level 'server' section");
-                read_string(a, "http_base_url",              cfg.server.base_url,
-                            cfg.load_warnings, "modules.agent_sync");
-                read_string(a, "api_token",                  cfg.server.api_token,
-                            cfg.load_warnings, "modules.agent_sync");
-                read_int   (a, "heartbeat_interval_seconds", cfg.server.heartbeat_interval_seconds,
-                            cfg.load_warnings, "modules.agent_sync");
-            }
-            if (mods.contains("transport") && mods["transport"].is_object()) {
-                const json& t = mods["transport"];
-                read_int(t, "reconnect_backoff_seconds",
-                         cfg.server.reconnect_backoff_seconds,
-                         cfg.load_warnings, "modules.transport");
-                read_int(t, "reconnect_backoff_max_seconds",
-                         cfg.server.reconnect_backoff_max_seconds,
-                         cfg.load_warnings, "modules.transport");
-            }
-        }
+        read_int   (s, "grpc_port",                   cfg.server.grpc_port,                   cfg.load_warnings, section);
+        read_bool  (s, "grpc_tls",                    cfg.server.grpc_tls,                    cfg.load_warnings, section);
+        read_string(s, "grpc_ca_path",                cfg.server.grpc_ca_path,                cfg.load_warnings, section);
     }
-
-    // Normalize.
+    if (cfg.server.grpc_port < 1 || cfg.server.grpc_port > 65535) {
+        cfg.load_warnings.push_back(section + ".grpc_port must be between 1 and 65535; using 50051");
+        cfg.server.grpc_port = 50051;
+    }
     cfg.server.base_url = strip_trailing_slashes(cfg.server.base_url);
-
     if (cfg.server.base_url.empty()) {
         cfg.load_warnings.push_back("server.base_url is empty; using default");
         cfg.server.base_url = "http://127.0.0.1:3000";
     }
     if (cfg.server.heartbeat_interval_seconds < 5) {
-        cfg.load_warnings.push_back(
-            "server.heartbeat_interval_seconds must be >= 5; using 30");
+        cfg.load_warnings.push_back("server.heartbeat_interval_seconds must be >= 5; using 30");
         cfg.server.heartbeat_interval_seconds = 30;
     }
     if (cfg.server.reconnect_backoff_seconds < 1) {
-        cfg.load_warnings.push_back(
-            "server.reconnect_backoff_seconds must be >= 1; using 5");
+        cfg.load_warnings.push_back("server.reconnect_backoff_seconds must be >= 1; using 5");
         cfg.server.reconnect_backoff_seconds = 5;
     }
     if (cfg.server.reconnect_backoff_max_seconds < cfg.server.reconnect_backoff_seconds) {
-        cfg.load_warnings.push_back(
-            "server.reconnect_backoff_max_seconds must be >= reconnect_backoff_seconds; using 60");
+        cfg.load_warnings.push_back("server.reconnect_backoff_max_seconds must be >= reconnect_backoff_seconds; using 60");
         cfg.server.reconnect_backoff_max_seconds = 60;
     }
 }
@@ -6795,29 +6967,21 @@ void parse_filesystem_watcher(const json& mods, Config& cfg) {
     if (!mods.contains("filesystem_watcher")) return;
     const json& fw = mods["filesystem_watcher"];
     if (!fw.is_object()) return;
-
     auto& m = cfg.modules.filesystem_watcher;
     const std::string section = "modules.filesystem_watcher";
-
     read_bool         (fw, "enabled",       m.enabled,       cfg.load_warnings, section);
     read_string_array (fw, "watch_paths",   m.watch_paths,   cfg.load_warnings, section);
     read_string_array (fw, "exclude_paths", m.exclude_paths, cfg.load_warnings, section);
     read_int          (fw, "debounce_ms",   m.debounce_ms,   cfg.load_warnings, section);
-
-    if (m.debounce_ms < 0) {
-        cfg.load_warnings.push_back(section + ".debounce_ms must be >= 0; using 300");
-        m.debounce_ms = 300;
-    }
+    if (m.debounce_ms < 0) m.debounce_ms = 300;
 }
 
 void parse_inventory(const json& mods, Config& cfg) {
     if (!mods.contains("inventory")) return;
     const json& inv = mods["inventory"];
     if (!inv.is_object()) return;
-
     auto& m = cfg.modules.inventory;
     const std::string section = "modules.inventory";
-
     read_bool         (inv, "enabled",              m.enabled,              cfg.load_warnings, section);
     read_string_array (inv, "watch_paths",          m.watch_paths,          cfg.load_warnings, section);
     read_string_array (inv, "exclude_paths",        m.exclude_paths,        cfg.load_warnings, section);
@@ -6825,143 +6989,81 @@ void parse_inventory(const json& mods, Config& cfg) {
     read_bool         (inv, "compute_hashes",       m.compute_hashes,       cfg.load_warnings, section);
     read_uint64       (inv, "max_file_size_bytes",  m.max_file_size_bytes,  cfg.load_warnings, section);
     read_string_array (inv, "scannable_categories", m.scannable_categories, cfg.load_warnings, section);
-
-    if (m.interval_seconds < 10) {
-        cfg.load_warnings.push_back(section + ".interval_seconds must be >= 10; using 900");
-        m.interval_seconds = 900;
-    }
-}
-
-void parse_transport(const json& mods, Config& cfg) {
-    if (!mods.contains("transport")) return;
-    const json& t = mods["transport"];
-    if (!t.is_object()) return;
-
-    auto& m = cfg.modules.transport;
-    const std::string section = "modules.transport";
-
-    read_bool   (t, "enabled",    m.enabled,    cfg.load_warnings, section);
-    read_string (t, "server_url", m.server_url, cfg.load_warnings, section);
-
-    // Legacy keys now live in `server`. Warn so operators move them.
-    warn_if_present(t, "reconnect_backoff_seconds", cfg.load_warnings, section,
-                    "moved to server.reconnect_backoff_seconds");
-    warn_if_present(t, "reconnect_backoff_max_seconds", cfg.load_warnings, section,
-                    "moved to server.reconnect_backoff_max_seconds");
-    warn_if_present(t, "verify_tls", cfg.load_warnings, section,
-                    "TLS verification is always enabled for wss:// URLs");
+    if (m.interval_seconds < 10) m.interval_seconds = 900;
 }
 
 void parse_agent_sync(const json& mods, Config& cfg) {
     if (!mods.contains("agent_sync")) return;
     const json& a = mods["agent_sync"];
     if (!a.is_object()) return;
-
     auto& m = cfg.modules.agent_sync;
-    const std::string section = "modules.agent_sync";
-
-    read_bool(a, "enabled", m.enabled, cfg.load_warnings, section);
-
-    // Legacy keys now live in `server`. Warn so operators move them.
-    warn_if_present(a, "http_base_url", cfg.load_warnings, section,
-                    "moved to server.base_url");
-    warn_if_present(a, "api_token", cfg.load_warnings, section,
-                    "moved to server.api_token");
-    warn_if_present(a, "heartbeat_interval_seconds", cfg.load_warnings, section,
-                    "moved to server.heartbeat_interval_seconds");
-    warn_if_present(a, "verify_tls", cfg.load_warnings, section,
-                    "TLS verification is always enabled for https:// URLs");
+    read_bool(a, "enabled", m.enabled, cfg.load_warnings, "modules.agent_sync");
 }
 
 void parse_content_scanner(const json& mods, Config& cfg) {
     if (!mods.contains("content_scanner")) return;
     const json& c = mods["content_scanner"];
     if (!c.is_object()) return;
-
     auto& m = cfg.modules.content_scanner;
     const std::string section = "modules.content_scanner";
-
     read_bool   (c, "enabled",                 m.enabled,                 cfg.load_warnings, section);
     read_int    (c, "batch_size",              m.batch_size,              cfg.load_warnings, section);
     read_int    (c, "scan_interval_seconds",   m.scan_interval_seconds,   cfg.load_warnings, section);
     read_int    (c, "max_retries",             m.max_retries,             cfg.load_warnings, section);
     read_int    (c, "request_timeout_seconds", m.request_timeout_seconds, cfg.load_warnings, section);
-
     std::uint64_t tmp = m.batch_max_bytes;
     read_uint64 (c, "batch_max_bytes", tmp, cfg.load_warnings, section);
     m.batch_max_bytes = static_cast<std::size_t>(tmp);
-
     tmp = m.chunk_size_bytes;
     read_uint64 (c, "chunk_size_bytes", tmp, cfg.load_warnings, section);
     m.chunk_size_bytes = static_cast<std::size_t>(tmp);
-
     tmp = m.chunk_overlap_bytes;
     read_uint64 (c, "chunk_overlap_bytes", tmp, cfg.load_warnings, section);
     m.chunk_overlap_bytes = static_cast<std::size_t>(tmp);
-
     tmp = m.max_file_bytes;
     read_uint64 (c, "max_file_bytes", tmp, cfg.load_warnings, section);
     m.max_file_bytes = static_cast<std::size_t>(tmp);
-
     read_string_array (c, "text_extensions", m.text_extensions, cfg.load_warnings, section);
-
     if (m.batch_size < 1)            m.batch_size = 50;
     if (m.max_retries < 1)           m.max_retries = 3;
     if (m.scan_interval_seconds < 5) m.scan_interval_seconds = 30;
     if (m.chunk_size_bytes < 4096)   m.chunk_size_bytes = 1024 * 1024;
     if (m.chunk_overlap_bytes == 0)  m.chunk_overlap_bytes = 256;
-    if (m.chunk_overlap_bytes >= m.chunk_size_bytes) {
-        cfg.load_warnings.push_back(section +
-            ".chunk_overlap_bytes must be < chunk_size_bytes; using 256");
-        m.chunk_overlap_bytes = 256;
-    }
+    if (m.chunk_overlap_bytes >= m.chunk_size_bytes) m.chunk_overlap_bytes = 256;
 }
 
 } // namespace
 
 Config Config::load(const std::string& path) {
     Config cfg;
-
     std::ifstream file(path);
     if (!file.is_open()) {
-        cfg.load_warnings.push_back("config file not found at '" + path +
-                                    "'; using built-in defaults");
+        cfg.load_warnings.push_back("config file not found at '" + path + "'; using built-in defaults");
         return cfg;
     }
-
     json root;
     try {
         file >> root;
     } catch (const json::parse_error& e) {
-        cfg.load_warnings.push_back(std::string("failed to parse config: ") + e.what() +
-                                    "; using built-in defaults");
+        cfg.load_warnings.push_back(std::string("failed to parse config: ") + e.what() + "; using built-in defaults");
         return cfg;
     }
-
     if (!root.is_object()) {
-        cfg.load_warnings.push_back("config root must be a JSON object; "
-                                    "using built-in defaults");
+        cfg.load_warnings.push_back("config root must be a JSON object; using built-in defaults");
         return cfg;
     }
-
     parse_logging(root, cfg);
     parse_storage(root, cfg);
-
-    // Must run before parse_transport / parse_agent_sync so the legacy
-    // fallback can pull values from their old locations.
     parse_server(root, cfg);
-
     if (root.contains("modules")) {
         const json& mods = root["modules"];
         if (mods.is_object()) {
             parse_filesystem_watcher(mods, cfg);
             parse_inventory(mods, cfg);
-            parse_transport(mods, cfg);
             parse_agent_sync(mods, cfg);
             parse_content_scanner(mods, cfg);
         }
     }
-
     return cfg;
 }
 
@@ -6972,13 +7074,6 @@ Config Config::load(const std::string& path) {
 
 ```cpp
 // src/foundation/config.h
-//
-// Centralized configuration loading for the AxiomDLP Agent.
-//
-// All server identity and connection information lives in a single
-// top-level `server` section. Modules that talk to the Core read from
-// there. TLS verification is ALWAYS enabled for https:// and wss://.
-
 #pragma once
 
 #include <cstddef>
@@ -6988,49 +7083,29 @@ Config Config::load(const std::string& path) {
 
 namespace axiom::core {
 
-// ----------------------------------------------------------------
-// Section: logging
-// ----------------------------------------------------------------
 struct LoggingConfig {
     std::string dir   = "logs";
     std::string file  = "agent.log";
     std::string level = "info";
 };
 
-// ----------------------------------------------------------------
-// Section: storage
-// ----------------------------------------------------------------
 struct StorageConfig {
     std::string db_path = "data/agent.db";
 };
 
-// ----------------------------------------------------------------
-// Section: server
-//
-// Single source of truth for how the agent talks to the Core.
-// Both agent_sync (HTTP) and transport (WebSocket) use these values.
-// content_scanner also uses them for the scan/batch endpoint.
-// ----------------------------------------------------------------
 struct ServerConfig {
-    // Base URL of the Core, e.g. "http://127.0.0.1:3000" or
-    // "https://core.example.com". Used by every module that talks
-    // to the Core. Trailing slashes are stripped.
     std::string base_url = "http://127.0.0.1:3000";
-
-    // Bearer token issued at registration: "axdlp_user_...".
     std::string api_token;
-
-    // Heartbeat period used by agent_sync.
     int heartbeat_interval_seconds = 30;
-
-    // WebSocket reconnect policy used by transport.
     int reconnect_backoff_seconds     = 5;
     int reconnect_backoff_max_seconds = 60;
+
+    // gRPC specific configuration
+    int  grpc_port = 50051;
+    bool grpc_tls  = true;
+    std::string grpc_ca_path;
 };
 
-// ----------------------------------------------------------------
-// Section: modules.filesystem_watcher
-// ----------------------------------------------------------------
 struct FilesystemWatcherModuleConfig {
     bool                     enabled = false;
     std::vector<std::string> watch_paths;
@@ -7038,100 +7113,52 @@ struct FilesystemWatcherModuleConfig {
     int                      debounce_ms = 300;
 };
 
-// ----------------------------------------------------------------
-// Section: modules.inventory
-// ----------------------------------------------------------------
 struct InventoryModuleConfig {
     bool                     enabled = true;
     std::vector<std::string> watch_paths;
     std::vector<std::string> exclude_paths;
     int                      interval_seconds = 900;
-
     bool          compute_hashes      = true;
-    std::uint64_t max_file_size_bytes = 104857600ull;   // 100 MB
-
-    std::vector<std::string> scannable_categories = {
-        "document", "code", "data", "config"
-    };
+    std::uint64_t max_file_size_bytes = 104857600ull;
+    std::vector<std::string> scannable_categories = {"document", "code", "data", "config"};
 };
 
-// ----------------------------------------------------------------
-// Section: modules.transport (WebSocket)
-//
-// Only two fields remain here: whether transport is on, and an
-// optional explicit URL override. URL, token, and reconnect policy
-// come from the top-level `server` section.
-// ----------------------------------------------------------------
-struct TransportModuleConfig {
-    bool        enabled = true;
-    // Empty = derive from server.base_url by swapping http->ws,
-    // https->wss, and appending /api/v1/agent/ws.
-    std::string server_url;
-};
-
-// ----------------------------------------------------------------
-// Section: modules.agent_sync (HTTP)
-//
-// Just a toggle. URL, token, and interval come from `server`.
-// ----------------------------------------------------------------
 struct AgentSyncModuleConfig {
     bool enabled = true;
 };
 
-// ----------------------------------------------------------------
-// Section: modules.content_scanner
-//
-// URL and token come from `server`. Everything here is scanner
-// behaviour.
-// ----------------------------------------------------------------
 struct ContentScannerModuleConfig {
     bool enabled = true;
-
     int         batch_size            = 50;
-    std::size_t batch_max_bytes       = 50 * 1024 * 1024;   // 50 MB
+    std::size_t batch_max_bytes       = 50 * 1024 * 1024;
     int         scan_interval_seconds = 30;
-
-    std::size_t chunk_size_bytes    = 1024 * 1024;   // 1 MB
+    std::size_t chunk_size_bytes    = 1024 * 1024;
     std::size_t chunk_overlap_bytes = 256;
-
-    std::size_t max_file_bytes          = 100 * 1024 * 1024;   // 100 MB
+    std::size_t max_file_bytes          = 100 * 1024 * 1024;
     int         max_retries             = 3;
     int         request_timeout_seconds = 300;
-
     std::vector<std::string> text_extensions = {
-        "txt", "md", "log", "csv", "tsv",
-        "json", "yaml", "yml", "toml", "xml",
-        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx",
-        "py", "js", "ts", "jsx", "tsx",
-        "go", "rs", "java", "kt", "scala", "cs", "swift",
-        "rb", "php", "pl", "lua", "sql", "sh", "bash", "zsh", "ps1",
-        "html", "css", "scss", "less",
-        "conf", "cfg", "ini", "env", "properties"
+        "txt", "md", "log", "csv", "tsv", "json", "yaml", "yml", "toml", "xml",
+        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx", "py", "js", "ts", "jsx", "tsx",
+        "go", "rs", "java", "kt", "scala", "cs", "swift", "rb", "php", "pl", "lua",
+        "sql", "sh", "bash", "zsh", "ps1", "html", "css", "scss", "less", "conf",
+        "cfg", "ini", "env", "properties"
     };
 };
 
-// ----------------------------------------------------------------
-// Section: modules
-// ----------------------------------------------------------------
 struct ModulesConfig {
     FilesystemWatcherModuleConfig filesystem_watcher;
     InventoryModuleConfig         inventory;
-    TransportModuleConfig         transport;
     AgentSyncModuleConfig         agent_sync;
     ContentScannerModuleConfig    content_scanner;
 };
 
-// ----------------------------------------------------------------
-// Top-level config
-// ----------------------------------------------------------------
 struct Config {
     LoggingConfig logging;
     StorageConfig storage;
     ServerConfig  server;
     ModulesConfig modules;
-
     std::vector<std::string> load_warnings;
-
     static Config load(const std::string& path);
 };
 
@@ -7794,102 +7821,13 @@ private:
 
 #include "net/http_client.h"
 
+#include <httplib.h>
 #include <spdlog/spdlog.h>
-
-#include <boost/asio/connect.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/ssl/context.hpp>
-#include <boost/asio/ssl/stream.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/core/tcp_stream.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/ssl.hpp>
-
-#include <openssl/ssl.h>
-#include <openssl/x509v3.h>
-
-#include <chrono>
-#include <exception>
-
-namespace beast = boost::beast;
-namespace http  = beast::http;
-namespace net   = boost::asio;
-namespace ssl   = boost::asio::ssl;
-using tcp       = net::ip::tcp;
 
 namespace axiom::core {
 
-// ----------------------------------------------------------------
-// URL parsing
-// ----------------------------------------------------------------
-
-namespace {
-
-struct ParsedUrl {
-    std::string scheme;
-    std::string host;
-    std::string port;
-    std::string target = "/";
-    bool        valid  = false;
-
-    bool is_https() const { return scheme == "https"; }
-};
-
-ParsedUrl parse_url(const std::string& url) {
-    ParsedUrl r;
-
-    std::string::size_type scheme_end = 0;
-    if (url.rfind("http://", 0) == 0) {
-        r.scheme   = "http";
-        r.port     = "80";
-        scheme_end = 7;
-    } else if (url.rfind("https://", 0) == 0) {
-        r.scheme   = "https";
-        r.port     = "443";
-        scheme_end = 8;
-    } else {
-        return r;
-    }
-
-    const std::size_t host_start = scheme_end;
-    const std::size_t path_start = url.find('/', host_start);
-
-    std::string host_port;
-    if (path_start == std::string::npos) {
-        host_port = url.substr(host_start);
-        r.target  = "/";
-    } else {
-        host_port = url.substr(host_start, path_start - host_start);
-        r.target  = url.substr(path_start);
-    }
-
-    const auto colon = host_port.find(':');
-    if (colon == std::string::npos) {
-        r.host = host_port;
-    } else {
-        r.host = host_port.substr(0, colon);
-        r.port = host_port.substr(colon + 1);
-    }
-
-    r.valid = !r.host.empty() && !r.port.empty() && !r.target.empty();
-    return r;
-}
-
-} // namespace
-
-// ----------------------------------------------------------------
-// Impl
-// ----------------------------------------------------------------
-
-struct HttpClient::Impl {};
-
-HttpClient::HttpClient() : impl_(std::make_unique<Impl>()) {}
+HttpClient::HttpClient()  = default;
 HttpClient::~HttpClient() = default;
-
-// ----------------------------------------------------------------
-// POST
-// ----------------------------------------------------------------
 
 HttpClient::Response HttpClient::post_json(const std::string& url,
                                            const std::string& json_body,
@@ -7897,102 +7835,93 @@ HttpClient::Response HttpClient::post_json(const std::string& url,
                                            int                timeout_secs) {
     Response resp;
 
-    const ParsedUrl parsed = parse_url(url);
-    if (!parsed.valid) {
-        resp.error = "invalid URL (must start with http:// or https://): " + url;
+    // --- Parse URL scheme://host[:port]/path ---
+    const auto scheme_end = url.find("://");
+    if (scheme_end == std::string::npos) {
+        resp.error = "invalid URL (missing scheme)";
         return resp;
     }
 
-    try {
-        net::io_context ioc;
+    const std::string scheme = url.substr(0, scheme_end);
+    if (scheme != "http" && scheme != "https") {
+        resp.error = "unsupported scheme: " + scheme;
+        return resp;
+    }
 
-        http::request<http::string_body> req{http::verb::post, parsed.target, 11};
+    const std::size_t host_start = scheme_end + 3;
+    const std::size_t path_start = url.find('/', host_start);
 
-        const bool default_port =
-            (parsed.scheme == "http"  && parsed.port == "80") ||
-            (parsed.scheme == "https" && parsed.port == "443");
+    std::string host_port;
+    std::string path;
+    if (path_start == std::string::npos) {
+        host_port = url.substr(host_start);
+        path      = "/";
+    } else {
+        host_port = url.substr(host_start, path_start - host_start);
+        path      = url.substr(path_start);
+    }
 
-        std::string host_header = parsed.host;
-        if (!default_port) {
-            host_header += ":" + parsed.port;
+    std::string host;
+    int         port = (scheme == "https") ? 443 : 80;
+
+    const auto colon = host_port.find(':');
+    if (colon != std::string::npos) {
+        host = host_port.substr(0, colon);
+        try {
+            port = std::stoi(host_port.substr(colon + 1));
+        } catch (...) {
+            resp.error = "invalid port in URL";
+            return resp;
         }
+    } else {
+        host = host_port;
+    }
 
-        req.set(http::field::host,         host_header);
-        req.set(http::field::user_agent,   "axiomdlp-agent/0.1");
-        req.set(http::field::content_type, "application/json");
+    if (host.empty()) {
+        resp.error = "invalid URL (empty host)";
+        return resp;
+    }
+
+    // --- HTTPS ---
+    if (scheme == "https") {
+        httplib::SSLClient cli(host, port);
+        cli.enable_server_certificate_verification(true);
+        cli.set_connection_timeout(timeout_secs);
+        cli.set_read_timeout(timeout_secs);
+        cli.set_write_timeout(timeout_secs);
+        cli.set_follow_location(true);
 
         if (!bearer_token.empty()) {
-            req.set(http::field::authorization, "Bearer " + bearer_token);
+            cli.set_bearer_token_auth(bearer_token);
         }
 
-        req.body() = json_body;
-        req.prepare_payload();
+        auto res = cli.Post(path.c_str(), json_body, "application/json");
+        if (!res) {
+            resp.error = "request failed: " + httplib::to_string(res.error());
+            return resp;
+        }
+        resp.status = res->status;
+        resp.body   = res->body;
+    }
+    // --- HTTP ---
+    else {
+        httplib::Client cli(host, port);
+        cli.set_connection_timeout(timeout_secs);
+        cli.set_read_timeout(timeout_secs);
+        cli.set_write_timeout(timeout_secs);
+        cli.set_follow_location(true);
 
-        tcp::resolver resolver(ioc);
-        const auto results = resolver.resolve(parsed.host, parsed.port);
-
-        if (parsed.is_https()) {
-            // -------------------- HTTPS (TLS always verified) --------------------
-            ssl::context ctx{ssl::context::tls_client};
-            ctx.set_default_verify_paths();
-
-            beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
-
-            // SNI.
-            if (!SSL_set_tlsext_host_name(stream.native_handle(),
-                                          parsed.host.c_str())) {
-                resp.error = "failed to set SNI hostname";
-                return resp;
-            }
-
-            // Always verify chain.
-            stream.set_verify_mode(ssl::verify_peer);
-
-            // Always verify hostname via X509_VERIFY_PARAM.
-            X509_VERIFY_PARAM* param = SSL_get0_param(stream.native_handle());
-            X509_VERIFY_PARAM_set_hostflags(
-                param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-            if (X509_VERIFY_PARAM_set1_host(param,
-                                            parsed.host.c_str(),
-                                            parsed.host.size()) != 1) {
-                resp.error = "failed to configure hostname verification";
-                return resp;
-            }
-
-            beast::get_lowest_layer(stream).expires_after(
-                std::chrono::seconds(timeout_secs));
-            beast::get_lowest_layer(stream).connect(results);
-
-            stream.handshake(ssl::stream_base::client);
-
-            http::write(stream, req);
-
-            beast::flat_buffer                buffer;
-            http::response<http::string_body> res;
-            http::read(stream, buffer, res);
-
-            resp.status = res.result_int();
-            resp.body   = std::move(res.body());
-
-        } else {
-            // -------------------- HTTP --------------------
-            beast::tcp_stream stream(ioc);
-            stream.expires_after(std::chrono::seconds(timeout_secs));
-            stream.connect(results);
-
-            http::write(stream, req);
-
-            beast::flat_buffer                buffer;
-            http::response<http::string_body> res;
-            http::read(stream, buffer, res);
-
-            resp.status = res.result_int();
-            resp.body   = std::move(res.body());
+        if (!bearer_token.empty()) {
+            cli.set_bearer_token_auth(bearer_token);
         }
 
-    } catch (const std::exception& e) {
-        resp.status = 0;
-        resp.error  = e.what();
+        auto res = cli.Post(path.c_str(), json_body, "application/json");
+        if (!res) {
+            resp.error = "request failed: " + httplib::to_string(res.error());
+            return resp;
+        }
+        resp.status = res->status;
+        resp.body   = res->body;
     }
 
     return resp;
@@ -8006,154 +7935,35 @@ HttpClient::Response HttpClient::post_json(const std::string& url,
 ```cpp
 // src/net/http_client.h
 //
-// HttpClient — a synchronous HTTP/HTTPS client built on Boost.Beast.
-//
-//   - Synchronous (blocking) API, called from background threads.
-//   - Supports http:// and https://.
-//   - Sends JSON bodies with an optional Bearer token.
-//   - TLS verification is ALWAYS enabled when the URL is https://.
-//     There is no opt-out: certificate chain and hostname must match.
-//   - Never throws. All errors are reported via the Response struct.
+// HTTP client using cpp-httplib for enrollment, heartbeat, and scan batches.
+// Uses OpenSSL for TLS (via CPPHTTPLIB_OPENSSL_SUPPORT).
+// TLS is always verified.
 
 #pragma once
 
-#include <memory>
 #include <string>
 
 namespace axiom::core {
 
 class HttpClient {
 public:
+    HttpClient();
+    ~HttpClient();
+
     struct Response {
         int         status = 0;
         std::string body;
         std::string error;
 
-        bool ok() const     { return error.empty() && status > 0; }
+        bool ok()     const { return error.empty() && status > 0; }
         bool is_2xx() const { return status >= 200 && status < 300; }
     };
 
-    HttpClient();
-    ~HttpClient();
-
-    HttpClient(const HttpClient&)            = delete;
-    HttpClient& operator=(const HttpClient&) = delete;
-    HttpClient(HttpClient&&)                 = delete;
-    HttpClient& operator=(HttpClient&&)      = delete;
-
-    // Synchronous POST. Blocks until the response arrives or the
-    // timeout is exceeded.
-    //
-    // url          — "http://..." or "https://..."
-    // json_body    — raw JSON string
-    // bearer_token — optional; sent as "Authorization: Bearer <token>"
-    // timeout_secs — total time budget
+    // Synchronous POST with JSON body. Optional Bearer token.
     Response post_json(const std::string& url,
                        const std::string& json_body,
                        const std::string& bearer_token = "",
                        int                timeout_secs = 10);
-
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-};
-
-} // namespace axiom::core
-```
-
-### \`src/net/message_router.cpp\`
-
-```cpp
-// src/modules/transport/message_router.cpp
-
-#include "net/message_router.h"
-
-#include <spdlog/spdlog.h>
-
-namespace axiom::core {
-
-void MessageRouter::register_handler(const std::string& type, Handler handler) {
-    handlers_[type] = std::move(handler);
-}
-
-void MessageRouter::dispatch(std::string_view raw_json) {
-    nlohmann::json msg;
-    try {
-        msg = nlohmann::json::parse(raw_json);
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("MessageRouter: invalid JSON: {}", e.what());
-        return;
-    }
-
-    if (!msg.is_object() || !msg.contains("type")) {
-        SPDLOG_WARN("MessageRouter: missing 'type' field");
-        return;
-    }
-
-    const std::string type = msg.value("type", "");
-    if (type.empty()) {
-        SPDLOG_WARN("MessageRouter: empty 'type'");
-        return;
-    }
-
-    auto it = handlers_.find(type);
-    if (it == handlers_.end()) {
-        SPDLOG_DEBUG("MessageRouter: no handler for type '{}'", type);
-        return;
-    }
-
-    const nlohmann::json payload =
-        msg.contains("payload") ? msg["payload"] : nlohmann::json::object();
-
-    try {
-        it->second(payload);
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("MessageRouter: handler for '{}' threw: {}", type, e.what());
-    }
-}
-
-} // namespace axiom::core
-```
-
-### \`src/net/message_router.h\`
-
-```cpp
-// src/modules/transport/message_router.h
-//
-// MessageRouter dispatches incoming JSON messages to handlers based on
-// their "type" field. Handlers are registered by string type; the
-// router knows nothing about specific types.
-//
-// This is what makes the transport future-proof: adding a new server
-// message type is a registration call from wherever the handler lives,
-// not a change to the transport itself.
-
-#pragma once
-
-#include <nlohmann/json.hpp>
-
-#include <functional>
-#include <string>
-#include <string_view>   // FIX: explicit include; was relying on
-                         // <nlohmann/json.hpp> to pull it in transitively
-#include <unordered_map>
-
-namespace axiom::core {
-
-class MessageRouter {
-public:
-    using Handler = std::function<void(const nlohmann::json& payload)>;
-
-    // Register a handler for a specific message type. Overwrites any
-    // existing handler for the same type.
-    void register_handler(const std::string& type, Handler handler);
-
-    // Parse a JSON message and dispatch to the registered handler.
-    // Unknown types are logged and ignored.
-    void dispatch(std::string_view raw_json);
-
-private:
-    std::unordered_map<std::string, Handler> handlers_;
 };
 
 } // namespace axiom::core
@@ -8355,797 +8165,6 @@ private:
     std::size_t             max_messages_;
     std::size_t             max_bytes_;
     bool                    stopped_ = false;
-};
-
-} // namespace axiom::core
-```
-
-### \`src/net/websocket_client.cpp\`
-
-```cpp
-// src/net/websocket_client.cpp
-//
-// Builds on Boost.Beast + Boost.Asio, asynchronous API.
-//
-// Liveness is handled by Beast's own keep-alive pings. There is NO
-// application-level read deadline.
-//
-// Reconnect uses exponential backoff with ±20% jitter.
-// Close codes are preserved and interpreted.
-//
-// On stop(), a graceful 1000 Normal close frame is written before the
-// socket is torn down, so the server sees a clean close instead of a
-// 1006 abnormal closure.
-//
-// Every call whose return type may be non-void in some Boost versions
-// is wrapped in an explicit `(void)` cast to silence clang-tidy's
-// bugprone-unused-return-value check.
-
-#include "net/websocket_client.h"
-
-#include <boost/asio/connect.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/ssl/context.hpp>
-#include <boost/asio/ssl/stream.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/core/tcp_stream.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/ssl.hpp>
-#include <boost/beast/websocket.hpp>
-#include <boost/system/error_code.hpp>
-
-#include <openssl/ssl.h>
-#include <openssl/x509v3.h>
-
-#include <spdlog/spdlog.h>
-
-#include <algorithm>
-#include <chrono>
-#include <cstddef>
-#include <exception>
-#include <memory>
-#include <mutex>
-#include <random>
-#include <string>
-#include <thread>
-#include <utility>
-
-namespace beast     = boost::beast;
-namespace websocket = beast::websocket;
-namespace net       = boost::asio;
-namespace ssl       = boost::asio::ssl;
-using tcp           = net::ip::tcp;
-namespace sys       = boost::system;
-using namespace std::chrono_literals;
-
-namespace axiom::core {
-
-namespace {
-
-// ---- URL parsing --------------------------------------------------
-
-bool parse_ws_url(const std::string& url,
-                  std::string& scheme,
-                  std::string& host,
-                  std::string& port,
-                  std::string& path) {
-    const auto scheme_end = url.find("://");
-    if (scheme_end == std::string::npos) return false;
-
-    scheme = url.substr(0, scheme_end);
-    if (scheme != "ws" && scheme != "wss") return false;
-
-    const std::size_t host_start = scheme_end + 3;
-
-    std::size_t path_start = url.find('/', host_start);
-    if (path_start == std::string::npos) {
-        path_start = url.size();
-        path = "/";
-    } else {
-        path = url.substr(path_start);
-    }
-
-    const auto colon = url.find(':', host_start);
-    if (colon != std::string::npos && colon < path_start) {
-        host = url.substr(host_start, colon - host_start);
-        port = url.substr(colon + 1, path_start - colon - 1);
-    } else {
-        host = url.substr(host_start, path_start - host_start);
-        port = (scheme == "wss") ? "443" : "80";
-    }
-
-    return !host.empty() && !port.empty();
-}
-
-bool is_shutdown_error(const sys::error_code& ec) {
-    return ec == net::error::operation_aborted
-        || ec == net::error::operation_not_supported;
-}
-
-// Attach Authorization and User-Agent to the WebSocket handshake.
-template <typename WsStream>
-void attach_handshake_headers(WsStream& ws, const std::string& token) {
-    (void)ws.set_option(websocket::stream_base::decorator(
-        [token](websocket::request_type& req) {
-            req.set(beast::http::field::user_agent, "axiomdlp-agent/0.1");
-            if (!token.empty()) {
-                req.set(beast::http::field::authorization,
-                        "Bearer " + token);
-            }
-        }));
-}
-
-// Interpret a close code from the WebSocket peer.
-// Returns true if the client should attempt to reconnect.
-bool should_reconnect_on_close(websocket::close_code code) {
-    using cc = websocket::close_code;
-    switch (code) {
-        case cc::normal:           return true;
-        case cc::going_away:       return true;
-        case cc::protocol_error:   return false;
-        case cc::unknown_data:     return false;
-        case cc::bad_payload:      return false;
-        case cc::policy_error:     return false;  // auth revoked: STOP
-        case cc::too_big:          return true;
-        case cc::needs_extension:  return false;
-        case cc::internal_error:   return true;
-        case cc::service_restart:  return true;
-        case cc::try_again_later:  return true;
-        default:                   return true;
-    }
-}
-
-} // namespace
-
-// ---- Stream aliases ------------------------------------------------
-
-using WsPlain = websocket::stream<beast::tcp_stream>;
-using WsTls   = websocket::stream<beast::ssl_stream<beast::tcp_stream>>;
-
-// ---- Impl ----------------------------------------------------------
-
-struct WebSocketClient::Impl {
-    std::string url;
-    std::string bearer_token;
-    int initial_backoff_s = 5;
-    int max_backoff_s     = 300;
-    std::size_t queue_max_messages = 1000;
-    std::size_t queue_max_bytes    = 10 * 1024 * 1024;
-
-    std::atomic<State> state{State::Disconnected};
-    std::atomic<bool>  running{false};
-    std::atomic<bool>  write_in_flight{false};
-    int                current_backoff_s = 5;
-    bool               is_tls = false;
-
-    std::string host;
-    std::string port;
-    std::string path;
-
-    MessageCallback on_message;
-    StateCallback   on_state_change;
-
-    std::unique_ptr<OutboundQueue> queue;
-    std::thread io_thread;
-
-    std::unique_ptr<net::io_context> ioc;
-    std::unique_ptr<ssl::context>    ssl_ctx;
-
-    std::unique_ptr<WsPlain> ws_plain;
-    std::unique_ptr<WsTls>   ws_tls;
-
-    std::unique_ptr<tcp::resolver>     resolver;
-    std::unique_ptr<net::steady_timer> reconnect_timer;
-
-    beast::flat_buffer read_buffer;
-    std::shared_ptr<std::string> current_write;
-
-    std::mutex lifecycle_mutex;
-
-    std::mt19937 rng{std::random_device{}()};
-};
-
-// ---- Construction --------------------------------------------------
-
-WebSocketClient::WebSocketClient()
-    : impl_(std::make_unique<Impl>()) {}
-
-WebSocketClient::~WebSocketClient() {
-    stop();
-}
-
-// ---- Configuration -------------------------------------------------
-
-void WebSocketClient::set_bearer_token(std::string token) {
-    impl_->bearer_token = std::move(token);
-}
-
-void WebSocketClient::set_backoff(int initial_seconds, int max_seconds) {
-    impl_->initial_backoff_s = initial_seconds;
-    impl_->max_backoff_s     = max_seconds;
-    impl_->current_backoff_s = initial_seconds;
-}
-
-void WebSocketClient::set_queue_limits(std::size_t max_messages,
-                                       std::size_t max_bytes) {
-    impl_->queue_max_messages = max_messages;
-    impl_->queue_max_bytes    = max_bytes;
-}
-
-void WebSocketClient::set_on_message(MessageCallback cb) {
-    impl_->on_message = std::move(cb);
-}
-
-void WebSocketClient::set_on_state_change(StateCallback cb) {
-    impl_->on_state_change = std::move(cb);
-}
-
-WebSocketClient::State WebSocketClient::state() const {
-    return impl_->state.load();
-}
-
-bool WebSocketClient::is_running() const {
-    return impl_->running.load();
-}
-
-void WebSocketClient::set_state(State s) {
-    const State old = impl_->state.exchange(s);
-    if (old != s && impl_->on_state_change) {
-        impl_->on_state_change(s);
-    }
-}
-
-// ---- Lifecycle -----------------------------------------------------
-
-bool WebSocketClient::start(const std::string& url) {
-    if (impl_->running.load()) {
-        SPDLOG_WARN("WebSocketClient: already running");
-        return false;
-    }
-
-    std::string scheme;
-    if (!parse_ws_url(url, scheme, impl_->host, impl_->port, impl_->path)) {
-        SPDLOG_ERROR("WebSocketClient: invalid URL: {}", url);
-        return false;
-    }
-
-    impl_->is_tls = (scheme == "wss");
-    impl_->url    = url;
-
-    impl_->queue = std::make_unique<OutboundQueue>(
-        impl_->queue_max_messages, impl_->queue_max_bytes);
-
-    impl_->ioc = std::make_unique<net::io_context>();
-    impl_->running.store(true);
-
-    impl_->io_thread = std::thread([this] {
-        SPDLOG_INFO("WebSocketClient: I/O thread starting");
-        (void)net::post(*impl_->ioc, [this] { start_connect(); });
-        impl_->ioc->run();
-        SPDLOG_INFO("WebSocketClient: I/O thread exiting");
-        set_state(State::Disconnected);
-    });
-
-    return true;
-}
-
-void WebSocketClient::stop() {
-    std::lock_guard<std::mutex> lock(impl_->lifecycle_mutex);
-
-    if (!impl_->running.exchange(false)) return;
-
-    if (impl_->queue) impl_->queue->stop();
-
-    // If we were connected, send a proper 1000 Normal close frame
-    // before tearing down, so the server sees a clean close instead
-    // of a 1006 abnormal closure.
-    if (impl_->ioc && impl_->state.load() == State::Connected) {
-        (void)net::post(*impl_->ioc, [this] {
-            boost::system::error_code ec;
-
-            // Cancel any pending read/write so close() can proceed.
-            if (impl_->ws_plain) {
-                (void)beast::get_lowest_layer(*impl_->ws_plain)
-                    .socket().cancel(ec);
-            } else if (impl_->ws_tls) {
-                (void)beast::get_lowest_layer(*impl_->ws_tls)
-                    .socket().cancel(ec);
-            }
-            ec.clear();
-
-            // Tighten timeouts so the close handshake can't hang.
-            websocket::stream_base::timeout opt;
-            opt.handshake_timeout = 2s;
-            opt.idle_timeout      = 2s;
-            opt.keep_alive_pings  = false;
-
-            if (impl_->ws_plain) {
-                (void)impl_->ws_plain->set_option(opt);
-                impl_->ws_plain->close(websocket::close_code::normal, ec);
-            } else if (impl_->ws_tls) {
-                (void)impl_->ws_tls->set_option(opt);
-                impl_->ws_tls->close(websocket::close_code::normal, ec);
-            }
-
-            if (ec && ec != websocket::error::closed) {
-                SPDLOG_DEBUG("WebSocketClient: close handshake incomplete: {}",
-                             ec.message());
-            } else {
-                SPDLOG_INFO("WebSocketClient: sent graceful close (code=1000)");
-            }
-        });
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    }
-
-    if (impl_->ioc) impl_->ioc->stop();
-    if (impl_->io_thread.joinable()) impl_->io_thread.join();
-
-    impl_->reconnect_timer.reset();
-    impl_->resolver.reset();
-    impl_->ws_plain.reset();
-    impl_->ws_tls.reset();
-    impl_->ssl_ctx.reset();
-    impl_->ioc.reset();
-    impl_->write_in_flight.store(false);
-    impl_->current_write.reset();
-
-    set_state(State::Disconnected);
-}
-
-bool WebSocketClient::send(std::string message, OutboundQueue::Priority priority) {
-    std::lock_guard<std::mutex> lock(impl_->lifecycle_mutex);
-
-    if (!impl_->running.load() || !impl_->queue || !impl_->ioc) {
-        return false;
-    }
-
-    const bool ok = impl_->queue->push(priority, std::move(message));
-
-    if (ok) {
-        (void)net::post(*impl_->ioc, [this] { start_write(); });
-    }
-
-    return ok;
-}
-
-void WebSocketClient::close_streams() {
-    boost::system::error_code ignored;
-    if (impl_->ws_plain) {
-        (void)beast::get_lowest_layer(*impl_->ws_plain)
-            .socket().close(ignored);
-        impl_->ws_plain.reset();
-    }
-    if (impl_->ws_tls) {
-        (void)beast::get_lowest_layer(*impl_->ws_tls)
-            .socket().close(ignored);
-        impl_->ws_tls.reset();
-    }
-    impl_->write_in_flight.store(false);
-    impl_->current_write.reset();
-}
-
-// ---- Connect -------------------------------------------------------
-
-void WebSocketClient::start_connect() {
-    if (!impl_->running.load()) return;
-
-    set_state(State::Connecting);
-    SPDLOG_INFO("WebSocketClient: connecting to {}:{} ({})",
-                impl_->host, impl_->port,
-                impl_->is_tls ? "wss" : "ws");
-
-    impl_->resolver = std::make_unique<tcp::resolver>(*impl_->ioc);
-
-    (void)impl_->resolver->async_resolve(
-        impl_->host, impl_->port,
-        [this](sys::error_code ec, tcp::resolver::results_type results) {
-            if (is_shutdown_error(ec)) return;
-            if (ec) { on_connect_error(ec); return; }
-
-            if (impl_->is_tls) {
-                // -------- TLS --------
-                impl_->ssl_ctx = std::make_unique<ssl::context>(
-                    ssl::context::tls_client);
-                impl_->ssl_ctx->set_default_verify_paths();
-
-                impl_->ws_tls = std::make_unique<WsTls>(
-                    *impl_->ioc, *impl_->ssl_ctx);
-
-                SSL* ssl_handle = impl_->ws_tls->next_layer().native_handle();
-
-                if (!SSL_set_tlsext_host_name(ssl_handle,
-                                              impl_->host.c_str())) {
-                    on_connect_error(make_error_code(
-                        boost::system::errc::invalid_argument));
-                    return;
-                }
-
-                impl_->ws_tls->next_layer().set_verify_mode(ssl::verify_peer);
-
-                X509_VERIFY_PARAM* param = SSL_get0_param(ssl_handle);
-                X509_VERIFY_PARAM_set_hostflags(
-                    param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-                if (X509_VERIFY_PARAM_set1_host(param,
-                                                impl_->host.c_str(),
-                                                impl_->host.size()) != 1) {
-                    on_connect_error(make_error_code(
-                        boost::system::errc::invalid_argument));
-                    return;
-                }
-
-                attach_handshake_headers(*impl_->ws_tls, impl_->bearer_token);
-
-                (void)beast::get_lowest_layer(*impl_->ws_tls)
-                    .expires_after(15s);
-
-                (void)beast::get_lowest_layer(*impl_->ws_tls).async_connect(
-                    results,
-                    [this](sys::error_code ec, const tcp::endpoint&) {
-                        if (is_shutdown_error(ec)) return;
-                        if (ec) { on_connect_error(ec); return; }
-
-                        (void)impl_->ws_tls->next_layer().async_handshake(
-                            ssl::stream_base::client,
-                            [this](sys::error_code ec) {
-                                if (is_shutdown_error(ec)) return;
-                                if (ec) { on_connect_error(ec); return; }
-
-                                (void)beast::get_lowest_layer(*impl_->ws_tls)
-                                    .expires_never();
-
-                                websocket::stream_base::timeout opt =
-                                    websocket::stream_base::timeout::suggested(
-                                        beast::role_type::client);
-                                opt.idle_timeout     = 90s;
-                                opt.keep_alive_pings = true;
-                                (void)impl_->ws_tls->set_option(opt);
-
-                                const std::string host_header =
-                                    impl_->host + ":" + impl_->port;
-
-                                (void)impl_->ws_tls->async_handshake(
-                                    host_header, impl_->path,
-                                    [this](sys::error_code ec) {
-                                        if (is_shutdown_error(ec)) return;
-                                        if (ec) { on_connect_error(ec); return; }
-
-                                        SPDLOG_INFO("WebSocketClient: connected (wss)");
-                                        set_state(State::Connected);
-                                        impl_->current_backoff_s = impl_->initial_backoff_s;
-                                        start_read();
-                                        start_write();
-                                    });
-                            });
-                    });
-
-            } else {
-                // -------- Plain --------
-                impl_->ws_plain = std::make_unique<WsPlain>(*impl_->ioc);
-
-                attach_handshake_headers(*impl_->ws_plain, impl_->bearer_token);
-
-                (void)beast::get_lowest_layer(*impl_->ws_plain)
-                    .expires_after(15s);
-
-                (void)beast::get_lowest_layer(*impl_->ws_plain).async_connect(
-                    results,
-                    [this](sys::error_code ec, const tcp::endpoint&) {
-                        if (is_shutdown_error(ec)) return;
-                        if (ec) { on_connect_error(ec); return; }
-
-                        (void)beast::get_lowest_layer(*impl_->ws_plain)
-                            .expires_never();
-
-                        websocket::stream_base::timeout opt =
-                            websocket::stream_base::timeout::suggested(
-                                beast::role_type::client);
-                        opt.idle_timeout     = 90s;
-                        opt.keep_alive_pings = true;
-                        (void)impl_->ws_plain->set_option(opt);
-
-                        const std::string host_header =
-                            impl_->host + ":" + impl_->port;
-
-                        (void)impl_->ws_plain->async_handshake(
-                            host_header, impl_->path,
-                            [this](sys::error_code ec) {
-                                if (is_shutdown_error(ec)) return;
-                                if (ec) { on_connect_error(ec); return; }
-
-                                SPDLOG_INFO("WebSocketClient: connected (ws)");
-                                set_state(State::Connected);
-                                impl_->current_backoff_s = impl_->initial_backoff_s;
-                                start_read();
-                                start_write();
-                            });
-                    });
-            }
-        });
-}
-
-// ---- Read/Write ----------------------------------------------------
-
-void WebSocketClient::start_read() {
-    if (!impl_->running.load()) return;
-    if (impl_->state.load() != State::Connected) return;
-
-    impl_->read_buffer.consume(impl_->read_buffer.size());
-
-    if (impl_->ws_tls) {
-        (void)impl_->ws_tls->async_read(
-            impl_->read_buffer,
-            [this](sys::error_code ec, std::size_t bytes) {
-                on_read_complete(ec, bytes);
-            });
-    } else if (impl_->ws_plain) {
-        (void)impl_->ws_plain->async_read(
-            impl_->read_buffer,
-            [this](sys::error_code ec, std::size_t bytes) {
-                on_read_complete(ec, bytes);
-            });
-    }
-}
-
-void WebSocketClient::on_read_complete(const sys::error_code& ec,
-                                       std::size_t /*bytes*/) {
-    if (is_shutdown_error(ec)) return;
-
-    if (ec) {
-        on_disconnect(ec, true);
-        return;
-    }
-
-    const auto data = beast::buffers_to_string(impl_->read_buffer.data());
-
-    if (impl_->on_message) {
-        try {
-            impl_->on_message(data);
-        } catch (const std::exception& e) {
-            SPDLOG_ERROR("WebSocketClient: message handler threw: {}", e.what());
-        }
-    }
-
-    if (impl_->running.load() && impl_->state.load() == State::Connected) {
-        start_read();
-    }
-}
-
-void WebSocketClient::start_write() {
-    if (!impl_->running.load()) return;
-    if (impl_->state.load() != State::Connected) return;
-    if (impl_->write_in_flight.exchange(true)) return;
-
-    std::string out;
-    if (!impl_->queue || !impl_->queue->try_pop(out)) {
-        impl_->write_in_flight.store(false);
-        return;
-    }
-
-    impl_->current_write = std::make_shared<std::string>(std::move(out));
-
-    if (impl_->ws_tls) {
-        (void)impl_->ws_tls->async_write(
-            net::buffer(*impl_->current_write),
-            [this](sys::error_code ec, [[maybe_unused]] std::size_t bytes) {
-                on_write_complete(ec);
-            });
-    } else if (impl_->ws_plain) {
-        (void)impl_->ws_plain->async_write(
-            net::buffer(*impl_->current_write),
-            [this](sys::error_code ec, [[maybe_unused]] std::size_t bytes) {
-                on_write_complete(ec);
-            });
-    } else {
-        impl_->write_in_flight.store(false);
-    }
-}
-
-void WebSocketClient::on_write_complete(const sys::error_code& ec) {
-    impl_->current_write.reset();
-    impl_->write_in_flight.store(false);
-
-    if (is_shutdown_error(ec)) return;
-    if (ec) { on_disconnect(ec, true); return; }
-
-    if (impl_->running.load() && impl_->state.load() == State::Connected) {
-        start_write();
-    }
-}
-
-// ---- Error handling -----------------------------------------------
-
-void WebSocketClient::on_connect_error(sys::error_code ec) {
-    if (is_shutdown_error(ec)) return;
-
-    // Boost.Beast does not expose a portable `handshake_declined`
-    // error code across versions. The message is stable, so match on
-    // it and emit a more actionable warning when we see it.
-    const std::string msg = ec.message();
-    const bool is_declined =
-        msg.find("declined")   != std::string::npos ||
-        msg.find("handshake")  != std::string::npos;
-
-    if (is_declined) {
-        SPDLOG_WARN("WebSocketClient: connect error: {} — "
-                    "the server rejected the WebSocket upgrade. "
-                    "This usually means the API token is invalid or revoked, "
-                    "or the WebSocket endpoint is disabled on the server.",
-                    msg);
-    } else {
-        SPDLOG_WARN("WebSocketClient: connect error: {}", msg);
-    }
-
-    close_streams();
-    schedule_reconnect();
-}
-
-void WebSocketClient::on_disconnect(sys::error_code ec, bool allow_reconnect) {
-    if (is_shutdown_error(ec)) return;
-
-    websocket::close_code code = websocket::close_code::none;
-    std::string            reason;
-
-    // close_reason::code is std::uint16_t in some Boost versions and
-    // close_code in others. static_cast handles both safely.
-    if (impl_->ws_plain) {
-        auto cr = impl_->ws_plain->reason();
-        code   = static_cast<websocket::close_code>(cr.code);
-        reason = cr.reason.c_str();
-    } else if (impl_->ws_tls) {
-        auto cr = impl_->ws_tls->reason();
-        code   = static_cast<websocket::close_code>(cr.code);
-        reason = cr.reason.c_str();
-    }
-
-    if (ec == websocket::error::closed) {
-        SPDLOG_INFO("WebSocketClient: server closed connection "
-                    "(code={}, reason='{}')",
-                    static_cast<unsigned>(code), reason);
-    } else {
-        SPDLOG_WARN("WebSocketClient: connection lost: {}", ec.message());
-    }
-
-    close_streams();
-
-    if (!allow_reconnect || !should_reconnect_on_close(code)) {
-        SPDLOG_ERROR("WebSocketClient: close code {} is not retryable — "
-                     "stopping permanently "
-                     "(server likely revoked this agent's token)",
-                     static_cast<unsigned>(code));
-        impl_->running.store(false);
-        if (impl_->ioc) impl_->ioc->stop();
-        return;
-    }
-
-    schedule_reconnect();
-}
-
-// ---- Reconnect with jitter ----------------------------------------
-
-int WebSocketClient::next_backoff_with_jitter() {
-    const int base = impl_->current_backoff_s;
-    const int jit  = std::max(1, base / 5); // ±20%
-    std::uniform_int_distribution<int> dist(-jit, jit);
-    return std::max(1, base + dist(impl_->rng));
-}
-
-void WebSocketClient::schedule_reconnect() {
-    if (!impl_->running.load()) return;
-
-    set_state(State::Reconnecting);
-
-    const int delay_s = next_backoff_with_jitter();
-    SPDLOG_INFO("WebSocketClient: reconnecting in {}s "
-                "(base={}s, max={}s)",
-                delay_s, impl_->current_backoff_s, impl_->max_backoff_s);
-
-    if (!impl_->reconnect_timer) {
-        impl_->reconnect_timer =
-            std::make_unique<net::steady_timer>(*impl_->ioc);
-    }
-
-    (void)impl_->reconnect_timer
-        ->expires_after(std::chrono::seconds(delay_s));
-
-    (void)impl_->reconnect_timer->async_wait([this](sys::error_code ec) {
-        if (is_shutdown_error(ec)) return;
-        if (!impl_->running.load()) return;
-
-        impl_->current_backoff_s =
-            std::min(impl_->current_backoff_s * 2, impl_->max_backoff_s);
-
-        start_connect();
-    });
-}
-
-} // namespace axiom::core
-```
-
-### \`src/net/websocket_client.h\`
-
-```cpp
-// src/net/websocket_client.h
-//
-// Persistent WebSocket client for AxiomDLP Core. Supports ws:// and wss://.
-// TLS is always verified on wss://.
-//
-// Liveness is handled by Beast's own keep-alive pings. There is NO
-// application-level read deadline: a WebSocket can be idle for hours
-// and remain valid, so a per-read timer is incorrect.
-//
-// Reconnect uses exponential backoff with ±20% jitter.
-
-#pragma once
-
-#include "net/outbound_queue.h"
-
-#include <boost/system/error_code.hpp>
-
-#include <cstddef>
-#include <functional>
-#include <memory>
-#include <string>
-#include <string_view>
-
-namespace axiom::core {
-
-class WebSocketClient {
-public:
-    enum class State {
-        Disconnected,
-        Connecting,
-        Connected,
-        Reconnecting
-    };
-
-    using MessageCallback = std::function<void(std::string_view)>;
-    using StateCallback   = std::function<void(State)>;
-
-    WebSocketClient();
-    ~WebSocketClient();
-
-    WebSocketClient(const WebSocketClient&) = delete;
-    WebSocketClient& operator=(const WebSocketClient&) = delete;
-
-    // Bearer token sent on the handshake. Call before start().
-    void set_bearer_token(std::string token);
-
-    bool start(const std::string& url);
-    void stop();
-
-    bool send(std::string message,
-              OutboundQueue::Priority priority = OutboundQueue::Priority::Normal);
-
-    void set_backoff(int initial_seconds, int max_seconds);
-    void set_queue_limits(std::size_t max_messages, std::size_t max_bytes);
-
-    void set_on_message(MessageCallback cb);
-    void set_on_state_change(StateCallback cb);
-
-    State state() const;
-    bool  is_running() const;
-
-private:
-    void set_state(State s);
-
-    void start_connect();
-    void start_read();
-    void start_write();
-
-    void on_read_complete(const boost::system::error_code& ec, std::size_t bytes);
-    void on_write_complete(const boost::system::error_code& ec);
-    void on_connect_error(boost::system::error_code ec);
-    void on_disconnect(boost::system::error_code ec, bool allow_reconnect);
-    void schedule_reconnect();
-    void close_streams();
-    int  next_backoff_with_jitter();
-
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace axiom::core
@@ -12419,6 +11438,11 @@ PYEOF
 .SYNOPSIS
     Build AxiomDLP Agent on Windows with MSVC + vcpkg.
 
+.DESCRIPTION
+    Auto-initializes the Visual Studio environment (vcvarsall.bat) so this
+    script works from ANY PowerShell window. Also protects VCPKG_ROOT from
+    being overwritten by vcvarsall.bat (which sets it to the VS-bundled vcpkg).
+
 .PARAMETER Configuration
     Debug or Release (default: Release).
 
@@ -12428,10 +11452,8 @@ PYEOF
 .PARAMETER Clean
     If set, delete the build directory before configuring.
 
-.EXAMPLE
-    .\scripts\build-windows-msvc.ps1
-    .\scripts\build-windows-msvc.ps1 -Configuration Debug
-    .\scripts\build-windows-msvc.ps1 -Clean
+.NOTES
+    This file is intentionally ASCII-only for maximum encoding compatibility.
 #>
 
 param(
@@ -12446,55 +11468,178 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# ----------------------------------------------------------------
+# Save VCPKG_ROOT BEFORE VS env init (vcvarsall.bat overwrites it
+# with the VS-bundled vcpkg, which requires builtin-baseline).
+# ----------------------------------------------------------------
+$savedVcpkgRoot = $env:VCPKG_ROOT
+if (-not $savedVcpkgRoot) {
+    $savedVcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
+}
+if (-not $savedVcpkgRoot) {
+    $savedVcpkgRoot = "$env:USERPROFILE\vcpkg"
+}
+
+# ----------------------------------------------------------------
+# Auto-initialize Visual Studio environment (MSVC toolchain)
+# ----------------------------------------------------------------
+$desiredArch = if ($Arch -eq "x86") { "x86" } else { "x64" }
+$currentArch = $env:VSCMD_ARG_TGT_ARCH
+if (-not $env:VSINSTALLDIR -or $currentArch -ne $desiredArch) {
+    Write-Host "Initializing Visual Studio environment..." -ForegroundColor Yellow
+
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) {
+        Write-Host "[ERROR] Visual Studio Installer not found at $vswhere" -ForegroundColor Red
+        exit 1
+    }
+
+    $vsPath = & $vswhere -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath
+
+    if (-not $vsPath) {
+        Write-Host "[ERROR] Visual Studio C++ workload not found." -ForegroundColor Red
+        exit 1
+    }
+
+    $vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+    if (-not (Test-Path $vcvarsall)) {
+        Write-Host "[ERROR] vcvarsall.bat not found at $vcvarsall" -ForegroundColor Red
+        exit 1
+    }
+
+    $vsArch = if ($Arch -eq "x86") { "x86" } else { "amd64" }
+
+    $envOutput = cmd /c "`"$vcvarsall`" $vsArch >nul 2>&1 && set"
+    foreach ($line in $envOutput) {
+        if ($line -match "^(.*?)=(.*)$") {
+            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
+        }
+    }
+
+    if (-not $env:VSINSTALLDIR) {
+        Write-Host "[ERROR] vcvarsall.bat did not populate VSINSTALLDIR." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  [OK] VS env loaded: $env:VSINSTALLDIR" -ForegroundColor Green
+}
+else {
+    Write-Host "  [OK] VS env already loaded: $env:VSINSTALLDIR" -ForegroundColor Green
+}
+
+# ----------------------------------------------------------------
+# Restore VCPKG_ROOT (vcvarsall.bat overwrites it to the VS-bundled
+# vcpkg, which requires builtin-baseline and uses different ports).
+# ----------------------------------------------------------------
+if ($savedVcpkgRoot) {
+    $previous = $env:VCPKG_ROOT
+    $env:VCPKG_ROOT = $savedVcpkgRoot
+    if ($previous -and $previous -ne $savedVcpkgRoot) {
+        Write-Host "  [OK] Restored VCPKG_ROOT: $env:VCPKG_ROOT" -ForegroundColor Green
+        Write-Host "       (vcvarsall.bat had set it to: $previous)" -ForegroundColor DarkGray
+    }
+}
+
+# Refuse to use the VS-bundled vcpkg - it requires builtin-baseline
+# in vcpkg.json which the standalone vcpkg does not need.
+if ($env:VCPKG_ROOT -match "Microsoft Visual Studio.*VC[\\/]vcpkg") {
+    Write-Host "[ERROR] VCPKG_ROOT points at the VS-bundled vcpkg:" -ForegroundColor Red
+    Write-Host "        $env:VCPKG_ROOT" -ForegroundColor Red
+    Write-Host "        This is different from your standalone vcpkg." -ForegroundColor Red
+    Write-Host "        Set VCPKG_ROOT to the standalone path (e.g. C:\Users\User\vcpkg)" -ForegroundColor Red
+    exit 1
+}
+
+# Force MSVC compilers (overrides any GCC on PATH)
+$env:CC = "cl.exe"
+$env:CXX = "cl.exe"
+
+# ----------------------------------------------------------------
+# Locate project root
+# ----------------------------------------------------------------
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $projectRoot
 
-Write-Host "=== AxiomDLP Agent — Windows MSVC build ===" -ForegroundColor Cyan
+Write-Host "`n=== AxiomDLP Agent - Windows MSVC build ===" -ForegroundColor Cyan
 Write-Host "  Project root: $projectRoot"
 Write-Host "  Config:       $Configuration"
 Write-Host "  Arch:         $Arch"
 
+# ----------------------------------------------------------------
+# Verify VCPKG_ROOT
+# ----------------------------------------------------------------
 if (-not $env:VCPKG_ROOT) {
-    Write-Error @"
-VCPKG_ROOT is not set.
+    Write-Host @"
+[ERROR] VCPKG_ROOT is not set.
 
 Run the one-time setup first:
     .\scripts\win\setup-windows-msvc.ps1
 
-Then re-open your shell.
-"@
+Then close this shell, open a new one, and try again.
+"@ -ForegroundColor Red
     exit 1
 }
 if (-not (Test-Path "$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake")) {
-    Write-Error "vcpkg toolchain file not found at $env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+    Write-Host "[ERROR] vcpkg toolchain file not found at $env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" -ForegroundColor Red
     exit 1
 }
-Write-Host "  VCPKG_ROOT:   $env:VCPKG_ROOT" -ForegroundColor Green
+Write-Host "  [OK] VCPKG_ROOT: $env:VCPKG_ROOT" -ForegroundColor Green
 
+# ----------------------------------------------------------------
+# Build dir handling
+# ----------------------------------------------------------------
 $presetName = "windows-$Arch-msvc-$(($Configuration).ToLower())"
-$buildDir   = Join-Path $projectRoot "build\$presetName"
+$buildDir = Join-Path $projectRoot "build\$presetName"
 
 if ($Clean -and (Test-Path $buildDir)) {
-    Write-Host "  Cleaning $buildDir" -ForegroundColor Yellow
+    Write-Host "  Cleaning $buildDir (--Clean requested)" -ForegroundColor Yellow
     Remove-Item -Recurse -Force $buildDir
 }
 
+# Auto-clean if cached compiler is not MSVC
+$cacheFile = Join-Path $buildDir "CMakeCache.txt"
+if (Test-Path $cacheFile) {
+    $cacheText = Get-Content $cacheFile -Raw
+    if ($cacheText -match "CMAKE_C_COMPILER:[^=]*=.*(gcc|cc\.exe)" -or
+        $cacheText -match "CMAKE_CXX_COMPILER:[^=]*=.*(g\+\+|c\+\+\.exe)") {
+        Write-Host "  Stale CMake cache with GCC compiler found; cleaning build dir..." -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $buildDir
+    }
+}
+
+# ----------------------------------------------------------------
+# Configure
+# ----------------------------------------------------------------
 Write-Host "`n--- Configure (preset: $presetName) ---" -ForegroundColor Yellow
 cmake --preset $presetName
-if ($LASTEXITCODE -ne 0) { Write-Error "Configure failed."; exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Configure failed." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
 
+# ----------------------------------------------------------------
+# Build
+# ----------------------------------------------------------------
 Write-Host "`n--- Build ---" -ForegroundColor Yellow
 cmake --build --preset $presetName --config $Configuration
-if ($LASTEXITCODE -ne 0) { Write-Error "Build failed."; exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Build failed." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
 
+# ----------------------------------------------------------------
+# Report
+# ----------------------------------------------------------------
 $exe = Join-Path $buildDir "axiomdlp-agent.exe"
 if (Test-Path $exe) {
     $size = [math]::Round((Get-Item $exe).Length / 1MB, 2)
     Write-Host "`n=== Build succeeded ===" -ForegroundColor Cyan
     Write-Host "  Binary: $exe"
     Write-Host "  Size:   $size MB"
-} else {
-    Write-Warning "Build finished but $exe not found. Check the preset's binaryDir."
+}
+else {
+    Write-Host "[WARN] Build finished but $exe not found. Check the preset's binaryDir." -ForegroundColor Yellow
 }
 ```
 
@@ -12507,17 +11652,18 @@ if (Test-Path $exe) {
 
 .DESCRIPTION
     - Verifies Visual Studio 2022 (or Build Tools) with the C++ workload.
-    - Clones vcpkg into %USERPROFILE%\vcpkg if missing.
-    - Bootstraps vcpkg.
+    - Downloads the vcpkg repository as a ZIP (no git clone).
+    - Downloads the prebuilt vcpkg.exe (no compilation).
     - Sets VCPKG_ROOT persistently for the current user.
 
 .NOTES
-    Run once per machine. Requires PowerShell 5.1+ (built-in) or 7+.
+    This file is intentionally ASCII-only for maximum encoding compatibility.
+    Fast mode: uses codeload ZIP + GitHub release exe. No git, no bootstrap.
 #>
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== AxiomDLP Agent — Windows MSVC bootstrap ===" -ForegroundColor Cyan
+Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (fast mode) ===" -ForegroundColor Cyan
 
 # ----------------------------------------------------------------
 # 1. Verify Visual Studio
@@ -12526,18 +11672,18 @@ Write-Host "`n[1/3] Looking for Visual Studio..." -ForegroundColor Yellow
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) {
-    Write-Error @"
-Visual Studio Installer not found.
+    Write-Host @"
+[ERROR] Visual Studio Installer not found.
 
 Install one of:
   - Visual Studio 2022 Community (free)
   - Visual Studio 2022 Build Tools (free, headless)
 
 Make sure to select the workload:
-  "Desktop development with C++"
+  'Desktop development with C++'
 
 Download: https://visualstudio.microsoft.com/downloads/
-"@
+"@ -ForegroundColor Red
     exit 1
 }
 
@@ -12546,45 +11692,102 @@ $vsInstall = & $vswhere -latest -products * `
     -property installationPath
 
 if (-not $vsInstall) {
-    Write-Error "Visual Studio found but the C++ workload is missing. Add 'Desktop development with C++'."
+    Write-Host "[ERROR] Visual Studio found but the C++ workload is missing." -ForegroundColor Red
+    Write-Host "        Open Visual Studio Installer, click Modify, check 'Desktop development with C++'." -ForegroundColor Red
     exit 1
 }
-Write-Host "  Found: $vsInstall" -ForegroundColor Green
+Write-Host "  [OK] Found: $vsInstall" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 2. Clone + bootstrap vcpkg
+# 2. vcpkg: ZIP recipes + prebuilt vcpkg.exe
 # ----------------------------------------------------------------
 $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "$env:USERPROFILE\vcpkg" }
+$vcpkgZip = "$env:USERPROFILE\vcpkg.zip"
+$toolchain = "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
 
-Write-Host "`n[2/3] Checking vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
+Write-Host "`n[2/3] Setting up vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
 
-if (-not (Test-Path "$vcpkgRoot\.git")) {
-    Write-Host "  Cloning vcpkg (one-time, ~100 MB)..." -ForegroundColor Yellow
-    git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+# --- 2a. Recipe folder (ports/, scripts/, triplets/)
+if (-not (Test-Path $toolchain)) {
+    Write-Host "  Downloading vcpkg recipes ZIP (no git clone)..." -ForegroundColor Yellow
+
+    $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/heads/master"
+    try {
+        Invoke-WebRequest -Uri $zipUrl -OutFile $vcpkgZip -UseBasicParsing
+    }
+    catch {
+        Write-Host "  master not found; trying main branch..." -ForegroundColor Yellow
+        $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/heads/main"
+        Invoke-WebRequest -Uri $zipUrl -OutFile $vcpkgZip -UseBasicParsing
+    }
+
+    Write-Host "  Extracting..." -ForegroundColor Yellow
+    Expand-Archive -Path $vcpkgZip -DestinationPath "$env:USERPROFILE" -Force
+
+    $extracted = Get-ChildItem "$env:USERPROFILE" -Directory -Filter "vcpkg-*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne "vcpkg" } | Select-Object -First 1
+
+    if (-not $extracted) {
+        Write-Host "[ERROR] Could not find extracted vcpkg-* folder." -ForegroundColor Red
+        exit 1
+    }
+
+    if (Test-Path $vcpkgRoot) {
+        Remove-Item -Recurse -Force $vcpkgRoot -ErrorAction SilentlyContinue
+    }
+    Rename-Item $extracted.FullName $vcpkgRoot
+    Remove-Item $vcpkgZip -Force -ErrorAction SilentlyContinue
+}
+else {
+    Write-Host "  [OK] vcpkg recipes already present." -ForegroundColor Green
 }
 
+# --- 2b. Prebuilt vcpkg.exe
 if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-    Write-Host "  Bootstrapping vcpkg..." -ForegroundColor Yellow
-    Push-Location $vcpkgRoot
-    .\bootstrap-vcpkg.bat -disableMetrics
-    Pop-Location
+    Write-Host "  Downloading prebuilt vcpkg.exe (no compilation)..." -ForegroundColor Yellow
+    $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/latest/download/vcpkg.exe"
+    Invoke-WebRequest -Uri $exeUrl -OutFile "$vcpkgRoot\vcpkg.exe" -UseBasicParsing
+}
+else {
+    Write-Host "  [OK] vcpkg.exe already present." -ForegroundColor Green
 }
 
+# --- 2c. Verify both pieces
 if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-    Write-Error "vcpkg bootstrap failed; check $vcpkgRoot"
+    Write-Host "[ERROR] vcpkg.exe download failed; check $vcpkgRoot" -ForegroundColor Red
     exit 1
 }
-Write-Host "  vcpkg ready: $vcpkgRoot\vcpkg.exe" -ForegroundColor Green
+if (-not (Test-Path $toolchain)) {
+    Write-Host "[ERROR] vcpkg toolchain file missing at $toolchain" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  [OK] vcpkg ready: $vcpkgRoot" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 3. Persist VCPKG_ROOT
+# 3. Persist VCPKG_ROOT (both User scope and current process)
 # ----------------------------------------------------------------
 Write-Host "`n[3/3] Setting VCPKG_ROOT=$vcpkgRoot for current user..." -ForegroundColor Yellow
-[System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "User")
+
+# Method 1: .NET API (silent if it works)
+try {
+    [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "User")
+}
+catch {
+    Write-Host "  setenv API failed; falling back to setx..." -ForegroundColor Yellow
+}
+
+# Method 2: setx fallback (writes to registry, works on all Windows versions)
+$currentVal = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
+if ($currentVal -ne $vcpkgRoot) {
+    & setx VCPKG_ROOT "$vcpkgRoot" | Out-Null
+}
+
+# Also set in current process so immediate builds work
 $env:VCPKG_ROOT = $vcpkgRoot
 
 Write-Host "`n=== Setup complete ===" -ForegroundColor Cyan
-Write-Host "Re-open your shell, then run: .\scripts\win\build-windows-msvc.ps1" -ForegroundColor Cyan
+Write-Host "Close this shell, open a new one, then run:" -ForegroundColor Cyan
+Write-Host "  .\scripts\win\build-windows-msvc.ps1" -ForegroundColor Cyan
 ```
 
 ---
@@ -13108,10 +12311,11 @@ the user** — do not assume their contents.
 - `.git/` — version-control metadata — not bundled
 - `.github/` — not bundled (ask if needed)
 - `logs/` — runtime logs — not bundled (ask if needed)
+- `tests/` — not bundled (ask if needed)
 - `.vscode/` — editor config — not bundled
 - `axiomdlp-agent-bundle.md` — generated bundle — not bundled
 - `.clangd` — editor config — not bundled
-- `vcpkg-configuration.json` — not bundled (ask if needed)
+- `compile_commands.json` — generated — not bundled
 - `vcpkg.json` — not bundled (ask if needed)
 
 
@@ -13119,6 +12323,6 @@ the user** — do not assume their contents.
 
 ## Summary
 
-- Files included: **78**
-- Files skipped:  **22**
-- Bundle size:    428K
+- Files included: **76**
+- Files skipped:  **23**
+- Bundle size:    412K

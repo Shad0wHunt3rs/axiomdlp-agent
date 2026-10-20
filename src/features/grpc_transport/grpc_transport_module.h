@@ -1,21 +1,11 @@
 // src/features/grpc_transport/grpc_transport_module.h
-//
-// gRPC transport module. Only compiled when AXIOM_HAVE_GRPC is defined
-// (currently: Windows + vcpkg + MSVC). On Linux the module is excluded
-// until scripts/linux/build-grpc.sh is run and the CMake block is
-// extended to pick up .deps/grpc-linux-*/.
-//
-// The module is **additive** — WebSocket transport stays in place.
-// On Windows you can run both at once (gRPC disabled by default in
-// config, enabled with modules.grpc_transport.enabled = true).
-
 #pragma once
 
-#ifdef AXIOM_HAVE_GRPC
-
 #include "modules/module_base.h"
+#include "agent.grpc.pb.h"
 
 #include <atomic>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -36,10 +26,15 @@ public:
 
 private:
     void manager_loop();
+    grpc::Status run_channel_stream();
+    void handle_server_message(const axiomdlp::agent::v1::ChannelResponse& resp);
 
     std::string server_url_;
     std::string api_token_;
     int         agent_id_ = 0;
+
+    std::shared_ptr<grpc::Channel> channel_;
+    std::unique_ptr<axiomdlp::agent::v1::AgentService::Stub> stub_;
 
     std::thread       manager_thread_;
     std::atomic<bool> stop_{false};
@@ -47,5 +42,3 @@ private:
 };
 
 } // namespace axiom::core
-
-#endif // AXIOM_HAVE_GRPC

@@ -1,21 +1,13 @@
 // src/features/agent_sync/agent_sync_module.h
-//
-// AgentSyncModule is the HTTP channel between the agent and the
-// AxiomDLP Core server.
-//
-// Auth failures (401/403) are fatal. When either the enrollment or
-// heartbeat is rejected, this module calls ShutdownController with
-// AuthRevoked or AgentRevoked, which stops the whole agent. There is
-// no point retrying a revoked token.
-
 #pragma once
 
 #include "modules/module_base.h"
-
 #include <atomic>
 #include <memory>
 #include <string>
 #include <thread>
+#include <optional>
+#include <nlohmann/json.hpp>
 
 namespace axiom::core {
 
@@ -41,8 +33,9 @@ private:
 
     static std::string detect_hostname();
     static std::string detect_os();
+    static std::string detect_arch();
 
-    std::string http_base_url_;
+    std::string base_url_;
     std::string api_token_;
     int         heartbeat_interval_sec_ = 30;
     bool        enabled_ = true;

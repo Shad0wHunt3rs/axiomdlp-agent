@@ -2,102 +2,13 @@
 
 #include "net/http_client.h"
 
+#include <httplib.h>
 #include <spdlog/spdlog.h>
-
-#include <boost/asio/connect.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/ssl/context.hpp>
-#include <boost/asio/ssl/stream.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/core/tcp_stream.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/ssl.hpp>
-
-#include <openssl/ssl.h>
-#include <openssl/x509v3.h>
-
-#include <chrono>
-#include <exception>
-
-namespace beast = boost::beast;
-namespace http  = beast::http;
-namespace net   = boost::asio;
-namespace ssl   = boost::asio::ssl;
-using tcp       = net::ip::tcp;
 
 namespace axiom::core {
 
-// ----------------------------------------------------------------
-// URL parsing
-// ----------------------------------------------------------------
-
-namespace {
-
-struct ParsedUrl {
-    std::string scheme;
-    std::string host;
-    std::string port;
-    std::string target = "/";
-    bool        valid  = false;
-
-    bool is_https() const { return scheme == "https"; }
-};
-
-ParsedUrl parse_url(const std::string& url) {
-    ParsedUrl r;
-
-    std::string::size_type scheme_end = 0;
-    if (url.rfind("http://", 0) == 0) {
-        r.scheme   = "http";
-        r.port     = "80";
-        scheme_end = 7;
-    } else if (url.rfind("https://", 0) == 0) {
-        r.scheme   = "https";
-        r.port     = "443";
-        scheme_end = 8;
-    } else {
-        return r;
-    }
-
-    const std::size_t host_start = scheme_end;
-    const std::size_t path_start = url.find('/', host_start);
-
-    std::string host_port;
-    if (path_start == std::string::npos) {
-        host_port = url.substr(host_start);
-        r.target  = "/";
-    } else {
-        host_port = url.substr(host_start, path_start - host_start);
-        r.target  = url.substr(path_start);
-    }
-
-    const auto colon = host_port.find(':');
-    if (colon == std::string::npos) {
-        r.host = host_port;
-    } else {
-        r.host = host_port.substr(0, colon);
-        r.port = host_port.substr(colon + 1);
-    }
-
-    r.valid = !r.host.empty() && !r.port.empty() && !r.target.empty();
-    return r;
-}
-
-} // namespace
-
-// ----------------------------------------------------------------
-// Impl
-// ----------------------------------------------------------------
-
-struct HttpClient::Impl {};
-
-HttpClient::HttpClient() : impl_(std::make_unique<Impl>()) {}
+HttpClient::HttpClient()  = default;
 HttpClient::~HttpClient() = default;
-
-// ----------------------------------------------------------------
-// POST
-// ----------------------------------------------------------------
 
 HttpClient::Response HttpClient::post_json(const std::string& url,
                                            const std::string& json_body,
@@ -105,102 +16,93 @@ HttpClient::Response HttpClient::post_json(const std::string& url,
                                            int                timeout_secs) {
     Response resp;
 
-    const ParsedUrl parsed = parse_url(url);
-    if (!parsed.valid) {
-        resp.error = "invalid URL (must start with http:// or https://): " + url;
+    // --- Parse URL scheme://host[:port]/path ---
+    const auto scheme_end = url.find("://");
+    if (scheme_end == std::string::npos) {
+        resp.error = "invalid URL (missing scheme)";
         return resp;
     }
 
-    try {
-        net::io_context ioc;
+    const std::string scheme = url.substr(0, scheme_end);
+    if (scheme != "http" && scheme != "https") {
+        resp.error = "unsupported scheme: " + scheme;
+        return resp;
+    }
 
-        http::request<http::string_body> req{http::verb::post, parsed.target, 11};
+    const std::size_t host_start = scheme_end + 3;
+    const std::size_t path_start = url.find('/', host_start);
 
-        const bool default_port =
-            (parsed.scheme == "http"  && parsed.port == "80") ||
-            (parsed.scheme == "https" && parsed.port == "443");
+    std::string host_port;
+    std::string path;
+    if (path_start == std::string::npos) {
+        host_port = url.substr(host_start);
+        path      = "/";
+    } else {
+        host_port = url.substr(host_start, path_start - host_start);
+        path      = url.substr(path_start);
+    }
 
-        std::string host_header = parsed.host;
-        if (!default_port) {
-            host_header += ":" + parsed.port;
+    std::string host;
+    int         port = (scheme == "https") ? 443 : 80;
+
+    const auto colon = host_port.find(':');
+    if (colon != std::string::npos) {
+        host = host_port.substr(0, colon);
+        try {
+            port = std::stoi(host_port.substr(colon + 1));
+        } catch (...) {
+            resp.error = "invalid port in URL";
+            return resp;
         }
+    } else {
+        host = host_port;
+    }
 
-        req.set(http::field::host,         host_header);
-        req.set(http::field::user_agent,   "axiomdlp-agent/0.1");
-        req.set(http::field::content_type, "application/json");
+    if (host.empty()) {
+        resp.error = "invalid URL (empty host)";
+        return resp;
+    }
+
+    // --- HTTPS ---
+    if (scheme == "https") {
+        httplib::SSLClient cli(host, port);
+        cli.enable_server_certificate_verification(true);
+        cli.set_connection_timeout(timeout_secs);
+        cli.set_read_timeout(timeout_secs);
+        cli.set_write_timeout(timeout_secs);
+        cli.set_follow_location(true);
 
         if (!bearer_token.empty()) {
-            req.set(http::field::authorization, "Bearer " + bearer_token);
+            cli.set_bearer_token_auth(bearer_token);
         }
 
-        req.body() = json_body;
-        req.prepare_payload();
+        auto res = cli.Post(path.c_str(), json_body, "application/json");
+        if (!res) {
+            resp.error = "request failed: " + httplib::to_string(res.error());
+            return resp;
+        }
+        resp.status = res->status;
+        resp.body   = res->body;
+    }
+    // --- HTTP ---
+    else {
+        httplib::Client cli(host, port);
+        cli.set_connection_timeout(timeout_secs);
+        cli.set_read_timeout(timeout_secs);
+        cli.set_write_timeout(timeout_secs);
+        cli.set_follow_location(true);
 
-        tcp::resolver resolver(ioc);
-        const auto results = resolver.resolve(parsed.host, parsed.port);
-
-        if (parsed.is_https()) {
-            // -------------------- HTTPS (TLS always verified) --------------------
-            ssl::context ctx{ssl::context::tls_client};
-            ctx.set_default_verify_paths();
-
-            beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
-
-            // SNI.
-            if (!SSL_set_tlsext_host_name(stream.native_handle(),
-                                          parsed.host.c_str())) {
-                resp.error = "failed to set SNI hostname";
-                return resp;
-            }
-
-            // Always verify chain.
-            stream.set_verify_mode(ssl::verify_peer);
-
-            // Always verify hostname via X509_VERIFY_PARAM.
-            X509_VERIFY_PARAM* param = SSL_get0_param(stream.native_handle());
-            X509_VERIFY_PARAM_set_hostflags(
-                param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-            if (X509_VERIFY_PARAM_set1_host(param,
-                                            parsed.host.c_str(),
-                                            parsed.host.size()) != 1) {
-                resp.error = "failed to configure hostname verification";
-                return resp;
-            }
-
-            beast::get_lowest_layer(stream).expires_after(
-                std::chrono::seconds(timeout_secs));
-            beast::get_lowest_layer(stream).connect(results);
-
-            stream.handshake(ssl::stream_base::client);
-
-            http::write(stream, req);
-
-            beast::flat_buffer                buffer;
-            http::response<http::string_body> res;
-            http::read(stream, buffer, res);
-
-            resp.status = res.result_int();
-            resp.body   = std::move(res.body());
-
-        } else {
-            // -------------------- HTTP --------------------
-            beast::tcp_stream stream(ioc);
-            stream.expires_after(std::chrono::seconds(timeout_secs));
-            stream.connect(results);
-
-            http::write(stream, req);
-
-            beast::flat_buffer                buffer;
-            http::response<http::string_body> res;
-            http::read(stream, buffer, res);
-
-            resp.status = res.result_int();
-            resp.body   = std::move(res.body());
+        if (!bearer_token.empty()) {
+            cli.set_bearer_token_auth(bearer_token);
         }
 
-    } catch (const std::exception& e) {
-        resp.status = 0;
-        resp.error  = e.what();
+        auto res = cli.Post(path.c_str(), json_body, "application/json");
+        if (!res) {
+            resp.error = "request failed: " + httplib::to_string(res.error());
+            return resp;
+        }
+        resp.status = res->status;
+        resp.body   = res->body;
     }
 
     return resp;

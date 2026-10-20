@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://axiomdlp.example.com/schemas/agent.schema.json",
   "title": "AxiomDLP Agent Configuration",
-  "description": "Configuration file for the AxiomDLP endpoint agent. TLS is always verified for https:// and wss:// URLs.",
+  "description": "Configuration file for the AxiomDLP endpoint agent. Uses gRPC exclusively.",
   "type": "object",
 
   "properties": {
@@ -32,35 +32,52 @@
 
     "server": {
       "type": "object",
-      "description": "Identity and connection information for the Core server. Shared by agent_sync, transport, and content_scanner.",
+      "description": "Identity and connection information for the Core server. Shared by agent_sync and content_scanner.",
       "properties": {
         "base_url": {
           "type": "string",
           "default": "http://127.0.0.1:3000",
-          "description": "Base URL of the Core, e.g. http://127.0.0.1:3000 or https://core.example.com. TLS is always verified on https://."
+          "description": "Base URL of the Core, used to derive the gRPC target host."
         },
         "api_token": {
           "type": "string",
           "default": "",
-          "description": "Bearer token issued at registration: axdlp_user_... Required if any server-facing module is enabled."
+          "description": "Bearer token issued at registration: axdlp_user_... Required for all server-facing modules."
         },
         "heartbeat_interval_seconds": {
           "type": "integer",
           "minimum": 5,
           "default": 60,
-          "description": "Heartbeat period used by agent_sync. Enterprise norm: 30-60 s."
+          "description": "Heartbeat period used by agent_sync."
         },
         "reconnect_backoff_seconds": {
           "type": "integer",
           "minimum": 1,
           "default": 10,
-          "description": "Initial reconnect delay used by transport (WebSocket). Enterprise norm: 5-10 s."
+          "description": "Initial reconnect delay used by grpc_transport."
         },
         "reconnect_backoff_max_seconds": {
           "type": "integer",
           "minimum": 1,
           "default": 300,
-          "description": "Maximum reconnect delay used by transport (WebSocket). Enterprise norm: 300-600 s."
+          "description": "Maximum reconnect delay used by grpc_transport."
+        },
+        "grpc_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 50051,
+          "description": "The port used for the gRPC transport."
+        },
+        "grpc_tls": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to use TLS for the gRPC channel. Must be true in production."
+        },
+        "grpc_ca_path": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to a PEM CA certificate file. If empty, system default root CAs are used."
         }
       },
       "additionalProperties": false
@@ -70,7 +87,6 @@
       "type": "object",
       "description": "Per-module configuration.",
       "properties": {
-
         "filesystem_watcher": {
           "type": "object",
           "description": "Real-time filesystem event watcher.",
@@ -139,26 +155,9 @@
           "additionalProperties": false
         },
 
-        "transport": {
-          "type": "object",
-          "description": "WebSocket channel to the Core. URL, token, and reconnect policy come from the top-level 'server' section.",
-          "properties": {
-            "enabled": {
-              "type": "boolean",
-              "default": true
-            },
-            "server_url": {
-              "type": "string",
-              "default": "",
-              "description": "Optional explicit ws:// or wss:// URL. If empty, derived from server.base_url + /api/v1/agent/ws."
-            }
-          },
-          "additionalProperties": false
-        },
-
         "agent_sync": {
           "type": "object",
-          "description": "HTTP enrollment + heartbeat. URL, token, and interval come from the top-level 'server' section.",
+          "description": "gRPC enrollment + heartbeat. URL, token, and interval come from the top-level 'server' section.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -170,7 +169,7 @@
 
         "content_scanner": {
           "type": "object",
-          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection, and writes the merged verdict back to the local files table. URL and token come from the top-level 'server' section.",
+          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection via gRPC, and writes the merged verdict back to the local files table.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -180,13 +179,13 @@
               "type": "integer",
               "minimum": 1,
               "default": 50,
-              "description": "Maximum number of chunks per HTTP POST."
+              "description": "Maximum number of chunks per gRPC ScanBatch call."
             },
             "batch_max_bytes": {
               "type": "integer",
               "minimum": 1024,
               "default": 52428800,
-              "description": "Maximum estimated JSON payload size per POST."
+              "description": "Maximum estimated payload size per gRPC call."
             },
             "scan_interval_seconds": {
               "type": "integer",
@@ -204,7 +203,7 @@
               "type": "integer",
               "minimum": 1,
               "default": 256,
-              "description": "Bytes of overlap between consecutive chunks. Must be less than chunk_size_bytes. Prevents PII patterns from being split across a chunk boundary."
+              "description": "Bytes of overlap between consecutive chunks. Must be less than chunk_size_bytes."
             },
             "max_file_bytes": {
               "type": "integer",
@@ -222,7 +221,7 @@
               "type": "integer",
               "minimum": 10,
               "default": 300,
-              "description": "HTTP timeout for one batch POST."
+              "description": "Timeout for one gRPC ScanBatch call."
             },
             "text_extensions": {
               "type": "array",
@@ -243,9 +242,9 @@
           "additionalProperties": false
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     }
   },
 
-  "additionalProperties": true
+  "additionalProperties": false
 }

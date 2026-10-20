@@ -1,22 +1,7 @@
 // src/features/content_scanner/content_scanner_module.h
-//
-// ContentScannerModule reads text files, splits them into overlapping
-// chunks, sends the chunks to the AxiomDLP Core server in batches, and
-// writes the merged verdict back into the local files table.
-//
-// Content is read into memory, sent, and discarded. It is never
-// written to any database, never logged, and never persisted.
-//
-// A file is only marked as 'scanned' when all of its chunks have
-// returned successfully. If any chunk fails, the file stays 'pending'
-// and is retried from scratch next cycle.
-//
-// TLS verification is ALWAYS enabled when the URL is https://.
-
 #pragma once
 
 #include "modules/module_base.h"
-
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -77,8 +62,9 @@ private:
     void commit_completed_files(std::map<std::string, FileProgress>& progress);
 
     bool        enabled_             = true;
-    std::string http_base_url_;
+    std::string base_url_;
     std::string api_token_;
+    int         agent_id_            = 0;
 
     int         batch_size_          = 50;
     std::size_t batch_max_bytes_     = 50 * 1024 * 1024;
@@ -92,6 +78,7 @@ private:
     std::vector<std::string> text_extensions_;
 
     std::unique_ptr<HttpClient> http_;
+
     std::thread                 sync_thread_;
     std::atomic<bool>           stop_requested_{false};
     std::atomic<bool>           running_{false};
