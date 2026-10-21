@@ -12,11 +12,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Cache vcpkg installed packages
+      - name: Cache vcpkg downloads and binary archives
         uses: actions/cache@v4
         with:
-          path: C:\Users\runneradmin\vcpkg\installed
-          key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}
+          # In manifest mode, vcpkg stores downloaded sources here:
+          path: |
+            C:\Users\runneradmin\vcpkg\downloads
+            C:\Users\runneradmin\AppData\Local\vcpkg\archives
+          # Include triplets in the key so changing the /wd4996 flag busts the cache
+          key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
           restore-keys: |
             ${{ runner.os }}-vcpkg-
 
@@ -27,10 +31,14 @@ jobs:
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
         shell: powershell
+        env:
+          VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
         shell: powershell
+        env:
+          VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

@@ -5,10 +5,8 @@
 #
 # Windows (MinGW) is intentionally omitted:
 #   gRPC has no official MinGW support. The MSYS2 patches exist but
-#   are version-locked and break on newer releases. For Windows,
-#   the agent uses its existing Boost.Beast WebSocket + HTTP
-#   transport. Windows gRPC is deferred until we have a real
-#   MSVC build machine.
+#   are version-locked and break on newer releases. Windows gRPC is
+#   supplied by vcpkg on the MSVC build path.
 #
 # Outputs (reused if already present — no forced rebuild):
 #   .deps/grpc-linux-x86_64/
@@ -21,6 +19,20 @@
 # First run takes 30-60 min (Linux x86_64 builds everything from
 # scratch). Later runs are instant — target_ready() skips completed
 # trees.
+#
+# Cross-architecture note:
+#   When building i686 on a 64-bit host, any dependency resolved via
+#   find_package(OpenSSL) or find_package(Brotli) will silently pick
+#   the host's 64-bit library unless the search is explicitly pinned.
+#   The two settings that matter:
+#
+#     -DgRPC_BROTLI_PROVIDER=module   bundle brotli from third_party
+#     -DOPENSSL_SSL_LIBRARY / -DOPENSSL_CRYPTO_LIBRARY
+#                                     pin OpenSSL to .deps (correct arch)
+#
+#   Without these, gRPCTargets.cmake ends up containing absolute
+#   /usr/lib/x86_64-linux-gnu/... paths, and the 32-bit link fails
+#   with "error adding symbols: file in wrong format".
 
 set -euo pipefail
 
@@ -110,7 +122,21 @@ build_one() {
         return
     fi
 
+    # Determine where OpenSSL installed its static libs (lib/ or lib64/).
+    # OpenSSL 3 puts libs in lib64/ on 64-bit and lib/ on 32-bit.
+    local openssl_libdir=""
+    if [ -f "$openssl_dir/lib/libssl.a" ]; then
+        openssl_libdir="$openssl_dir/lib"
+    elif [ -f "$openssl_dir/lib64/libssl.a" ]; then
+        openssl_libdir="$openssl_dir/lib64"
+    else
+        echo "Error: OpenSSL static libs not found under $openssl_dir" >&2
+        return 1
+    fi
+
     echo "Building gRPC for $name"
+    echo "  OpenSSL root:  $openssl_dir"
+    echo "  OpenSSL libs:  $openssl_libdir"
 
     local build_subdir="$BUILD_DIR/$name"
     mkdir -p "$build_subdir"
@@ -126,6 +152,9 @@ build_one() {
         -DBUILD_SHARED_LIBS=OFF
         -DgRPC_SSL_PROVIDER=package
         -DOPENSSL_ROOT_DIR="$openssl_dir"
+        -DOPENSSL_INCLUDE_DIR="$openssl_dir/include"
+        -DOPENSSL_SSL_LIBRARY="$openssl_libdir/libssl.a"
+        -DOPENSSL_CRYPTO_LIBRARY="$openssl_libdir/libcrypto.a"
         -DgRPC_ZLIB_PROVIDER=module
         -DgRPC_CARES_PROVIDER=module
         -DgRPC_RE2_PROVIDER=module
@@ -160,6 +189,9 @@ build_one() {
 
 # ----------------------------------------------------------------
 # Linux x86_64 (native)
+#
+# System brotli and system OpenSSL are x86_64, matching the target,
+# so no provider pinning is required beyond OPENSSL_ROOT_DIR.
 # ----------------------------------------------------------------
 build_one "linux-x86_64" \
     "" \
@@ -174,15 +206,25 @@ build_one "linux-x86_64" \
 #   - gRPC_SYSTEMD_PROVIDER=none: without this, CMake bakes the
 #     host's 64-bit /usr/lib/x86_64-linux-gnu/libsystemd.so into
 #     gRPCTargets.cmake, and 32-bit consumers fail to link with
-#     "file in wrong format". The agent's own systemd support
-#     comes from CMakeLists.txt via pkg-config — gRPC does not
-#     need its own systemd integration.
+#     "file in wrong format".
+#   - gRPC_BROTLI_PROVIDER=module: gRPC's default brotli provider
+#     is "package", which does find_package(Brotli). On a 64-bit
+#     host without libbrotli-dev:i386 installed, that resolves to
+#     /usr/lib/x86_64-linux-gnu/libbrotli*.so and links 64-bit
+#     code into a 32-bit binary. "module" bundles brotli from
+#     gRPC's own third_party/brotli submodule instead.
+#   - OPENSSL_SSL_LIBRARY / OPENSSL_CRYPTO_LIBRARY: OPENSSL_ROOT_DIR
+#     alone is not always enough on multiarch Debian hosts, where
+#     FindOpenSSL can still prefer the host's 64-bit libssl.so.
+#     Pinning the exact library paths removes the ambiguity.
 # ----------------------------------------------------------------
 build_one "linux-i686" \
     "$ROOT/cmake/toolchains/linux-i686.cmake" \
     "$DEPS/openssl-linux-i686" \
     -DgRPC_BUILD_CODEGEN=OFF \
-    -DgRPC_SYSTEMD_PROVIDER=none
+    -DgRPC_SYSTEMD_PROVIDER=none \
+    -DgRPC_BROTLI_PROVIDER=module \
+    -DgRPC_ZSTD_PROVIDER=module
 
 # ----------------------------------------------------------------
 # Summary
@@ -194,12 +236,12 @@ echo "Status:"
 for target in linux-x86_64 linux-i686; do
     d="$DEPS/grpc-$target"
     if target_ready "$d"; then
-        echo "  ✓ $d"
+        echo "  [OK] $d"
     else
-        echo "  ✗ $d (missing libraries)"
+        echo "  [FAIL] $d (missing libraries)"
     fi
 done
 
 echo
-echo "Windows gRPC is intentionally not built here."
-echo "The agent uses Boost.Beast WebSocket + JSON on Windows."
+echo "Windows gRPC is supplied by vcpkg on the MSVC build path."
+echo "See scripts/win/build-windows-msvc.ps1."

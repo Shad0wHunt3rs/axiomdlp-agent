@@ -69,6 +69,68 @@ message(STATUS "AxiomDLP Agent target: ${AXIOM_TARGET}")
 # ----------------------------------------------------------------
 include(FetchContent)
 
+# ----------------------------------------------------------------
+# Brotli targets — created manually for i686
+# ----------------------------------------------------------------
+if(UNIX AND NOT APPLE AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+
+    set(_brotli_inc    "/usr/include")
+    set(_brotli_common "/usr/lib/i386-linux-gnu/libbrotlicommon.so")
+    set(_brotli_enc    "/usr/lib/i386-linux-gnu/libbrotlienc.so")
+    set(_brotli_dec    "/usr/lib/i386-linux-gnu/libbrotlidec.so")
+
+    if(NOT EXISTS "${_brotli_common}" OR
+       NOT EXISTS "${_brotli_enc}"    OR
+       NOT EXISTS "${_brotli_dec}")
+        message(FATAL_ERROR
+            "i386 Brotli libraries not found. Install with:\n"
+            "    sudo apt install libbrotli-dev:i386")
+    endif()
+
+    # Modern names — used by gRPC
+    if(NOT TARGET Brotli::brotlicommon)
+        add_library(Brotli::brotlicommon SHARED IMPORTED GLOBAL)
+        set_target_properties(Brotli::brotlicommon PROPERTIES
+            IMPORTED_LOCATION             "${_brotli_common}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
+    endif()
+    if(NOT TARGET Brotli::brotlienc)
+        add_library(Brotli::brotlienc SHARED IMPORTED GLOBAL)
+        set_target_properties(Brotli::brotlienc PROPERTIES
+            IMPORTED_LOCATION             "${_brotli_enc}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
+    endif()
+    if(NOT TARGET Brotli::brotlidec)
+        add_library(Brotli::brotlidec SHARED IMPORTED GLOBAL)
+        set_target_properties(Brotli::brotlidec PROPERTIES
+            IMPORTED_LOCATION             "${_brotli_dec}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
+    endif()
+
+    # Legacy names — used by cpp-httplib and some older packages
+    if(NOT TARGET Brotli::common)
+        add_library(Brotli::common SHARED IMPORTED GLOBAL)
+        set_target_properties(Brotli::common PROPERTIES
+            IMPORTED_LOCATION             "${_brotli_common}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
+    endif()
+    if(NOT TARGET Brotli::encoder)
+        add_library(Brotli::encoder SHARED IMPORTED GLOBAL)
+        set_target_properties(Brotli::encoder PROPERTIES
+            IMPORTED_LOCATION             "${_brotli_enc}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
+    endif()
+    if(NOT TARGET Brotli::decoder)
+        add_library(Brotli::decoder SHARED IMPORTED GLOBAL)
+        set_target_properties(Brotli::decoder PROPERTIES
+            IMPORTED_LOCATION             "${_brotli_dec}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
+    endif()
+
+    set(Brotli_FOUND TRUE CACHE BOOL "" FORCE)
+    message(STATUS "i686 Brotli targets created manually (i386 paths)")
+endif()
+
 # --- nlohmann/json ---
 if(AXIOM_USE_VCPKG_DEPS)
     find_package(nlohmann_json CONFIG REQUIRED)
@@ -114,6 +176,8 @@ else()
 endif()
 
 # --- cpp-httplib ---
+set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+set(HTTPLIB_REQUIRE_BROTLI          OFF CACHE BOOL "" FORCE)
 set(HTTPLIB_COMPILE OFF) # header-only
 FetchContent_Declare(
     httplib
@@ -125,14 +189,6 @@ FetchContent_MakeAvailable(httplib)
 
 # ----------------------------------------------------------------
 # OpenSSL (must run BEFORE find_package(gRPC))
-#
-# gRPC's CMake config file calls find_dependency(OpenSSL). If that
-# runs first, it resolves to the host's system OpenSSL. On a 32-bit
-# (i686) build the host system OpenSSL is 64-bit and the link fails
-# with "file in wrong format". Setting OPENSSL_ROOT_DIR + explicit
-# library paths here and calling find_package(OpenSSL) ourselves
-# forces gRPC's later find_dependency(OpenSSL) to reuse the correct
-# architecture's targets.
 # ----------------------------------------------------------------
 if(AXIOM_USE_VCPKG_DEPS)
     find_package(OpenSSL REQUIRED)
@@ -155,8 +211,6 @@ else()
             "Run ./scripts/linux/build-openssl.sh first.")
     endif()
 
-    # Cache hints consumed by FindOpenSSL.cmake (both our call
-    # below and gRPC's internal find_dependency(OpenSSL) call).
     set(OPENSSL_ROOT_DIR       "${AXIOM_OPENSSL_DIR}"                  CACHE PATH     "" FORCE)
     set(OPENSSL_INCLUDE_DIR    "${AXIOM_OPENSSL_DIR}/include"          CACHE PATH     "" FORCE)
     set(OPENSSL_SSL_LIBRARY    "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"     CACHE FILEPATH "" FORCE)
@@ -174,9 +228,6 @@ endif()
 
 # ----------------------------------------------------------------
 # gRPC + Protobuf (Mandatory)
-#
-# Runs after OpenSSL is set up so gRPC's find_dependency(OpenSSL)
-# reuses our targets instead of resolving to the system OpenSSL.
 # ----------------------------------------------------------------
 if(NOT AXIOM_USE_VCPKG_DEPS)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -188,6 +239,47 @@ endif()
 
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
+
+# ----------------------------------------------------------------
+# Post-process gRPC's imported targets for i686
+#
+# gRPC's gRPCTargets.cmake was generated on a 64-bit host without
+# the i386 dev packages installed, so it contains hardcoded
+# /usr/lib/x86_64-linux-gnu/... paths for openssl, brotli, and
+# anything else its find_dependency calls saw at configure time.
+# This block rewrites every such path to i386 in one pass.
+# ----------------------------------------------------------------
+if(UNIX AND NOT APPLE AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    foreach(_grpc_target
+            gRPC::grpc++ gRPC::grpc gRPC::gpr
+            gRPC::upb gRPC::re2 gRPC::cares gRPC::zlibstatic
+            gRPC::address_sorting gRPC::grpc_plugin_support)
+        if(TARGET ${_grpc_target})
+            get_target_property(_libs ${_grpc_target} INTERFACE_LINK_LIBRARIES)
+            if(_libs)
+                set(_new_libs "")
+                foreach(_lib IN LISTS _libs)
+                    string(REPLACE
+                        "/usr/lib/x86_64-linux-gnu/libssl.so"
+                        "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"
+                        _lib "${_lib}")
+                    string(REPLACE
+                        "/usr/lib/x86_64-linux-gnu/libcrypto.so"
+                        "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
+                        _lib "${_lib}")
+                    string(REPLACE
+                        "/usr/lib/x86_64-linux-gnu/"
+                        "/usr/lib/i386-linux-gnu/"
+                        _lib "${_lib}")
+                    list(APPEND _new_libs "${_lib}")
+                endforeach()
+                set_target_properties(${_grpc_target} PROPERTIES
+                    INTERFACE_LINK_LIBRARIES "${_new_libs}")
+            endif()
+        endif()
+    endforeach()
+    message(STATUS "i686: gRPC imported target paths sanitized")
+endif()
 
 set(AXIOM_PROTO_DIR     "${CMAKE_CURRENT_SOURCE_DIR}/src/features/grpc_transport")
 set(AXIOM_PROTO_FILE    "${AXIOM_PROTO_DIR}/agent.proto")
@@ -340,6 +432,12 @@ if(UNIX AND NOT APPLE)
     endif()
     target_compile_options(axiomdlp-agent PRIVATE -fstack-protector-strong -fPIE)
     target_link_options(axiomdlp-agent PRIVATE -pie -Wl,-z,relro,-z,now)
+
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        set_target_properties(axiomdlp-agent PROPERTIES
+            INSTALL_RPATH "/usr/lib/i386-linux-gnu"
+            BUILD_WITH_INSTALL_RPATH TRUE)
+    endif()
 endif()
 
 if(MSVC)
