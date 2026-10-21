@@ -1,7 +1,6 @@
 name: Windows MSVC build
 
 on:
-  # Only allows manual runs from the Actions tab. Does not run on push/PR.
   workflow_dispatch:
 
 jobs:
@@ -12,14 +11,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify custom triplets exist
+        run: |
+          if (-not (Test-Path "triplets\x64-windows-static.cmake")) { throw "ERROR: Missing triplets\x64-windows-static.cmake" }
+          if (-not (Test-Path "triplets\x86-windows-static.cmake")) { throw "ERROR: Missing triplets\x86-windows-static.cmake" }
+          Write-Host "[OK] Custom triplets found."
+        shell: powershell
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
       - name: Cache vcpkg downloads and binary archives
         uses: actions/cache@v4
         with:
-          # In manifest mode, vcpkg stores downloaded sources here:
           path: |
             C:\Users\runneradmin\vcpkg\downloads
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
-          # Include triplets in the key so changing the /wd4996 flag busts the cache
           key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
           restore-keys: |
             ${{ runner.os }}-vcpkg-
@@ -33,12 +40,14 @@ jobs:
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
+          CMAKE_MAKE_PROGRAM: C:\ProgramData\chocolatey\bin\ninja.exe
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
+          CMAKE_MAKE_PROGRAM: C:\ProgramData\chocolatey\bin\ninja.exe
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
