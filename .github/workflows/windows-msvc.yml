@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -20,6 +20,16 @@ jobs:
 
       - name: Install Ninja
         run: choco install ninja -y
+
+      - name: Add Chocolatey bin to PATH
+        run: echo "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
+        shell: powershell
+
+      - name: Verify Ninja is reachable
+        run: |
+          where.exe ninja
+          ninja --version
+        shell: powershell
 
       - name: Cache vcpkg downloads and binary archives
         uses: actions/cache@v4
@@ -41,7 +51,7 @@ jobs:
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
           VCPKG_FORCE_SYSTEM_BINARIES: 1
-          CMAKE_MAKE_PROGRAM: C:\ProgramData\chocolatey\bin\ninja.exe
+          # CMAKE_MAKE_PROGRAM is no longer needed; vcpkg will use the system ninja from PATH
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
@@ -49,7 +59,6 @@ jobs:
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
           VCPKG_FORCE_SYSTEM_BINARIES: 1
-          CMAKE_MAKE_PROGRAM: C:\ProgramData\chocolatey\bin\ninja.exe
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
