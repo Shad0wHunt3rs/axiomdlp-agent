@@ -3,21 +3,40 @@
     One-time setup for building AxiomDLP Agent on Windows with MSVC + vcpkg.
 
 .DESCRIPTION
-    - Verifies Visual Studio 2022 (or Build Tools) with the C++ workload.
-    - Downloads the vcpkg repository as a ZIP (no git clone).
-    - Downloads the prebuilt vcpkg.exe (no compilation).
+    - Verifies Visual Studio (2022 or newer) with the C++ workload.
+    - Downloads a PINNED vcpkg release (2024.01.12) as a ZIP.
+    - Downloads the matching prebuilt vcpkg.exe from the same date.
     - Verifies vcpkg.exe runs and the recipe folder is complete.
     - Persists VCPKG_ROOT for the current workflow (GITHUB_ENV), the
       current user (registry), and the current process.
 
+    WHY PIN: recent vcpkg snapshots (late 2025 onward) route all tool
+    acquisition through `z_use_vcpkg_fetch`, which on Windows downloads
+    Ninja and then verifies it by running `ninja -v` (verbose build)
+    instead of `ninja --version` (print version). In the empty
+    `vcpkg-parallel-configure` directory this exits 1, and vcpkg
+    treats it as a broken Ninja download and aborts the build with:
+
+        Command failed: ...\ninja.exe -v
+        Error code: 1
+
+    vcpkg tag 2024.01.12 predates this regression. It checks
+    find_program(NINJA) first, so with VCPKG_FORCE_SYSTEM_BINARIES=1
+    and the Chocolatey Ninja on PATH, compiler detection succeeds.
+
 .NOTES
     This file is intentionally ASCII-only for maximum encoding compatibility.
-    Fast mode: uses codeload ZIP + GitHub release exe. No git, no bootstrap.
 #>
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (fast mode) ===" -ForegroundColor Cyan
+# ----------------------------------------------------------------
+# PINNED VCPKG VERSION
+# ----------------------------------------------------------------
+$VCPKG_TAG      = "2024.01.12"
+$VCPKG_TOOL_TAG = "2024-01-12"
+
+Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (pinned vcpkg $VCPKG_TAG) ===" -ForegroundColor Cyan
 
 # ----------------------------------------------------------------
 # 1. Verify Visual Studio
@@ -32,6 +51,7 @@ if (-not (Test-Path $vswhere)) {
 Install one of:
   - Visual Studio 2022 Community (free)
   - Visual Studio 2022 Build Tools (free, headless)
+  - Any newer Visual Studio (2026+ also works with this pipeline)
 
 Make sure to select the workload:
   'Desktop development with C++'
@@ -53,34 +73,41 @@ if (-not $vsInstall) {
 Write-Host "  [OK] Found: $vsInstall" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 2. vcpkg recipes (ZIP) + prebuilt vcpkg.exe
+# 2. vcpkg recipes (ZIP) + prebuilt vcpkg.exe  (both PINNED)
 # ----------------------------------------------------------------
 $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "$env:USERPROFILE\vcpkg" }
-$vcpkgZip = "$env:USERPROFILE\vcpkg.zip"
+$vcpkgZip  = "$env:USERPROFILE\vcpkg.zip"
 $toolchain = "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
 
-Write-Host "`n[2/4] Setting up vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
-
-# --- 2a. Recipe folder (ports/, scripts/, triplets/)
-if (-not (Test-Path $toolchain)) {
-    Write-Host "  Downloading vcpkg recipes ZIP (no git clone)..." -ForegroundColor Yellow
-
-    $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/heads/master"
-    try {
-        Invoke-WebRequest -Uri $zipUrl -OutFile $vcpkgZip -UseBasicParsing
+# Detect an existing tree that does NOT match the pinned tag and rebuild.
+$needsInstall = $true
+if (Test-Path $toolchain) {
+    $existingTag = $null
+    $tagFile = "$vcpkgRoot\.vcpkg-tag"
+    if (Test-Path $tagFile) {
+        $existingTag = (Get-Content $tagFile -Raw).Trim()
     }
-    catch {
-        Write-Host "  master not found; trying main branch..." -ForegroundColor Yellow
-        $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/heads/main"
-        Invoke-WebRequest -Uri $zipUrl -OutFile $vcpkgZip -UseBasicParsing
+    if ($existingTag -eq $VCPKG_TAG) {
+        Write-Host "`n[2/4] Pinned vcpkg $VCPKG_TAG already present at $vcpkgRoot" -ForegroundColor Green
+        $needsInstall = $false
     }
+    else {
+        Write-Host "`n[2/4] Existing vcpkg at $vcpkgRoot is not pinned to $VCPKG_TAG; replacing..." -ForegroundColor Yellow
+    }
+}
+
+if ($needsInstall) {
+    Write-Host "`n[2/4] Setting up pinned vcpkg $VCPKG_TAG at $vcpkgRoot..." -ForegroundColor Yellow
+
+    Write-Host "  Downloading vcpkg recipes ZIP (tag $VCPKG_TAG)..." -ForegroundColor Yellow
+    $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/tags/$VCPKG_TAG"
+    Invoke-WebRequest -Uri $zipUrl -OutFile $vcpkgZip -UseBasicParsing
 
     Write-Host "  Extracting..." -ForegroundColor Yellow
     Expand-Archive -Path $vcpkgZip -DestinationPath "$env:USERPROFILE" -Force
 
     $extracted = Get-ChildItem "$env:USERPROFILE" -Directory -Filter "vcpkg-*" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -ne "vcpkg" } | Select-Object -First 1
-
+        Where-Object { $_.Name -ne "vcpkg" } | Select-Object -First 1
     if (-not $extracted) {
         Write-Host "[ERROR] Could not find extracted vcpkg-* folder." -ForegroundColor Red
         exit 1
@@ -91,19 +118,13 @@ if (-not (Test-Path $toolchain)) {
     }
     Rename-Item $extracted.FullName $vcpkgRoot
     Remove-Item $vcpkgZip -Force -ErrorAction SilentlyContinue
-}
-else {
-    Write-Host "  [OK] vcpkg recipes already present." -ForegroundColor Green
-}
 
-# --- 2b. Prebuilt vcpkg.exe
-if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-    Write-Host "  Downloading prebuilt vcpkg.exe (no compilation)..." -ForegroundColor Yellow
-    $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/latest/download/vcpkg.exe"
+    # Marker so subsequent runs don't re-download.
+    $VCPKG_TAG | Out-File -FilePath "$vcpkgRoot\.vcpkg-tag" -Encoding ascii -NoNewline
+
+    Write-Host "  Downloading prebuilt vcpkg.exe (tag $VCPKG_TOOL_TAG, no compilation)..." -ForegroundColor Yellow
+    $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$VCPKG_TOOL_TAG/vcpkg.exe"
     Invoke-WebRequest -Uri $exeUrl -OutFile "$vcpkgRoot\vcpkg.exe" -UseBasicParsing
-}
-else {
-    Write-Host "  [OK] vcpkg.exe already present." -ForegroundColor Green
 }
 
 # ----------------------------------------------------------------
@@ -121,7 +142,6 @@ if (-not (Test-Path $toolchain)) {
 }
 if (-not (Test-Path "$vcpkgRoot\ports")) {
     Write-Host "[ERROR] vcpkg ports directory missing at $vcpkgRoot\ports" -ForegroundColor Red
-    Write-Host "        The recipe ZIP may have extracted incorrectly." -ForegroundColor Red
     exit 1
 }
 if (-not (Test-Path "$vcpkgRoot\triplets")) {
@@ -129,7 +149,6 @@ if (-not (Test-Path "$vcpkgRoot\triplets")) {
     exit 1
 }
 
-# vcpkg.exe must actually run - catches wrong-architecture exe downloads
 try {
     $vcpkgVersionOutput = & "$vcpkgRoot\vcpkg.exe" version 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -144,40 +163,21 @@ catch {
     exit 1
 }
 
-Write-Host "  [OK] vcpkg ready: $vcpkgRoot" -ForegroundColor Green
+Write-Host "  [OK] vcpkg ready: $vcpkgRoot (pinned $VCPKG_TAG)" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 4. Persist VCPKG_ROOT
-#
-# Three independent mechanisms, so this works both under GitHub
-# Actions and on a developer workstation:
-#
-#   a) $GITHUB_ENV (CI only)  — the ONLY way to propagate an env var
-#      from one workflow step to the next. Each step is a fresh
-#      PowerShell process, so `$env:VCPKG_ROOT = ...` inside this
-#      step is invisible to the next step unless we also write to
-#      $GITHUB_ENV.
-#
-#   b) User-scope registry    — what `setx`/SetEnvironmentVariable
-#      "User" writes. Picked up by new login shells. Used locally and
-#      as a fallback if $GITHUB_ENV is somehow unavailable.
-#
-#   c) Current process        — makes the "Close this shell, open a
-#      new one" message on a developer workstation true, and lets the
-#      same PowerShell session run the build immediately.
+# 4. Persist VCPKG_ROOT  (three mechanisms: GITHUB_ENV, registry, process)
 # ----------------------------------------------------------------
 Write-Host "`n[4/4] Setting VCPKG_ROOT=$vcpkgRoot..." -ForegroundColor Yellow
 
-# (a) GitHub Actions cross-step propagation
 if ($env:GITHUB_ENV) {
     Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
-    Write-Host "  [OK] Wrote VCPKG_ROOT to GITHUB_ENV (propagates to next steps)" -ForegroundColor Green
+    Write-Host "  [OK] Wrote VCPKG_ROOT to GITHUB_ENV" -ForegroundColor Green
 }
 else {
-    Write-Host "  [--] GITHUB_ENV not set (not running under GitHub Actions); skipping" -ForegroundColor DarkGray
+    Write-Host "  [--] GITHUB_ENV not set; skipping" -ForegroundColor DarkGray
 }
 
-# (b) User-scope registry (for developer workstations and CI fallback)
 try {
     [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "User")
     Write-Host "  [OK] Set VCPKG_ROOT in User-scope registry" -ForegroundColor Green
@@ -190,14 +190,8 @@ catch {
     }
 }
 
-# (c) Current process
 $env:VCPKG_ROOT = $vcpkgRoot
 Write-Host "  [OK] Set VCPKG_ROOT in current process" -ForegroundColor Green
 
-Write-Host "`n=== Setup complete ===" -ForegroundColor Cyan
+Write-Host "`n=== Setup complete (vcpkg $VCPKG_TAG) ===" -ForegroundColor Cyan
 Write-Host "  VCPKG_ROOT=$env:VCPKG_ROOT" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "If running locally: close this shell, open a new one, then run:" -ForegroundColor Cyan
-Write-Host "  .\scripts\win\build-windows-msvc.ps1" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "If running under GitHub Actions: proceed to the next step." -ForegroundColor Cyan

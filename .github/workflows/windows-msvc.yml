@@ -25,35 +25,20 @@ jobs:
         run: echo "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
         shell: powershell
 
-      # ----------------------------------------------------------------
-      # Remove Strawberry's ninja from PATH.
-      #
-      # The windows-latest runner image ships a ninja at
-      # C:\Strawberry\c\bin\ninja.exe. It sits on PATH by default, and
-      # its version does not match what CMake expects. Keeping only
-      # the Chocolatey-installed ninja on PATH eliminates ambiguity.
-      # ----------------------------------------------------------------
       - name: Remove Strawberry ninja from PATH
         run: |
           $originalPath = $env:PATH
           $filtered = ($originalPath -split ';' | Where-Object { $_ -notlike '*Strawberry*' }) -join ';'
-          if ($filtered -ne $originalPath) {
-              Write-Host "Removed Strawberry entries from PATH"
-          } else {
-              Write-Host "No Strawberry entries found (already clean)"
-          }
+          if ($filtered -ne $originalPath) { Write-Host "Removed Strawberry entries from PATH" }
+          else { Write-Host "No Strawberry entries found (already clean)" }
           $env:PATH = $filtered
           "PATH=$filtered" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
           Write-Host "--- where.exe ninja after cleanup ---"
           where.exe ninja
-          if ($LASTEXITCODE -ne 0) {
-              throw "ninja not found on PATH after Strawberry cleanup"
-          }
+          if ($LASTEXITCODE -ne 0) { throw "ninja not found on PATH after Strawberry cleanup" }
           $count = (where.exe ninja | Measure-Object).Count
-          if ($count -ne 1) {
-              throw "Expected exactly 1 ninja on PATH, found $count. Refusing to continue with ambiguous ninja resolution."
-          }
+          if ($count -ne 1) { throw "Expected exactly 1 ninja on PATH, found $count." }
           Write-Host "--- ninja --version ---"
           ninja --version
         shell: powershell
@@ -64,11 +49,12 @@ jobs:
           path: |
             C:\Users\runneradmin\vcpkg\downloads
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
-          key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
+          key: ${{ runner.os }}-vcpkg-2024.01.12-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
           restore-keys: |
+            ${{ runner.os }}-vcpkg-2024.01.12-
             ${{ runner.os }}-vcpkg-
 
-      - name: Setup MSVC and vcpkg
+      - name: Setup MSVC and vcpkg (pinned 2024.01.12)
         run: .\scripts\win\setup-windows-msvc.ps1
         shell: powershell
 
@@ -76,67 +62,49 @@ jobs:
         run: |
           Write-Host "--- PATH (first 5 entries) ---"
           $env:PATH -split ';' | Select-Object -First 5 | ForEach-Object { Write-Host $_ }
-
           Write-Host "--- where ninja ---"
           where.exe ninja
-          if ($LASTEXITCODE -ne 0) {
-              throw "ninja not found on PATH after setup. GITHUB_PATH propagation is broken."
-          }
-
+          if ($LASTEXITCODE -ne 0) { throw "ninja not found on PATH after setup." }
           Write-Host "--- ninja --version ---"
           ninja --version
 
-          Write-Host "--- VCPKG_ROOT ---"
           $effectiveVcpkgRoot = $env:VCPKG_ROOT
           if (-not $effectiveVcpkgRoot) {
               $effectiveVcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
-              if ($effectiveVcpkgRoot) {
-                  Write-Host "  (fallback: read from User-scope registry)"
-                  $env:VCPKG_ROOT = $effectiveVcpkgRoot
-              }
+              if ($effectiveVcpkgRoot) { $env:VCPKG_ROOT = $effectiveVcpkgRoot }
           }
           Write-Host "VCPKG_ROOT=$effectiveVcpkgRoot"
-          if (-not $effectiveVcpkgRoot) {
-              throw "VCPKG_ROOT is not set after setup (checked process env + User-scope registry)."
-          }
+          if (-not $effectiveVcpkgRoot) { throw "VCPKG_ROOT is not set after setup." }
           if (-not (Test-Path "$effectiveVcpkgRoot\scripts\buildsystems\vcpkg.cmake")) {
               throw "vcpkg toolchain file missing at $effectiveVcpkgRoot\scripts\buildsystems\vcpkg.cmake"
           }
         shell: powershell
 
       # ----------------------------------------------------------------
-      # Build x64 and x86.
+      # VCPKG_FORCE_SYSTEM_BINARIES=1 works correctly with the pinned
+      # vcpkg 2024.01.12:
+      #   - find_program(NINJA) is called first
+      #   - Chocolatey Ninja is found on PATH
+      #   - vcpkg never downloads its own Ninja
+      #   - the `ninja -v` version-check bug cannot occur
       #
-      # IMPORTANT: Do NOT set VCPKG_FORCE_SYSTEM_BINARIES here.
-      #
-      # The original workflow set VCPKG_FORCE_SYSTEM_BINARIES=1 to
-      # work around an older vcpkg bug where its download-and-verify
-      # path invoked "ninja -v" instead of "ninja --version". That
-      # bug is fixed in the current vcpkg (2026-10-29 build). With
-      # the current vcpkg, VCPKG_FORCE_SYSTEM_BINARIES=1 actually
-      # BREAKS the build: vcpkg calls z_use_vcpkg_fetch for Ninja,
-      # which is blocked by the flag, producing:
-      #
-      #     error: Could not fetch ninja. A downloadable copy of
-      #     this tool is available and can be used by unsetting
-      #     %VCPKG_FORCE_SYSTEM_BINARIES%.
-      #
-      # Removing the flag lets vcpkg download and cache its own
-      # Ninja (~10 MB, cached by the actions/cache step above).
-      # The system Ninja (Chocolatey) is still used by the *outer*
-      # CMake build step; the two do not conflict.
+      # Do NOT use this flag with vcpkg snapshots from late 2025 onward
+      # -- those route through z_use_vcpkg_fetch and refuse to use the
+      # system Ninja, which is why we pinned below 2024.02.
       # ----------------------------------------------------------------
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
+          VCPKG_FORCE_SYSTEM_BINARIES: 1
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
+          VCPKG_FORCE_SYSTEM_BINARIES: 1
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
