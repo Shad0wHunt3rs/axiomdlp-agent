@@ -4,8 +4,10 @@
 
 .DESCRIPTION
     Auto-initializes the Visual Studio environment (vcvarsall.bat) so this
-    script works from ANY PowerShell window. Also protects VCPKG_ROOT from
-    being overwritten by vcvarsall.bat (which sets it to the VS-bundled vcpkg).
+    script works from ANY PowerShell window. Preserves VCPKG_ROOT and PATH
+    across vcvarsall.bat, which rewrites both:
+      - VCPKG_ROOT -> VS-bundled vcpkg (wrong one)
+      - PATH       -> VS toolchain only (drops chocolatey, ninja, etc.)
 
 .PARAMETER Configuration
     Debug or Release (default: Release).
@@ -33,8 +35,18 @@ param(
 $ErrorActionPreference = "Stop"
 
 # ----------------------------------------------------------------
-# Save VCPKG_ROOT BEFORE VS env init (vcvarsall.bat overwrites it
-# with the VS-bundled vcpkg, which requires builtin-baseline).
+# Save VCPKG_ROOT AND PATH BEFORE VS env init.
+#
+# vcvarsall.bat rewrites both of these. VCPKG_ROOT gets replaced with
+# the VS-bundled vcpkg; PATH gets replaced with the VS toolchain only.
+# The PATH rewrite is what caused the CI failure:
+#
+#     error: Could not fetch ninja.
+#     CMake Error: CMAKE_MAKE_PROGRAM is not set.
+#
+# because after vcvarsall.bat, chocolatey's ninja.exe was no longer on
+# PATH, so vcpkg's detect_compiler port and CMake's Ninja generator
+# both failed to find it.
 # ----------------------------------------------------------------
 $savedVcpkgRoot = $env:VCPKG_ROOT
 if (-not $savedVcpkgRoot) {
@@ -42,6 +54,12 @@ if (-not $savedVcpkgRoot) {
 }
 if (-not $savedVcpkgRoot) {
     $savedVcpkgRoot = "$env:USERPROFILE\vcpkg"
+}
+
+$savedPath = $env:PATH
+if (-not $savedPath) {
+    $savedPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                 [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
 
 # ----------------------------------------------------------------
@@ -105,8 +123,21 @@ if ($savedVcpkgRoot) {
     }
 }
 
+# ----------------------------------------------------------------
+# Restore PATH so chocolatey-installed tools (ninja in particular)
+# remain visible to CMake and to vcpkg. VS toolchain paths stay first
+# so cl.exe wins over any other compiler that might be on the original
+# PATH; the original PATH is appended after.
+# ----------------------------------------------------------------
+if ($savedPath) {
+    $env:PATH = $env:PATH + ";" + $savedPath
+    Write-Host "  [OK] Restored PATH (VS env first, original appended)" -ForegroundColor Green
+}
+
+# ----------------------------------------------------------------
 # Refuse to use the VS-bundled vcpkg - it requires builtin-baseline
 # in vcpkg.json which the standalone vcpkg does not need.
+# ----------------------------------------------------------------
 if ($env:VCPKG_ROOT -match "Microsoft Visual Studio.*VC[\\/]vcpkg") {
     Write-Host "[ERROR] VCPKG_ROOT points at the VS-bundled vcpkg:" -ForegroundColor Red
     Write-Host "        $env:VCPKG_ROOT" -ForegroundColor Red
@@ -118,6 +149,20 @@ if ($env:VCPKG_ROOT -match "Microsoft Visual Studio.*VC[\\/]vcpkg") {
 # Force MSVC compilers (overrides any GCC on PATH)
 $env:CC = "cl.exe"
 $env:CXX = "cl.exe"
+
+# ----------------------------------------------------------------
+# Belt-and-braces: pin CMAKE_MAKE_PROGRAM to ninja.exe if we can find
+# it on the restored PATH. CMake normally finds it via PATH, but doing
+# this explicitly ensures the Ninja generator works even if a future
+# environment change hides ninja again.
+# ----------------------------------------------------------------
+$ninjaCmd = Get-Command ninja.exe -ErrorAction SilentlyContinue
+if ($ninjaCmd) {
+    $env:CMAKE_MAKE_PROGRAM = $ninjaCmd.Source
+    Write-Host "  [OK] CMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM" -ForegroundColor Green
+} else {
+    Write-Host "  [WARN] ninja.exe not found on PATH; CMake will search and vcpkg may download its own copy" -ForegroundColor Yellow
+}
 
 # ----------------------------------------------------------------
 # Locate project root

@@ -45,19 +45,59 @@ jobs:
         run: .\scripts\win\setup-windows-msvc.ps1
         shell: powershell
 
+      # ------------------------------------------------------------------
+      # Post-setup sanity checks
+      #
+      # GITHUB_PATH and the .NET SetEnvironmentVariable("User") API both
+      # persist to the *next* process, not to this one. Before the fix,
+      # the very next step ran build-windows-msvc.ps1, which invoked
+      # vcvarsall.bat — and that rewrote %PATH%, hiding the system ninja
+      # from vcpkg and CMake. These explicit checks fail fast and loudly
+      # if either tool is missing on PATH after env setup, so the error
+      # appears here instead of deep inside vcpkg's configure log.
+      # ------------------------------------------------------------------
+      - name: Verify Ninja + VCPKG_ROOT after setup
+        run: |
+          Write-Host "--- PATH ---"
+          $env:PATH -split ';' | ForEach-Object { Write-Host $_ }
+
+          Write-Host "--- where ninja ---"
+          where.exe ninja
+          if ($LASTEXITCODE -ne 0) {
+              throw "ninja not found on PATH after setup. GITHUB_PATH propagation is broken."
+          }
+
+          Write-Host "--- ninja --version ---"
+          ninja --version
+
+          Write-Host "--- VCPKG_ROOT ---"
+          Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
+          if (-not $env:VCPKG_ROOT) {
+              throw "VCPKG_ROOT is not set after setup."
+          }
+          if (-not (Test-Path "$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake")) {
+              throw "vcpkg toolchain file missing at $env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+          }
+        shell: powershell
+
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
-          VCPKG_FORCE_SYSTEM_BINARIES: 1
+          # NOTE: VCPKG_FORCE_SYSTEM_BINARIES was removed. Setting it to 1
+          # made vcpkg refuse to download its own ninja when find_program
+          # failed — and find_program failed because vcvarsall.bat inside
+          # build-windows-msvc.ps1 rewrote PATH, hiding the chocolatey ninja.
+          # The script now preserves PATH across vcvarsall.bat, so system
+          # ninja is visible to vcpkg; and even if it weren't, vcpkg is
+          # allowed to fetch its own copy now.
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
-          VCPKG_FORCE_SYSTEM_BINARIES: 1
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

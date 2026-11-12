@@ -6,6 +6,7 @@
     - Verifies Visual Studio 2022 (or Build Tools) with the C++ workload.
     - Downloads the vcpkg repository as a ZIP (no git clone).
     - Downloads the prebuilt vcpkg.exe (no compilation).
+    - Verifies vcpkg.exe runs and the recipe folder is complete.
     - Sets VCPKG_ROOT persistently for the current user.
 
 .NOTES
@@ -20,7 +21,7 @@ Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (fast mode) ===" -Foregr
 # ----------------------------------------------------------------
 # 1. Verify Visual Studio
 # ----------------------------------------------------------------
-Write-Host "`n[1/3] Looking for Visual Studio..." -ForegroundColor Yellow
+Write-Host "`n[1/4] Looking for Visual Studio..." -ForegroundColor Yellow
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) {
@@ -51,13 +52,13 @@ if (-not $vsInstall) {
 Write-Host "  [OK] Found: $vsInstall" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 2. vcpkg: ZIP recipes + prebuilt vcpkg.exe
+# 2. vcpkg recipes (ZIP) + prebuilt vcpkg.exe
 # ----------------------------------------------------------------
 $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "$env:USERPROFILE\vcpkg" }
 $vcpkgZip = "$env:USERPROFILE\vcpkg.zip"
 $toolchain = "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
 
-Write-Host "`n[2/3] Setting up vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
+Write-Host "`n[2/4] Setting up vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
 
 # --- 2a. Recipe folder (ports/, scripts/, triplets/)
 if (-not (Test-Path $toolchain)) {
@@ -104,21 +105,57 @@ else {
     Write-Host "  [OK] vcpkg.exe already present." -ForegroundColor Green
 }
 
-# --- 2c. Verify both pieces
+# ----------------------------------------------------------------
+# 3. Verify vcpkg.exe runs and recipe folder is complete
+#
+# This is new. A partial or corrupted download previously produced
+# a confusing error at build time ("mosquitto not found via vcpkg").
+# Checking here converts that into a clear "setup failed" at setup
+# time, which is much easier to diagnose.
+# ----------------------------------------------------------------
+Write-Host "`n[3/4] Verifying vcpkg installation..." -ForegroundColor Yellow
+
 if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-    Write-Host "[ERROR] vcpkg.exe download failed; check $vcpkgRoot" -ForegroundColor Red
+    Write-Host "[ERROR] vcpkg.exe missing at $vcpkgRoot" -ForegroundColor Red
     exit 1
 }
 if (-not (Test-Path $toolchain)) {
     Write-Host "[ERROR] vcpkg toolchain file missing at $toolchain" -ForegroundColor Red
     exit 1
 }
+if (-not (Test-Path "$vcpkgRoot\ports")) {
+    Write-Host "[ERROR] vcpkg ports directory missing at $vcpkgRoot\ports" -ForegroundColor Red
+    Write-Host "        The recipe ZIP may have extracted incorrectly." -ForegroundColor Red
+    exit 1
+}
+if (-not (Test-Path "$vcpkgRoot\triplets")) {
+    Write-Host "[ERROR] vcpkg triplets directory missing at $vcpkgRoot\triplets" -ForegroundColor Red
+    exit 1
+}
+
+# vcpkg.exe must actually run - catches wrong-architecture exe downloads
+# (e.g. a 32-bit exe on a 64-bit runner would still be a valid PE file
+#  but might fail with a specific loader error).
+try {
+    $vcpkgVersionOutput = & "$vcpkgRoot\vcpkg.exe" version 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] vcpkg.exe version returned exit code $LASTEXITCODE" -ForegroundColor Red
+        Write-Host "        Output: $vcpkgVersionOutput" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  [OK] vcpkg.exe runs: $vcpkgVersionOutput" -ForegroundColor Green
+}
+catch {
+    Write-Host "[ERROR] vcpkg.exe failed to execute: $_" -ForegroundColor Red
+    exit 1
+}
+
 Write-Host "  [OK] vcpkg ready: $vcpkgRoot" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 3. Persist VCPKG_ROOT (both User scope and current process)
+# 4. Persist VCPKG_ROOT (both User scope and current process)
 # ----------------------------------------------------------------
-Write-Host "`n[3/3] Setting VCPKG_ROOT=$vcpkgRoot for current user..." -ForegroundColor Yellow
+Write-Host "`n[4/4] Setting VCPKG_ROOT=$vcpkgRoot for current user..." -ForegroundColor Yellow
 
 # Method 1: .NET API (silent if it works)
 try {
