@@ -4,13 +4,10 @@
 
 .DESCRIPTION
     - Verifies Visual Studio (2022 or newer) with the C++ workload.
-    - Downloads a PINNED vcpkg registry (2025.10.17) as a ZIP. This
-      version is the first line that supports Visual Studio 2026
-      (VS 18). Older registries (e.g. 2024.01.12) invoke vcvarsall.bat
-      with arguments VS 18 rejects and exit 255.
+    - Downloads a PINNED vcpkg registry (2024.01.12) as a ZIP.
     - Downloads a matching prebuilt vcpkg.exe. Tries several release
       tags in order, then falls back to the registry's own bootstrap
-      script (which downloads the version matched to this registry).
+      script if all tags fail.
     - Retries every download up to 5 times with exponential backoff.
     - Validates magic bytes on every download:
          * ZIP (vcpkg registry)  must start with 0x50 0x4B ("PK")
@@ -21,9 +18,12 @@
     - Persists VCPKG_ROOT for the current workflow (GITHUB_ENV), the
       current user (registry), and the current process.
 
-    WHY PIN 2025.10.17: this registry recognises VS 2026 (toolset v145)
-    and calls vcvarsall.bat with the correct arguments. The Ninja
-    `-v` regression is neutralised by VCPKG_KEEP_ENV_VARS=PATH and
+    WHY PIN 2024.01.12: this registry fully supports Visual Studio
+    2022. The workflow runs on `windows-2022`, which gives VS 2022.
+    vcpkg 2025.10.17+ claims "partial support" for VS 2026 but its
+    vcvarsall.bat invocation still returns 255 on VS 18, so VS 2026
+    is not usable yet for this project. The Ninja `-v` regression is
+    neutralised by VCPKG_KEEP_ENV_VARS=PATH and
     VCPKG_FORCE_SYSTEM_BINARIES=1 (see the workflow build steps), so
     vcpkg uses the Ninja 1.10.2 on PATH and never downloads its own.
 
@@ -34,15 +34,16 @@
 $ErrorActionPreference = "Stop"
 
 # ----------------------------------------------------------------
-# PINNED VCPKG VERSION -- first release line that supports VS 2026.
+# PINNED VCPKG VERSION -- fully supports VS 2022 (the workflow's
+# windows-2022 runner).
 #
 # - $VCPKG_TAG      : registry release (used for the ZIP and the
 #                     cache key in the workflow).
 # - $VCPKG_TOOL_TAGS: release tags on microsoft/vcpkg-tool. Tried in
 #                     order. `latest` is a safe final fallback.
 # ----------------------------------------------------------------
-$VCPKG_TAG       = "2025.10.17"
-$VCPKG_TOOL_TAGS = @("2025-10-10", "2025-09-12", "latest")
+$VCPKG_TAG       = "2024.01.12"
+$VCPKG_TOOL_TAGS = @("2024-01-11", "2023-12-04", "latest")
 
 Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (pinned vcpkg $VCPKG_TAG) ===" -ForegroundColor Cyan
 
@@ -139,7 +140,6 @@ if (-not (Test-Path $vswhere)) {
 Install one of:
   - Visual Studio 2022 Community (free)
   - Visual Studio 2022 Build Tools (free, headless)
-  - Visual Studio 2026 (also supported by this pipeline)
 
 Make sure to select the workload:
   'Desktop development with C++'

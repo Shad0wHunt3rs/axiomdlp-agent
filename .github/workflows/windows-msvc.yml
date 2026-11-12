@@ -5,7 +5,10 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # PIN TO windows-2022 -- windows-latest now points to VS 2026,
+    # which vcpkg 2025.10.17 only partially supports. VS 2022 is fully
+    # supported by every vcpkg release in the 2024-2025 range.
+    runs-on: windows-2022
 
     steps:
       - name: Checkout code
@@ -49,12 +52,12 @@ jobs:
           path: |
             C:\Users\runneradmin\vcpkg\downloads
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
-          key: ${{ runner.os }}-vcpkg-2025.10.17-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
+          key: ${{ runner.os }}-vcpkg-2024.01.12-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
           restore-keys: |
-            ${{ runner.os }}-vcpkg-2025.10.17-
+            ${{ runner.os }}-vcpkg-2024.01.12-
             ${{ runner.os }}-vcpkg-
 
-      - name: Setup MSVC and vcpkg (pinned 2025.10.17)
+      - name: Setup MSVC and vcpkg (pinned 2024.01.12)
         run: .\scripts\win\setup-windows-msvc.ps1
         shell: powershell
 
@@ -72,15 +75,9 @@ jobs:
           }
         shell: powershell
 
-      # ----------------------------------------------------------------
-      # VCPKG_KEEP_ENV_VARS=PATH  -> propagate PATH into vcpkg's sanitised
-      #                              build env so find_program(NINJA)
-      #                              finds Ninja 1.10.2.
-      # VCPKG_FORCE_SYSTEM_BINARIES=1 -> use the system Ninja, never
-      #                                  download or verify its own.
-      # Together these defeat the `ninja -v` regression even on vcpkg
-      # releases that use z_use_vcpkg_fetch.
-      # ----------------------------------------------------------------
+      # VCPKG_KEEP_ENV_VARS=PATH          -> vcpkg sees Ninja 1.10.2
+      # VCPKG_FORCE_SYSTEM_BINARIES=1    -> vcpkg never downloads its own Ninja
+      # Both together defeat the ninja -v regression.
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
         shell: powershell
