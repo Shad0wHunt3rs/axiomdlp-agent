@@ -3,11 +3,14 @@
     One-time setup for building AxiomDLP Agent on Windows with MSVC + vcpkg.
 
 .DESCRIPTION
-    - Verifies Visual Studio (2022 or newer) with the C++ workload.
-    - Downloads a PINNED vcpkg registry (2024.01.12) as a ZIP.
+    - Verifies Visual Studio (2022) with the C++ workload.
+    - Downloads a PINNED vcpkg registry (2024.11.16) as a ZIP. This is
+      the last 2024 release and the newest one that still calls
+      find_program(NINJA) first (pre-z_use_vcpkg_fetch). It also fully
+      supports VS 2022 with the MSVC 14.44 toolset used by the
+      windows-2022 runner image.
     - Downloads a matching prebuilt vcpkg.exe. Tries several release
-      tags in order, then falls back to the registry's own bootstrap
-      script if all tags fail.
+      tags in order, then falls back to bootstrap-vcpkg.bat.
     - Retries every download up to 5 times with exponential backoff.
     - Validates magic bytes on every download:
          * ZIP (vcpkg registry)  must start with 0x50 0x4B ("PK")
@@ -18,14 +21,17 @@
     - Persists VCPKG_ROOT for the current workflow (GITHUB_ENV), the
       current user (registry), and the current process.
 
-    WHY PIN 2024.01.12: this registry fully supports Visual Studio
-    2022. The workflow runs on `windows-2022`, which gives VS 2022.
-    vcpkg 2025.10.17+ claims "partial support" for VS 2026 but its
-    vcvarsall.bat invocation still returns 255 on VS 18, so VS 2026
-    is not usable yet for this project. The Ninja `-v` regression is
-    neutralised by VCPKG_KEEP_ENV_VARS=PATH and
-    VCPKG_FORCE_SYSTEM_BINARIES=1 (see the workflow build steps), so
-    vcpkg uses the Ninja 1.10.2 on PATH and never downloads its own.
+    WHY PIN 2024.11.16:
+      * vcpkg 2024.01.12 does NOT know about MSVC 14.44 (shipped on
+        windows-2022 since ~April 2024) and passes an older toolset
+        version to vcvarsall.bat, which exits 255.
+      * vcpkg 2025.01.13+ routes tool acquisition through
+        z_use_vcpkg_fetch, which triggers the `ninja -v` bug.
+      * 2024.11.16 sits between the two: knows 14.44, still calls
+        find_program(NINJA) first.
+    The Ninja `-v` regression is also neutralised by
+    VCPKG_KEEP_ENV_VARS=PATH and VCPKG_FORCE_SYSTEM_BINARIES=1
+    (see the workflow build steps).
 
 .NOTES
     This file is intentionally ASCII-only for maximum encoding compatibility.
@@ -34,16 +40,15 @@
 $ErrorActionPreference = "Stop"
 
 # ----------------------------------------------------------------
-# PINNED VCPKG VERSION -- fully supports VS 2022 (the workflow's
-# windows-2022 runner).
+# PINNED VCPKG VERSION
 #
 # - $VCPKG_TAG      : registry release (used for the ZIP and the
 #                     cache key in the workflow).
 # - $VCPKG_TOOL_TAGS: release tags on microsoft/vcpkg-tool. Tried in
 #                     order. `latest` is a safe final fallback.
 # ----------------------------------------------------------------
-$VCPKG_TAG       = "2024.01.12"
-$VCPKG_TOOL_TAGS = @("2024-01-11", "2023-12-04", "latest")
+$VCPKG_TAG       = "2024.11.16"
+$VCPKG_TOOL_TAGS = @("2024-11-16", "2024-10-18", "latest")
 
 Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (pinned vcpkg $VCPKG_TAG) ===" -ForegroundColor Cyan
 
@@ -212,8 +217,6 @@ if ($needsInstall) {
 
     # ------------------------------------------------------------
     # vcpkg.exe  (magic bytes: "MZ")
-    # Try explicit tool tags first (fast path), then fall back to
-    # the registry's own bootstrap-vcpkg.bat (self-healing path).
     # ------------------------------------------------------------
     $toolDownloaded = $false
     $usedTag = $null

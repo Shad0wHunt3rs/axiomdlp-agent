@@ -49,12 +49,12 @@ jobs:
           path: |
             C:\Users\runneradmin\vcpkg\downloads
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
-          key: ${{ runner.os }}-vcpkg-2024.01.12-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
+          key: ${{ runner.os }}-vcpkg-2024.11.16-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
           restore-keys: |
-            ${{ runner.os }}-vcpkg-2024.01.12-
+            ${{ runner.os }}-vcpkg-2024.11.16-
             ${{ runner.os }}-vcpkg-
 
-      - name: Setup MSVC and vcpkg (pinned 2024.01.12)
+      - name: Setup MSVC and vcpkg (pinned 2024.11.16)
         run: .\scripts\win\setup-windows-msvc.ps1
         shell: powershell
 
@@ -73,20 +73,19 @@ jobs:
         shell: powershell
 
       # ----------------------------------------------------------------
-      # VCPKG_PLATFORM_TOOLSET_VERSION=14.44.35207
-      #   The windows-2022 runner ships exactly MSVC 14.44.35207.
-      #   vcpkg 2024.01.12 is old enough that it does NOT know this
-      #   version and passes a non-existent version to vcvarsall.bat,
-      #   which exits 255. Pinning the toolset version to the exact
-      #   installed one makes vcvarsall.bat succeed.
+      # VCPKG_KEEP_ENV_VARS=PATH
+      #   vcpkg sanitises PATH when spawning nested CMake. Propagate
+      #   PATH so find_program(NINJA) sees the Ninja 1.10.2 installed
+      #   above.
       #
       # VCPKG_FORCE_SYSTEM_BINARIES=1
-      #   Use the system Ninja (1.10.2, installed above) instead of
-      #   letting vcpkg download its own.
+      #   Use the system Ninja; never download or verify vcpkg's own.
+      #   This defeats the `ninja -v` regression.
       #
-      # VCPKG_KEEP_ENV_VARS=PATH
-      #   Propagate PATH into vcpkg's sanitised build environment so
-      #   find_program(NINJA) can see the system Ninja.
+      # VCPKG_PLATFORM_TOOLSET_VERSION=14.44.35207
+      #   Belt-and-braces. vcpkg 2024.11.16 already detects this
+      #   toolset, but pinning the exact installed version removes any
+      #   ambiguity if the runner image changes.
       # ----------------------------------------------------------------
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
