@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.24)
 project(axiomdlp-agent VERSION 0.1.0 LANGUAGES C CXX)
 
 # ----------------------------------------------------------------
+# Build options
+# ----------------------------------------------------------------
+option(AXIOM_USE_MQTT "Build the MQTT transport module (requires libmosquitto 2.x)" ON)
+
+# ----------------------------------------------------------------
 # Shared source cache for FetchContent dependencies
 # ----------------------------------------------------------------
 set(AXIOM_DEPS_DIR "${CMAKE_SOURCE_DIR}/.deps" CACHE PATH "Shared FetchContent source cache")
@@ -16,9 +21,6 @@ endif()
 if(EXISTS "${AXIOM_DEPS_DIR}/efsw-src")
     set(FETCHCONTENT_SOURCE_DIR_EFSW "${AXIOM_DEPS_DIR}/efsw-src" CACHE PATH "efsw source cache" FORCE)
 endif()
-if(EXISTS "${AXIOM_DEPS_DIR}/cpp-httplib-src")
-    set(FETCHCONTENT_SOURCE_DIR_HTTPLIB "${AXIOM_DEPS_DIR}/cpp-httplib-src" CACHE PATH "cpp-httplib source cache" FORCE)
-endif()
 
 # ----------------------------------------------------------------
 # Language settings
@@ -28,6 +30,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------
 # Dependency acquisition strategy
@@ -65,71 +70,16 @@ endif()
 message(STATUS "AxiomDLP Agent target: ${AXIOM_TARGET}")
 
 # ----------------------------------------------------------------
+# pkg-config search path for i686 cross-builds
+# ----------------------------------------------------------------
+if(UNIX AND NOT APPLE AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(ENV{PKG_CONFIG_LIBDIR} "/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig")
+endif()
+
+# ----------------------------------------------------------------
 # Third-party dependencies
 # ----------------------------------------------------------------
 include(FetchContent)
-
-# ----------------------------------------------------------------
-# Brotli targets — created manually for i686
-# ----------------------------------------------------------------
-if(UNIX AND NOT APPLE AND CMAKE_SIZEOF_VOID_P EQUAL 4)
-
-    set(_brotli_inc    "/usr/include")
-    set(_brotli_common "/usr/lib/i386-linux-gnu/libbrotlicommon.so")
-    set(_brotli_enc    "/usr/lib/i386-linux-gnu/libbrotlienc.so")
-    set(_brotli_dec    "/usr/lib/i386-linux-gnu/libbrotlidec.so")
-
-    if(NOT EXISTS "${_brotli_common}" OR
-       NOT EXISTS "${_brotli_enc}"    OR
-       NOT EXISTS "${_brotli_dec}")
-        message(FATAL_ERROR
-            "i386 Brotli libraries not found. Install with:\n"
-            "    sudo apt install libbrotli-dev:i386")
-    endif()
-
-    # Modern names — used by gRPC
-    if(NOT TARGET Brotli::brotlicommon)
-        add_library(Brotli::brotlicommon SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::brotlicommon PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_common}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-    if(NOT TARGET Brotli::brotlienc)
-        add_library(Brotli::brotlienc SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::brotlienc PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_enc}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-    if(NOT TARGET Brotli::brotlidec)
-        add_library(Brotli::brotlidec SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::brotlidec PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_dec}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-
-    # Legacy names — used by cpp-httplib and some older packages
-    if(NOT TARGET Brotli::common)
-        add_library(Brotli::common SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::common PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_common}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-    if(NOT TARGET Brotli::encoder)
-        add_library(Brotli::encoder SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::encoder PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_enc}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-    if(NOT TARGET Brotli::decoder)
-        add_library(Brotli::decoder SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::decoder PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_dec}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-
-    set(Brotli_FOUND TRUE CACHE BOOL "" FORCE)
-    message(STATUS "i686 Brotli targets created manually (i386 paths)")
-endif()
 
 # --- nlohmann/json ---
 if(AXIOM_USE_VCPKG_DEPS)
@@ -175,20 +125,8 @@ else()
     set(AXIOM_EFSW_TARGET efsw-static)
 endif()
 
-# --- cpp-httplib ---
-set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
-set(HTTPLIB_REQUIRE_BROTLI          OFF CACHE BOOL "" FORCE)
-set(HTTPLIB_COMPILE OFF) # header-only
-FetchContent_Declare(
-    httplib
-    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-    GIT_TAG        v0.15.3
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(httplib)
-
 # ----------------------------------------------------------------
-# OpenSSL (must run BEFORE find_package(gRPC))
+# OpenSSL (file hashing, base64, MQTT TLS)
 # ----------------------------------------------------------------
 if(AXIOM_USE_VCPKG_DEPS)
     find_package(OpenSSL REQUIRED)
@@ -227,99 +165,82 @@ else()
 endif()
 
 # ----------------------------------------------------------------
-# gRPC + Protobuf (Mandatory)
+# libmosquitto (agent transport) — optional via AXIOM_USE_MQTT
 # ----------------------------------------------------------------
-if(NOT AXIOM_USE_VCPKG_DEPS)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        list(PREPEND CMAKE_PREFIX_PATH "${AXIOM_DEPS_DIR}/grpc-linux-x86_64")
-    else()
-        list(PREPEND CMAKE_PREFIX_PATH "${AXIOM_DEPS_DIR}/grpc-linux-i686")
-    endif()
-endif()
+if(AXIOM_USE_MQTT)
+    if(AXIOM_USE_VCPKG_DEPS)
+        find_package(mosquitto CONFIG QUIET)
 
-find_package(Protobuf CONFIG REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
-
-# ----------------------------------------------------------------
-# Post-process gRPC's imported targets for i686
-#
-# gRPC's gRPCTargets.cmake was generated on a 64-bit host without
-# the i386 dev packages installed, so it contains hardcoded
-# /usr/lib/x86_64-linux-gnu/... paths for openssl, brotli, and
-# anything else its find_dependency calls saw at configure time.
-# This block rewrites every such path to i386 in one pass.
-# ----------------------------------------------------------------
-if(UNIX AND NOT APPLE AND CMAKE_SIZEOF_VOID_P EQUAL 4)
-    foreach(_grpc_target
-            gRPC::grpc++ gRPC::grpc gRPC::gpr
-            gRPC::upb gRPC::re2 gRPC::cares gRPC::zlibstatic
-            gRPC::address_sorting gRPC::grpc_plugin_support)
-        if(TARGET ${_grpc_target})
-            get_target_property(_libs ${_grpc_target} INTERFACE_LINK_LIBRARIES)
-            if(_libs)
-                set(_new_libs "")
-                foreach(_lib IN LISTS _libs)
-                    string(REPLACE
-                        "/usr/lib/x86_64-linux-gnu/libssl.so"
-                        "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"
-                        _lib "${_lib}")
-                    string(REPLACE
-                        "/usr/lib/x86_64-linux-gnu/libcrypto.so"
-                        "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
-                        _lib "${_lib}")
-                    string(REPLACE
-                        "/usr/lib/x86_64-linux-gnu/"
-                        "/usr/lib/i386-linux-gnu/"
-                        _lib "${_lib}")
-                    list(APPEND _new_libs "${_lib}")
-                endforeach()
-                set_target_properties(${_grpc_target} PROPERTIES
-                    INTERFACE_LINK_LIBRARIES "${_new_libs}")
+        if(mosquitto_FOUND)
+            if(TARGET mosquitto::mosquitto)
+                add_library(AXIOM_MOSQUITTO ALIAS mosquitto::mosquitto)
+            elseif(TARGET mosquitto::libmosquitto)
+                add_library(AXIOM_MOSQUITTO ALIAS mosquitto::libmosquitto)
+            elseif(TARGET mosquitto::mosquitto_static)
+                add_library(AXIOM_MOSQUITTO ALIAS mosquitto::mosquitto_static)
+            elseif(TARGET mosquitto)
+                add_library(AXIOM_MOSQUITTO ALIAS mosquitto)
+            else()
+                message(WARNING "mosquitto CONFIG found but no recognized target; "
+                                "falling back to find_path/find_library")
+                unset(mosquitto_FOUND)
             endif()
         endif()
-    endforeach()
-    message(STATUS "i686: gRPC imported target paths sanitized")
-endif()
 
-set(AXIOM_PROTO_DIR     "${CMAKE_CURRENT_SOURCE_DIR}/src/features/grpc_transport")
-set(AXIOM_PROTO_FILE    "${AXIOM_PROTO_DIR}/agent.proto")
-set(AXIOM_PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
+        if(mosquitto_FOUND)
+            message(STATUS "libmosquitto: vcpkg config (aliased to AXIOM_MOSQUITTO)")
+        else()
+            find_path(MOSQUITTO_INCLUDE_DIR
+                NAMES mosquitto.h libmosquitto.h
+                PATH_SUFFIXES mosquitto)
+            find_library(MOSQUITTO_LIBRARY
+                NAMES mosquitto libmosquitto mosquitto_static libmosquitto_static)
+            if(NOT MOSQUITTO_INCLUDE_DIR OR NOT MOSQUITTO_LIBRARY)
+                message(FATAL_ERROR
+                    "\n"
+                    "libmosquitto not found via vcpkg.\n"
+                    "\n"
+                    "Make sure 'mosquitto' is listed in vcpkg.json dependencies.\n")
+            endif()
+            add_library(AXIOM_MOSQUITTO INTERFACE)
+            target_include_directories(AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_INCLUDE_DIR})
+            target_link_libraries     (AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_LIBRARY})
+            message(STATUS "libmosquitto: ${MOSQUITTO_LIBRARY} (manual find)")
+        endif()
+    else()
+        find_package(PkgConfig QUIET)
+        if(NOT PkgConfig_FOUND)
+            message(FATAL_ERROR "pkg-config executable not found. Install: sudo apt install pkg-config")
+        endif()
 
-set(AXIOM_PROTO_SRC
-    "${AXIOM_PROTO_GEN_DIR}/agent.pb.cc"
-    "${AXIOM_PROTO_GEN_DIR}/agent.grpc.pb.cc"
-)
-set(AXIOM_PROTO_HDR
-    "${AXIOM_PROTO_GEN_DIR}/agent.pb.h"
-    "${AXIOM_PROTO_GEN_DIR}/agent.grpc.pb.h"
-)
+        pkg_check_modules(MOSQUITTO QUIET libmosquitto)
+        if(NOT MOSQUITTO_FOUND)
+            message(FATAL_ERROR
+                "\n"
+                "libmosquitto not found via pkg-config.\n"
+                "\n"
+                "Install it with:\n"
+                "    sudo apt install libmosquitto-dev\n"
+                "\n"
+                "For i686: sudo apt install libmosquitto-dev:i386\n")
+        endif()
 
-if(AXIOM_USE_VCPKG_DEPS)
-    set(_protoc_exe "$<TARGET_FILE:protobuf::protoc>")
-    set(_grpc_plugin "$<TARGET_FILE:gRPC::grpc_cpp_plugin>")
-else()
-    set(_protoc_exe "${AXIOM_DEPS_DIR}/grpc-host-tools/bin/protoc")
-    set(_grpc_plugin "${AXIOM_DEPS_DIR}/grpc-host-tools/bin/grpc_cpp_plugin")
-    if(NOT EXISTS "${_protoc_exe}")
-        message(FATAL_ERROR "protoc not found. Please run ./scripts/linux/build-grpc.sh first.")
+        if(MOSQUITTO_VERSION VERSION_LESS "2.0")
+            message(FATAL_ERROR
+                "libmosquitto ${MOSQUITTO_VERSION} is too old. Requires 2.x for MQTT 5.")
+        endif()
+
+        add_library(AXIOM_MOSQUITTO INTERFACE)
+        target_include_directories(AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_INCLUDE_DIRS})
+        target_link_libraries     (AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_LIBRARIES})
+        if(MOSQUITTO_CFLAGS_OTHER)
+            target_compile_options(AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_CFLAGS_OTHER})
+        endif()
+        message(STATUS "libmosquitto: ${MOSQUITTO_LIBRARIES} (version ${MOSQUITTO_VERSION})")
     endif()
+else()
+    message(STATUS "libmosquitto: MQTT transport disabled (AXIOM_USE_MQTT=OFF)")
 endif()
-
-add_custom_command(
-    OUTPUT  ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR}
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${AXIOM_PROTO_GEN_DIR}"
-    COMMAND "${_protoc_exe}"
-        --proto_path=${AXIOM_PROTO_DIR}
-        --cpp_out=${AXIOM_PROTO_GEN_DIR}
-        --grpc_out=${AXIOM_PROTO_GEN_DIR}
-        --plugin=protoc-gen-grpc=${_grpc_plugin}
-        ${AXIOM_PROTO_FILE}
-    DEPENDS ${AXIOM_PROTO_FILE}
-    COMMENT "protoc: generating C++ from agent.proto"
-    VERBATIM
-)
-
-add_custom_target(axiom_grpc_gen DEPENDS ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR})
 
 # ----------------------------------------------------------------
 # SQLite3
@@ -359,11 +280,10 @@ add_executable(axiomdlp-agent
     src/events/event.cpp
     src/events/event_bus.cpp
     src/modules/module_manager.cpp
-    src/net/http_client.cpp
-    src/net/outbound_queue.cpp
     src/util/glob_match.cpp
     src/util/file_hash.cpp
     src/util/base64.cpp
+    src/util/ulid.cpp
     src/platform/common/efsw_file_watcher.cpp
     src/features/agent_sync/agent_sync_module.cpp
     src/features/content_scanner/content_scanner_module.cpp
@@ -371,37 +291,42 @@ add_executable(axiomdlp-agent
     src/features/filesystem_watcher/filesystem_watcher_module.cpp
     src/features/inventory/inventory_module.cpp
     src/features/inventory/inventory_scanner.cpp
-    src/features/grpc_transport/grpc_transport_module.cpp
     src/storage/sqlite_database.cpp
     src/storage/migrations.cpp
     src/storage/file_repository.cpp
     src/storage/state_repository.cpp
-    ${AXIOM_PROTO_SRC}
     ${AXIOM_PLATFORM_SOURCES}
 )
 
-target_include_directories(axiomdlp-agent PRIVATE src ${AXIOM_PROTO_GEN_DIR})
+if(AXIOM_USE_MQTT)
+    target_sources(axiomdlp-agent PRIVATE
+        src/features/mqtt_transport/mqtt_transport_module.cpp)
+endif()
+
+target_include_directories(axiomdlp-agent PRIVATE src)
 
 target_compile_definitions(axiomdlp-agent PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
     AXIOM_AGENT_VERSION="${PROJECT_VERSION}"
-    CPPHTTPLIB_OPENSSL_SUPPORT
 )
+
+if(AXIOM_USE_MQTT)
+    target_compile_definitions(axiomdlp-agent PRIVATE AXIOM_HAVE_MQTT=1)
+endif()
 
 target_link_libraries(axiomdlp-agent PRIVATE
     spdlog::spdlog
     nlohmann_json::nlohmann_json
-    httplib::httplib
     ${AXIOM_EFSW_TARGET}
     ${AXIOM_SQLITE_TARGET}
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
-    gRPC::grpc++
-    protobuf::libprotobuf
 )
 
-add_dependencies(axiomdlp-agent axiom_grpc_gen)
+if(AXIOM_USE_MQTT)
+    target_link_libraries(axiomdlp-agent PRIVATE AXIOM_MOSQUITTO)
+endif()
 
 # ----------------------------------------------------------------
 # Platform-specific settings
@@ -415,11 +340,6 @@ if(UNIX AND NOT APPLE)
     set(AXIOM_HAVE_SYSTEMD OFF)
     include(FindPkgConfig QUIET)
     if(PkgConfig_FOUND)
-        if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-            set(ENV{PKG_CONFIG_LIBDIR} "/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig")
-        else()
-            set(ENV{PKG_CONFIG_LIBDIR} "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig")
-        endif()
         pkg_check_modules(SYSTEMD QUIET libsystemd)
         if(SYSTEMD_FOUND)
             set(AXIOM_HAVE_SYSTEMD ON)

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://axiomdlp.example.com/schemas/agent.schema.json",
   "title": "AxiomDLP Agent Configuration",
-  "description": "Configuration file for the AxiomDLP endpoint agent. Uses gRPC exclusively.",
+  "description": "Configuration file for the AxiomDLP endpoint agent. Uses MQTT 5 for agent transport.",
   "type": "object",
 
   "properties": {
@@ -32,12 +32,12 @@
 
     "server": {
       "type": "object",
-      "description": "Identity and connection information for the Core server. Shared by agent_sync and content_scanner.",
+      "description": "Identity and connection information for the Core server. Shared by agent_sync, content_scanner, and mqtt_transport.",
       "properties": {
         "base_url": {
           "type": "string",
           "default": "http://127.0.0.1:3000",
-          "description": "Base URL of the Core, used to derive the gRPC target host."
+          "description": "Base URL of the Core; the host is reused for the MQTT target."
         },
         "api_token": {
           "type": "string",
@@ -54,30 +54,36 @@
           "type": "integer",
           "minimum": 1,
           "default": 10,
-          "description": "Initial reconnect delay used by grpc_transport."
+          "description": "Initial reconnect delay used by mqtt_transport."
         },
         "reconnect_backoff_max_seconds": {
           "type": "integer",
           "minimum": 1,
           "default": 300,
-          "description": "Maximum reconnect delay used by grpc_transport."
+          "description": "Maximum reconnect delay used by mqtt_transport."
         },
-        "grpc_port": {
+        "mqtt_port": {
           "type": "integer",
           "minimum": 1,
           "maximum": 65535,
-          "default": 50051,
-          "description": "The port used for the gRPC transport."
+          "default": 8883,
+          "description": "TCP port the embedded MQTT broker is listening on. 8883 for TLS, 1883 for plaintext (dev only)."
         },
-        "grpc_tls": {
+        "mqtt_tls": {
           "type": "boolean",
           "default": true,
-          "description": "Whether to use TLS for the gRPC channel. Must be true in production."
+          "description": "Enable TLS on the MQTT connection. Must be true in production."
         },
-        "grpc_ca_path": {
+        "mqtt_ca_path": {
           "type": "string",
           "default": "",
-          "description": "Optional path to a PEM CA certificate file. If empty, system default root CAs are used."
+          "description": "Optional path to a PEM CA certificate file. If empty, the system default root CAs are used."
+        },
+        "mqtt_keepalive_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "default": 60,
+          "description": "MQTT CONNECT keep-alive interval in seconds."
         }
       },
       "additionalProperties": false
@@ -157,7 +163,7 @@
 
         "agent_sync": {
           "type": "object",
-          "description": "gRPC enrollment + heartbeat. URL, token, and interval come from the top-level 'server' section.",
+          "description": "Agent enrollment and heartbeat over MQTT. URL, token, and interval come from the top-level 'server' section.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -169,7 +175,7 @@
 
         "content_scanner": {
           "type": "object",
-          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection via gRPC, and writes the merged verdict back to the local files table.",
+          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection over MQTT, and writes the merged verdict back to the local files table.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -179,13 +185,13 @@
               "type": "integer",
               "minimum": 1,
               "default": 50,
-              "description": "Maximum number of chunks per gRPC ScanBatch call."
+              "description": "Maximum number of chunks per scan-batch request."
             },
             "batch_max_bytes": {
               "type": "integer",
               "minimum": 1024,
               "default": 52428800,
-              "description": "Maximum estimated payload size per gRPC call."
+              "description": "Maximum estimated payload size per request."
             },
             "scan_interval_seconds": {
               "type": "integer",
@@ -221,7 +227,7 @@
               "type": "integer",
               "minimum": 10,
               "default": 300,
-              "description": "Timeout for one gRPC ScanBatch call."
+              "description": "Timeout for one scan-batch request."
             },
             "text_extensions": {
               "type": "array",

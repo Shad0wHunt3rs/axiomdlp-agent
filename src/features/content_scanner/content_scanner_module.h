@@ -1,19 +1,26 @@
 // src/features/content_scanner/content_scanner_module.h
+//
+// Phase 9: content scanner now talks to the Core over MQTT via
+// IRequestClient::request("axiomdlp/agents/{id}/scan/batch", ...).
+// See docs/mqtt_protocol.md §9.3 for the wire schema.
+
 #pragma once
 
 #include "modules/module_base.h"
+#include "net/i_request_client.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace axiom::core {
 
-class  HttpClient;
 struct FileRow;
 
 class ContentScannerModule final : public ModuleBase {
@@ -56,14 +63,13 @@ private:
     void send_chunks_in_batches(std::vector<Chunk>& chunks,
                                 std::map<std::string, FileProgress>& progress);
 
-    void merge_batch_response(const std::string& response_body,
+    void merge_batch_response(const nlohmann::json& parsed,
                               std::map<std::string, FileProgress>& progress);
 
     void commit_completed_files(std::map<std::string, FileProgress>& progress);
 
     bool        enabled_             = true;
-    std::string base_url_;
-    std::string api_token_;
+    IRequestClient* req_             = nullptr;    // borrowed from ModuleContext
     int         agent_id_            = 0;
 
     int         batch_size_          = 50;
@@ -77,11 +83,9 @@ private:
 
     std::vector<std::string> text_extensions_;
 
-    std::unique_ptr<HttpClient> http_;
-
-    std::thread                 sync_thread_;
-    std::atomic<bool>           stop_requested_{false};
-    std::atomic<bool>           running_{false};
+    std::thread       sync_thread_;
+    std::atomic<bool> stop_requested_{false};
+    std::atomic<bool> running_{false};
 
     std::size_t total_scanned_   = 0;
     std::size_t total_sensitive_ = 0;

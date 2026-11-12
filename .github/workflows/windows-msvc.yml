@@ -51,7 +51,6 @@ jobs:
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
           VCPKG_FORCE_SYSTEM_BINARIES: 1
-          # CMAKE_MAKE_PROGRAM is no longer needed; vcpkg will use the system ninja from PATH
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86

@@ -21,14 +21,15 @@ struct StorageConfig {
 struct ServerConfig {
     std::string base_url = "http://127.0.0.1:3000";
     std::string api_token;
-    int heartbeat_interval_seconds = 30;
-    int reconnect_backoff_seconds     = 5;
-    int reconnect_backoff_max_seconds = 60;
+    int heartbeat_interval_seconds = 60;
+    int reconnect_backoff_seconds     = 10;
+    int reconnect_backoff_max_seconds = 300;
 
-    // gRPC specific configuration
-    int  grpc_port = 50051;
-    bool grpc_tls  = true;
-    std::string grpc_ca_path;
+    // MQTT (agent transport — Phase 7+)
+    int         mqtt_port               = 8883;
+    bool        mqtt_tls                = true;
+    std::string mqtt_ca_path;            // empty = use system trust store
+    int         mqtt_keepalive_seconds  = 60;
 };
 
 struct FilesystemWatcherModuleConfig {

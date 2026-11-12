@@ -9,7 +9,9 @@
 #include "features/event_logger/event_logger_module.h"
 #include "features/filesystem_watcher/filesystem_watcher_module.h"
 #include "features/inventory/inventory_module.h"
-#include "features/grpc_transport/grpc_transport_module.h"
+#ifdef AXIOM_HAVE_MQTT
+#  include "features/mqtt_transport/mqtt_transport_module.h"
+#endif
 #include "storage/migrations.h"
 #include "storage/state_repository.h"
 
@@ -87,15 +89,39 @@ bool Application::init() {
     }
 
     event_bus_ = std::make_unique<EventBus>();
-    module_context_ = std::make_unique<ModuleContext>(config_, *event_bus_, *file_store_, *state_store_, *database_, *shutdown_controller_);
+
+#ifdef AXIOM_HAVE_MQTT
+    // MQTT transport module is constructed first so its IRequestClient
+    // interface is available via ModuleContext before feature modules
+    // are instantiated.
+    auto mqtt_module = std::make_unique<MqttTransportModule>();
+    IRequestClient* mqtt_client = mqtt_module->as_request_client();
+
+    module_context_ = std::make_unique<ModuleContext>(
+        config_, *event_bus_, *file_store_, *state_store_,
+        *database_, *shutdown_controller_, mqtt_client);
     module_manager_ = std::make_unique<ModuleManager>();
 
     module_manager_->register_module(std::make_unique<FilesystemWatcherModule>());
     module_manager_->register_module(std::make_unique<InventoryModule>());
     module_manager_->register_module(std::make_unique<EventLoggerModule>());
-    module_manager_->register_module(std::make_unique<GrpcTransportModule>());
+    module_manager_->register_module(std::move(mqtt_module));
     module_manager_->register_module(std::make_unique<AgentSyncModule>());
     module_manager_->register_module(std::make_unique<ContentScannerModule>());
+#else
+    SPDLOG_WARN("MQTT transport disabled at build time (AXIOM_HAVE_MQTT=OFF); "
+                "server-push and MQTT request paths are unavailable");
+    module_context_ = std::make_unique<ModuleContext>(
+        config_, *event_bus_, *file_store_, *state_store_,
+        *database_, *shutdown_controller_, nullptr);
+    module_manager_ = std::make_unique<ModuleManager>();
+
+    module_manager_->register_module(std::make_unique<FilesystemWatcherModule>());
+    module_manager_->register_module(std::make_unique<InventoryModule>());
+    module_manager_->register_module(std::make_unique<EventLoggerModule>());
+    module_manager_->register_module(std::make_unique<AgentSyncModule>());
+    module_manager_->register_module(std::make_unique<ContentScannerModule>());
+#endif
 
     if (!module_manager_->initialize_all(*module_context_)) {
         SPDLOG_ERROR("Some modules failed to initialize; continuing anyway");

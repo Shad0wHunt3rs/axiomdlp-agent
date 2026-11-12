@@ -2,14 +2,13 @@
 
 Cross-platform endpoint data-loss-prevention agent written in C++20. Watches
 the filesystem, inventories files, hashes content, stores metadata in SQLite,
-connects to the AxiomDLP Core server over TLS (gRPC for server-pushed
-messages, HTTPS for enrollment/heartbeat/scan), and shuts down atomically
-with a typed reason.
+scans text files for PII over a persistent **MQTT 5** session with the
+AxiomDLP Core, and shuts down atomically with a typed reason.
 
-**Current status:** Phase 5 of the gRPC migration — the transport layer
-has been migrated to gRPC and WebSocket has been removed. `agent_sync`
-and `content_scanner` remain on HTTP pending Phase 5.4–5.5 of the
-migration roadmap.
+**Current status:** MQTT migration complete (Phases 0–11 of the migration
+roadmap). Agent transport is MQTT 5 exclusively; no gRPC, no HTTP client, no
+protobuf anywhere in the dependency tree. Windows MSVC build pipeline and
+the automated test suite (Phase 12) remain.
 
 ---
 
@@ -47,8 +46,10 @@ data-loss-prevention platform. It runs as a system service on Linux
 
 - Observing file-system activity in real time
 - Building and maintaining a local inventory of files with content hashes
-- Sending file content chunks to the Core server for PII detection
+- Sending file content chunks to the Core server for PII detection over
+  MQTT 5
 - Receiving server-pushed policy updates, commands, and revocation notices
+  on per-agent MQTT topics
 - Reporting agent identity and liveness via periodic heartbeats
 - Shutting down cleanly when instructed by the server, the user, or an
   internal failure
@@ -63,7 +64,10 @@ The codebase is organized around a strict separation between:
 - **Framework** — `foundation/`, `events/`, `modules/`
 - **Feature modules** — `features/<name>/`
 - **Platform bindings** — `platform/<os>/`
-- **Wire protocol** — `features/grpc_transport/agent.proto`
+- **Transport contract** — `net/i_request_client.h` (interface) plus the
+  concrete implementation in `features/mqtt_transport/`
+- **Wire protocol** — `docs/mqtt_protocol.md` (byte-identical with the
+  matching file in the Core repository)
 
 Every capability the agent offers is implemented as a module. Adding a new
 capability means adding a folder under `src/features/` and registering it in
@@ -77,40 +81,40 @@ capability means adding a folder under `src/features/` and registering it in
 
 - Cross-platform service life cycle (systemd on Linux, SCM on Windows,
   foreground mode for both)
-- Four verified build targets from two independent toolchains
+- Four build targets from two independent toolchains
 - Real-time filesystem watching via efsw (inotify on Linux,
   ReadDirectoryChangesW on Windows)
 - Periodic full-filesystem inventory with SHA-256 hashing
 - SQLite storage with automatic schema migrations (version 4)
-- gRPC `Channel` bidirectional stream to the Core with TLS, jittered
-  reconnect, and status-code-aware handling
-- HTTP enrollment (`POST /api/v1/agent/register`), heartbeat
-  (`POST /api/v1/agent/heartbeat`), and content scan
-  (`POST /api/v1/agent/scan/batch`) using cpp-httplib with unconditional
-  TLS verification
+- **MQTT 5 transport** via libmosquitto 2.x — persistent session, jittered
+  reconnect, MQTT 5 request/response correlation, Last Will & Testament,
+  TLS with verified peer certificate and hostname
+- **Enrollment and heartbeat over MQTT** — `agent_sync` publishes to
+  `axiomdlp/register` and `axiomdlp/agents/{id}/heartbeat`, with
+  `Response-Topic` / `Correlation-Data` correlation and typed error handling
+- **Content scanning over MQTT** — `content_scanner` publishes overlapping
+  text chunks to `axiomdlp/agents/{id}/scan/batch`, merges per-chunk
+  verdicts, and skips unscored files (never commits a partial verdict)
+- **Server-pushed control frames** — `command`, `policy` (retained), and
+  `revoke` (retained) are subscribed on `axiomdlp/agents/{id}/...` and
+  delivered to the shutdown controller or feature-module callbacks
 - Content scanner for text files: overlapping chunking, per-chunk verdicts,
   hash-based deduplication, local persistence of results
 - Atomic shutdown with typed reasons preserved end to end
-- Server-pushed revocation (`revoke` message from the gRPC stream triggers
-  immediate shutdown)
 - Fully static Windows binaries with static CRT (`/MT`) — no runtime
   redistributable required
 
-### 2.2 What is pending (Phase 5 remainder)
+### 2.2 What is pending (Phase 12–13)
 
-The following items from the Phase 5 migration roadmap are still open:
+The following items from the migration roadmap are still open:
 
-- `agent_sync` still uses HTTP unary calls instead of gRPC unary RPCs
-  (`Register`, `Heartbeat`) defined in `agent.proto`
-- `content_scanner` still uses HTTP with base64-encoded chunk payloads
-  instead of the gRPC `ScanBatch` method with native `bytes` payloads
-- Server-pushed messages are dispatched inline in
-  `grpc_transport_module.cpp` rather than through a unified `MessageRouter`
-- No `server.transport` config selector — the agent runs the gRPC Channel
-  and the HTTP sync path simultaneously, always
-- `UNIMPLEMENTED` gRPC status is not wired to `FatalError`
-- Windows binary sizes need re-measuring after gRPC and protobuf became
-  mandatory build dependencies
+- **Phase 12 — automated tests.** Unit, integration, load, chaos, TLS, and
+  wire-format regression tests on all four targets. Currently the manual
+  smoke test in §17 is the only verification.
+- **Phase 13 — documentation polish.** `done.md` still says "Phase 5 of the
+  gRPC migration" — needs a full rewrite. `docs/file_structure.md` is stale
+  (predates even the gRPC era). `docs/architecture.md` describes the old
+  gRPC pipeline. See §19.
 
 ### 2.3 What does not exist yet (Phase 2 product roadmap)
 
@@ -147,18 +151,28 @@ The following items from the Phase 5 migration roadmap are still open:
 - Content itself is never persisted; it is read into memory, transmitted,
   and discarded
 
-### 3.3 Server connectivity
+### 3.3 Server connectivity (MQTT 5)
 
-- **gRPC Channel bidi stream** — the primary server-push channel.
-  Carries `policy_update`, `command`, and `revoke` messages. Sends a
-  typed `ClientShutdown` on graceful stop.
-- **HTTP enrollment and heartbeat** — cpp-httplib over HTTPS with
-  unconditional certificate verification. Immediate validation heartbeat
-  at startup with a saved `agent_id` so a revoked token is detected
-  within milliseconds.
-- **HTTP scan batch** — chunked file content sent to
-  `POST /api/v1/agent/scan/batch`, verdicts merged back into the local
-  `files` table.
+- **Persistent MQTT 5 session** — the sole server-facing transport. All
+  server-pushed frames, all enrollment/heartbeat, and all content scans
+  travel over a single TCP/TLS connection to the broker.
+- **Request/response correlation** — every request carries a fresh ULID in
+  both the JSON `correlation_id` field and the MQTT 5 `Correlation-Data`
+  PUBLISH property. The response arrives on the topic named in
+  `Response-Topic`, and the client routes it by correlation ID.
+- **MQTT 5 CONNECT properties** — `Session Expiry Interval=3600`,
+  `Receive Maximum=100`, `Maximum Packet Size=128 MB`, `Topic Alias
+  Maximum=0`. Clean Start is false, so the broker retains subscriptions
+  across brief TCP blips.
+- **Last Will & Testament** — the agent sets a Will on
+  `axiomdlp/sessions/{instance_uuid}/status` with payload
+  `{"status":"offline"}` and a 5-second Will Delay Interval. A crashed
+  agent is detected in seconds.
+- **Jittered exponential backoff** — base 10 s, cap 300 s, ±20 % jitter.
+  Reconnects do not thundering-herd the broker.
+- **Typed shutdown frame** — on graceful stop, the agent publishes a
+  `shutdown` message with its typed `ShutdownReason` before disconnecting
+  cleanly. The broker does not fire the Will in this case.
 
 ### 3.4 Reliability
 
@@ -168,6 +182,12 @@ The following items from the Phase 5 migration roadmap are still open:
 - Per-module health status aggregated by `ModuleManager`
 - Fail-safe configuration: bad config never prevents startup
 - Async structured logging with non-blocking delivery and rotation
+- Cross-thread `mosq_` access protected by `mosq_mu_` in the transport
+  module — `set_agent_id()` (called from `agent_sync`'s thread) cannot race
+  the manager thread's connect/teardown
+- Subscriptions issued from the manager thread (after CONNACK), not from
+  inside the loop callback — avoids a deadlock against
+  `mosquitto_loop_stop` in the teardown path
 
 ### 3.5 Deployment
 
@@ -184,43 +204,58 @@ The following items from the Phase 5 migration roadmap are still open:
 
 ### 4.1 High-level diagram
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Application                                                 │
-│  Owns: Config, Logger, ShutdownController, Database,        │
-│        FileStore, StateStore, EventBus, ModuleContext,      │
-│        ModuleManager, Service                               │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Service                                                     │
-│  Linux:   systemd + sd_notify + signal handlers             │
-│  Windows: SCM + ServiceMain + control handler               │
-│  Blocks on ShutdownController::wait(); tears down on request│
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│ ModuleManager                                               │
-│  Lifecycle: initialize → start → stop → shutdown (reverse)  │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-   ┌─────────┬─────────────┼──────────────┬───────────────┐
-   ▼         ▼             ▼              ▼               ▼
-┌──────┐ ┌─────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐
-│ FS   │ │Inventory│ │Event     │ │gRPC        │ │AgentSync + │
-│Watch │ │         │ │Logger    │ │Transport   │ │ContentScan │
-└──┬───┘ └────┬────┘ └────┬─────┘ └─────┬──────┘ └─────┬──────┘
-   │          │           │             │              │
-   │ publish  │ hash      │ subscribe   │ Channel      │ HTTP + TLS
-   ▼          ▼           ▼             ▼              ▼
-┌──────┐ ┌─────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐
-│Event │ │FileStore│ │EventBus  │ │Core gRPC   │ │Core HTTP   │
-│Bus   │ │(SQLite) │ │          │ │(Channel)   │ │(register,  │
-│      │ │         │ │          │ │            │ │ heartbeat, │
-│      │ │         │ │          │ │            │ │ scan/batch)│
-└──────┘ └─────────┘ └──────────┘ └────────────┘ └────────────┘
+```mermaid
+flowchart TB
+    App["<b>Application</b><br/>Owns: Config, Logger, ShutdownController, Database,<br/>FileStore, StateStore, EventBus, ModuleContext,<br/>ModuleManager, Service"]
+    Svc["<b>Service</b><br/>Linux:   systemd + sd_notify + signal handlers<br/>Windows: SCM + ServiceMain + control handler<br/>Blocks on ShutdownController::wait(); tears down on request"]
+    MM["<b>ModuleManager</b><br/>Lifecycle: initialize → start → stop → shutdown (reverse)"]
+
+    FS["<b>FS</b><br/>Watch"]
+    Inv["<b>Inventory</b>"]
+    EL["<b>Event</b><br/>Logger"]
+    MT["<b>mqtt_transport</b><br/>(IRequestCli)"]
+    AS["<b>AgentSync</b><br/>(MQTT)"]
+    CS["<b>CS</b>"]
+
+    EB[("<b>Event</b><br/>Bus")]
+    FStore[("<b>FileStore</b><br/>(SQLite)")]
+    EBus[("<b>EventBus</b>")]
+
+    subgraph Broker["<b>axiomdlp-core MQTT broker</b><br/>(:1883 dev, :8883 prod)"]
+        direction LR
+        subgraph L[" "]
+            direction TB
+            Register["register"]
+            Scan["scan/batch"]
+            Command["command"]
+            Revoke["revoke*"]
+        end
+        subgraph R[" "]
+            direction TB
+            Heartbeat["heartbeat"]
+            Shutdown["shutdown"]
+            Policy["policy*"]
+            Retained["(* = retained)"]
+        end
+    end
+
+    App  --> Svc
+    Svc  --> MM
+
+    MM --> FS
+    MM --> Inv
+    MM --> EL
+    MM --> MT
+    MM --> AS
+    MM --> CS
+
+    FS  -->|"publish"| EB
+    Inv -->|"hash"| FStore
+    EL  -->|"subscribe"| EBus
+    MT  -->|"MQTT 5"| Broker
+    AS  -->|"req()"| MT
+    CS  -->|"req()"| MT
+
 ```
 
 ### 4.2 Layered source tree
@@ -230,7 +265,7 @@ The following items from the Phase 5 migration roadmap are still open:
 - `modules/` — module framework (interface, base, context, manager, health)
 - `features/` — one folder per capability
 - `platform/` — OS-specific implementations behind interfaces
-- `net/` — HTTP client (and reserved space for future transport helpers)
+- `net/` — the `IRequestClient` interface (transport-agnostic)
 - `util/` — hashing, glob matching, base64
 - `storage/` — SQLite wrapper, migrations, repositories
 
@@ -243,7 +278,8 @@ layers. Business logic never includes OS-specific headers.
    under `src/features/<name>/` and one registration line in
    `application.cpp`.
 2. **Modules communicate through the event bus.** No direct calls between
-   feature modules.
+   feature modules — except through interfaces exposed on
+   `ModuleContext` (such as `IRequestClient`).
 3. **One shutdown authority.** `ShutdownController` is the only place a
    shutdown is requested. Every module reads the same reason.
 4. **Fail-safe.** Bad config, missing paths, and failed modules never
@@ -256,7 +292,7 @@ layers. Business logic never includes OS-specific headers.
 
 ## 5. Supported Platforms
 
-Four build targets, all verified to build, link, and run:
+Four build targets:
 
 | Platform       | Toolchain             | Triplet / Toolchain File             |
 | -------------- | --------------------- | ------------------------------------ |
@@ -265,9 +301,16 @@ Four build targets, all verified to build, link, and run:
 | Windows x86_64 | MSVC 2022 + vcpkg     | `x64-windows-static`                  |
 | Windows x86    | MSVC 2022 + vcpkg     | `x86-windows-static`                  |
 
-All four targets support TLS, the gRPC Channel transport, HTTP
-enrollment/heartbeat/scan, filesystem watching, hashing, SQLite storage,
-and graceful shutdown.
+**Linux x86_64 and i686** are verified to build, link, and connect to a
+live Core broker end-to-end.
+
+**Windows x64 and x86** build cleanly via the CMake/vcpkg toolchain
+workflow, but the MQTT connect path has not yet been exercised against a
+live broker from a Windows host — that verification is part of Phase 12
+(automated tests).
+
+All four targets support TLS, the MQTT 5 transport, filesystem watching,
+hashing, SQLite storage, and graceful shutdown.
 
 ---
 
@@ -275,33 +318,42 @@ and graceful shutdown.
 
 ### 6.1 Per-component dependency table
 
-| Component        | Linux                                     | Windows                            |
-| ---------------- | ----------------------------------------- | ---------------------------------- |
-| HTTP client      | cpp-httplib 0.15.3 (FetchContent)         | cpp-httplib 0.15.3 (FetchContent)  |
-| gRPC             | `.deps/grpc-linux-*` (built locally)      | vcpkg `grpc`                       |
-| Protobuf         | built with gRPC                           | vcpkg `protobuf`                   |
-| TLS / crypto     | `.deps/openssl-linux-*` (built locally)   | vcpkg `openssl`                    |
-| SQLite           | amalgamation from `.deps/sqlite3-src`     | vcpkg `sqlite3`                    |
-| JSON             | system package or FetchContent            | vcpkg `nlohmann-json`              |
-| Logging          | FetchContent spdlog 1.14.1                | vcpkg `spdlog` + `fmt`             |
-| File watching    | FetchContent efsw 1.7.2                   | vcpkg `efsw`                       |
-| Service manager  | libsystemd (via pkg-config, optional)     | SCM (part of `advapi32`)           |
+| Component        | Linux                                          | Windows                              |
+| ---------------- | ---------------------------------------------- | ------------------------------------ |
+| MQTT 5 client    | `libmosquitto-dev` 2.x via pkg-config          | vcpkg `mosquitto` 2.x                |
+| TLS / crypto     | `.deps/openssl-linux-*` (built locally)        | vcpkg `openssl`                      |
+| SQLite           | amalgamation from `.deps/sqlite3-src`          | vcpkg `sqlite3`                      |
+| JSON             | system package or FetchContent                 | vcpkg `nlohmann-json`                |
+| Logging          | FetchContent spdlog 1.14.1                     | vcpkg `spdlog` + `fmt`               |
+| File watching    | FetchContent efsw 1.7.2                        | vcpkg `efsw`                         |
+| Service manager  | libsystemd (via pkg-config, optional)          | SCM (part of `advapi32`)             |
 
 ### 6.2 Removed dependencies
 
-The following were dependencies in earlier revisions and have been removed:
+The following were dependencies in earlier revisions and have been
+removed:
 
-- **Boost 1.90 / 1.92** — no longer used anywhere
-- **Boost.Asio** — replaced by gRPC for async I/O
-- **Boost.Beast** — replaced by cpp-httplib for HTTP; WebSocket path
-  deleted entirely
+- **gRPC** — replaced by libmosquitto. gRPC's `protoc` codegen,
+  i686 target path pollution, and static Brotli/OpenSSL linking
+  requirements made 32-bit cross-compilation fragile.
+- **Protobuf** — removed with gRPC. Wire format is JSON over MQTT 5.
+- **cpp-httplib** — was the HTTP client for `agent_sync` and
+  `content_scanner`. Both modules now use `IRequestClient` backed by
+  `MqttTransportModule`.
+- **Boost 1.90 / 1.92** — removed several revisions ago.
+- **Boost.Asio / Boost.Beast** — replaced by cpp-httplib (later gRPC,
+  later MQTT).
 
-### 6.3 Why gRPC and Protobuf are mandatory
+### 6.3 Why MQTT 5
 
-The Core server exposes a `Channel` bidirectional RPC that is the primary
-server-to-agent push channel. It carries policy updates, remote commands,
-and revocation notices. The stream is implemented and used; it is not
-optional scaffolding.
+`docs/mqtt_protocol.md` is the authoritative wire contract and is kept
+byte-identical with the matching file in the Core repository. The choice
+of MQTT 5 over WebSocket or gRPC is documented there in §1 — short
+version: broker-managed session state, retained messages for
+policy/revoke, native LWT for crash detection, per-message QoS, and
+broker-level ACL for cross-agent isolation. These are all properties
+gRPC and WebSocket do not provide without application-level
+reimplementation.
 
 ---
 
@@ -319,6 +371,7 @@ sudo apt install -y \
     gcc-multilib g++-multilib \
     ninja-build git file clangd \
     libsystemd-dev libsystemd-dev:i386 \
+    libmosquitto-dev libmosquitto-dev:i386 \
     pkg-config curl make
 ```
 
@@ -327,6 +380,9 @@ Notes:
 - `gcc-multilib` and `g++-multilib` are required only for the i686 target
 - `libsystemd-dev:i386` is required for the i686 target's `sd_notify`
   integration
+- `libmosquitto-dev:i386` is required for the i686 target — without it,
+  CMake fails at configure time with a clear message pointing at the
+  missing package
 - `curl` is used by `scripts/linux/build-openssl.sh` for the source
   download
 
@@ -366,14 +422,15 @@ On first run this script:
 2. Runs `scripts/linux/build-openssl.sh` if either OpenSSL tree is
    incomplete — downloads and builds OpenSSL 3.3.2 for both
    `linux-x86_64` and `linux-i686` (takes 15–25 minutes)
-3. Runs `scripts/linux/build-grpc.sh` if either gRPC tree is incomplete —
-   downloads gRPC 1.62.0 with submodules, builds host tools (`protoc`,
-   `grpc_cpp_plugin`), then builds gRPC statically for both Linux targets
-   (takes 30–60 minutes)
-4. Configures and builds the agent for both targets
+3. Configures and builds the agent for both targets
 
 On subsequent runs, everything is incremental and completes in around
 30 seconds.
+
+**libmosquitto is not built by the script.** It is expected to be
+installed as a system package (`libmosquitto-dev` and, for i686,
+`libmosquitto-dev:i386`). CMake finds it via pkg-config and fails with a
+clear message if the package is missing.
 
 ### 8.2 Manual build
 
@@ -392,7 +449,7 @@ cmake --build --preset linux-i686-release
 | `linux-x86_64-debug`           | Debug      | `build/linux-x86_64-debug/axiomdlp-agent`     |
 | `linux-x86_64-release`         | Release    | `build/linux-x86_64-release/axiomdlp-agent`   |
 | `linux-i686-debug`             | Debug      | `build/linux-i686-debug/axiomdlp-agent`       |
-| `linux-i686-release`           | Release    | `build/linux-i686-release/axiomdlp-agent`     |
+| `linux-i686-release`           | Release      | `build/linux-i686-release/axiomdlp-agent`     |
 
 ### 8.4 Verifying the build
 
@@ -403,9 +460,15 @@ file build/linux-x86_64-release/axiomdlp-agent
 file build/linux-i686-release/axiomdlp-agent
 # ELF 32-bit LSB pie executable, Intel 80386
 
-ldd build/linux-x86_64-release/axiomdlp-agent | grep -E 'ssl|grpc|protobuf'
-# (empty — all static)
+ldd build/linux-x86_64-release/axiomdlp-agent | grep -E 'ssl|mosquitto|grpc|protobuf'
+# libmosquitto.so.1 (system lib — the only external dependency)
+# libssl/libcrypto are static; no gRPC, no protobuf
 ```
+
+The one runtime dependency outside libc is `libmosquitto.so.1`. This is
+the only shared library the agent requires — everything else (OpenSSL,
+SQLite, spdlog, efsw, nlohmann/json) is statically linked into the
+binary.
 
 ---
 
@@ -426,9 +489,7 @@ This script:
    3 MB) — avoids a bootstrap compile
 4. Sets `VCPKG_ROOT` persistently for the current user
 
-Total runtime is approximately 3 minutes on a normal connection. The
-script uses `Invoke-WebRequest` and falls back to `setx` if the .NET
-environment API fails.
+Total runtime is approximately 3 minutes on a normal connection.
 
 ### 9.2 Build
 
@@ -452,16 +513,15 @@ The build script:
   (otherwise `vcvarsall.bat` would overwrite it with the VS-bundled
   vcpkg, which requires `builtin-baseline` and lacks the required ports)
 - Sets `CC=cl.exe` and `CXX=cl.exe` to override any GCC found on `PATH`
-  (for example MSYS2's toolchain)
 - Detects and cleans stale `CMakeCache.txt` files that reference a
   non-MSVC compiler
 - Cleans the build directory when `-Clean` is passed
 
-First Windows build takes 40–60 minutes per architecture while vcpkg
-compiles the full dependency tree (OpenSSL, gRPC, protobuf, abseil,
-c-ares, re2, upb, spdlog, fmt, nlohmann-json, efsw, SQLite,
-cpp-httplib). Subsequent builds restore from vcpkg's binary cache in
-5–10 seconds.
+First Windows build takes ~20–30 minutes per architecture while vcpkg
+compiles the dependency tree (OpenSSL, spdlog, fmt, nlohmann-json,
+efsw, SQLite, mosquitto). Subsequent builds restore from vcpkg's binary
+cache in 5–10 seconds. **The gRPC + protobuf dependency is gone**, which
+is where most of the previous 40–60 min first-build time was spent.
 
 ### 9.3 Available presets
 
@@ -483,6 +543,11 @@ dumpbin /headers build\windows-x64-msvc-release\axiomdlp-agent.exe |
 dumpbin /dependents build\windows-x64-msvc-release\axiomdlp-agent.exe
 # Expected: KERNEL32, ADVAPI32, WS2_32, SHELL32, ole32, USER32, CRYPT32
 ```
+
+On Windows, vcpkg's `mosquitto` port is linked statically by the
+`x64-windows-static` and `x86-windows-static` triplets, so
+`libmosquitto.dll` does **not** appear in the dependency list. The
+resulting binary is fully self-contained.
 
 ### 9.5 Troubleshooting vcpkg downloads
 
@@ -546,25 +611,39 @@ talks to the Core reads from this section.
   "heartbeat_interval_seconds": 60,
   "reconnect_backoff_seconds": 10,
   "reconnect_backoff_max_seconds": 300,
-  "grpc_port": 50051,
-  "grpc_tls": true,
-  "grpc_ca_path": ""
+  "mqtt_port": 1883,
+  "mqtt_tls": false,
+  "mqtt_ca_path": "",
+  "mqtt_keepalive_seconds": 60
 }
 ```
 
-| Field                          | Type    | Default                 | Purpose                                         |
-| ------------------------------ | ------- | ----------------------- | ----------------------------------------------- |
-| `base_url`                     | string  | `http://127.0.0.1:3000` | Core base URL; derives gRPC target host         |
-| `api_token`                    | string  | `""`                    | Bearer token (`axdlp_user_...`)                 |
-| `heartbeat_interval_seconds`   | integer | `60`                    | Heartbeat period for `agent_sync`               |
-| `reconnect_backoff_seconds`    | integer | `10`                    | Initial backoff for reconnect                   |
-| `reconnect_backoff_max_seconds`| integer | `300`                   | Maximum backoff cap                             |
-| `grpc_port`                    | integer | `50051`                 | gRPC service port                               |
-| `grpc_tls`                     | boolean | `true`                  | Enable TLS on the gRPC channel                  |
-| `grpc_ca_path`                 | string  | `""`                    | Optional PEM CA bundle; empty means system roots |
+| Field                          | Type    | Default                 | Purpose                                                |
+| ------------------------------ | ------- | ----------------------- | ------------------------------------------------------ |
+| `base_url`                     | string  | `http://127.0.0.1:3000` | Core base URL; the host is reused as the MQTT target   |
+| `api_token`                    | string  | `""`                    | Bearer token (`axdlp_user_...`); sent as MQTT username |
+| `heartbeat_interval_seconds`   | integer | `60`                    | Heartbeat period for `agent_sync`                      |
+| `reconnect_backoff_seconds`    | integer | `10`                    | Initial backoff for reconnect                          |
+| `reconnect_backoff_max_seconds`| integer | `300`                   | Maximum backoff cap                                    |
+| `mqtt_port`                    | integer | `8883` (TLS default)    | TCP port for the MQTT broker. `1883` for plaintext.    |
+| `mqtt_tls`                     | boolean | `true`                  | Enable TLS on the MQTT connection                      |
+| `mqtt_ca_path`                 | string  | `""`                    | Optional PEM CA bundle; empty means system roots       |
+| `mqtt_keepalive_seconds`       | integer | `60`                    | MQTT CONNECT keep-alive interval (seconds)             |
 
-`grpc_tls` should only be set to `false` in local development. Production
-deployments must keep it at `true`.
+**`mqtt_tls` must be `true` in production.** The dev configs
+(`agent.default.json`, `agent.default_win.json`) ship with it set to
+`false` because the local dev broker is plaintext on `1883`. Before
+deploying anywhere, set:
+
+```json
+"mqtt_port": 8883,
+"mqtt_tls": true,
+"mqtt_ca_path": "/path/to/ca.pem"
+```
+
+**`mqtt_ca_path` is ignored when `mqtt_tls` is false.** The config loader
+logs a warning if you set it while TLS is off, so the mismatch is
+visible at startup.
 
 ### 10.4 Module sections
 
@@ -612,13 +691,13 @@ default for that field. The agent always starts.
 
 ### 10.7 Deprecated fields
 
-`verify_tls` at any level produces a warning that the field is ignored.
-The agent always verifies TLS certificates and hostnames on `https://`
-and `wss://`.
+`grpc_port`, `grpc_tls`, and `grpc_ca_path` — removed in Phase 10. If
+they appear in a config file they are silently ignored; replace them
+with the `mqtt_*` equivalents.
 
-`modules.transport.*` and legacy fields under `modules.agent_sync.*`
-are still read for backwards compatibility but the canonical location is
-the top-level `server` section.
+`verify_tls` at any level produces a warning that the field is ignored.
+The agent always verifies TLS certificates and hostnames on `mqtts://`
+and `https://`.
 
 ---
 
@@ -703,6 +782,63 @@ Levels follow standard severity: `trace`, `debug`, `info`, `warn`,
 `error`, `critical`. The default level is `info`. Rotation is configured
 for 5 MB per file and 3 historical files (approximately 20 MB total).
 
+### 11.6 Getting a token
+
+Before the first run, obtain an `axdlp_user_...` token from the Core:
+
+```bash
+# Register a new org + admin user; the response contains the API token
+curl -s -X POST http://127.0.0.1:3000/api/v1/register \
+  -H 'Content-Type: application/json' \
+  -d '{"organization_name":"MyOrg","admin_username":"admin",
+       "admin_email":"admin@myorg.local","admin_password":"TestPass123x"}' \
+  | jq -r '.api_token'
+```
+
+Paste the resulting `axdlp_user_...` into `config/agent.default.json`
+at `server.api_token`. The token is shown only once by the server — if
+you lose it, generate a fresh one via `POST /api/v1/me/tokens` (from an
+authenticated session) or `POST /api/v1/users/:id/tokens` (as an
+`org_admin`).
+
+### 11.7 Expected startup log
+
+```
+[info] AxiomDLP Agent v0.1.0
+[info] Config loaded from: config/agent.default.json
+[info] Database: opened 'data/agent.db'
+[info] Migrations: schema version 4 -> 4
+[info] ModuleManager: registering module 'filesystem_watcher' v1.0.0
+[info] ModuleManager: registering module 'inventory' v1.0.0
+[info] ModuleManager: registering module 'event_logger' v1.0.0
+[info] ModuleManager: registering module 'mqtt_transport' v1.0.0
+[info] ModuleManager: registering module 'agent_sync' v1.0.0
+[info] ModuleManager: registering module 'content_scanner' v1.0.0
+[info] mqtt_transport: initialized (host=127.0.0.1, port=1883, tls=false, keepalive=60s, instance=<hex>, agent_id=0)
+[info] agent_sync module: initialized (heartbeat=60s)
+[info] mqtt_transport: connected to 127.0.0.1:1883
+[info] [event] type=mqtt_state path=-
+[info] mqtt_transport: subscribed 'axiomdlp/replies/<hex>' (qos=1)
+[info] agent_sync: registering over MQTT (hostname=<hostname>)
+[info] mqtt_transport: agent_id set to N (was 0)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/command' (qos=2)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/policy' (qos=2)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/revoke' (qos=2)
+[info] agent_sync: enrolled (agent_id=N, user_id=U, org_id=O)
+```
+
+Press Ctrl+C. Expected shutdown output:
+
+```
+[info] axiomdlp-agent received stop request (reason=user_requested)
+[info] ModuleManager: stopping 6 module(s)
+[info] mqtt_transport: published shutdown message
+[info] mqtt_transport: disconnected (reason=0x00 The normal disconnection)
+[info] mqtt_transport: stopped
+[info] Service returned rc=0 (reason=user_requested)
+[info] Application shutting down
+```
+
 ---
 
 ## 12. Project Structure
@@ -713,7 +849,7 @@ axiomdlp-agent/
 ├── CMakePresets.json                    Preset definitions for all targets
 ├── vcpkg.json                           Windows dependency manifest
 ├── README.md                            This document
-├── done.md                              Implementation log and bug history
+├── done.md                              Implementation log and bug history (stale — see §19)
 ├── next.md                              Phase 2 product roadmap
 ├── LICENSE
 ├── .clangd
@@ -723,15 +859,10 @@ axiomdlp-agent/
 │   ├── spdlog-src/
 │   ├── nlohmann_json-src/
 │   ├── efsw-src/
-│   ├── cpp-httplib-src/
 │   ├── sqlite3-src/
 │   ├── openssl-src/
 │   ├── openssl-linux-x86_64/
-│   ├── openssl-linux-i686/
-│   ├── grpc-src/
-│   ├── grpc-host-tools/
-│   ├── grpc-linux-x86_64/
-│   └── grpc-linux-i686/
+│   └── openssl-linux-i686/
 │
 ├── vcpkg_installed/                     Windows dependency cache (gitignored)
 │   ├── x64-windows-static/
@@ -753,7 +884,6 @@ axiomdlp-agent/
 ├── scripts/
 │   ├── linux/
 │   │   ├── build-all.sh
-│   │   ├── build-grpc.sh
 │   │   ├── build-openssl.sh
 │   │   └── merge-compile-commands.sh
 │   └── win/
@@ -765,7 +895,9 @@ axiomdlp-agent/
 │   └── windows/service_install.ps1
 │
 ├── docs/
-│   └── file_structure.md                (stale — see §19)
+│   ├── mqtt_protocol.md                 AUTHORITATIVE MQTT wire contract (byte-identical with Core repo)
+│   ├── architecture.md                  (stale — describes the old gRPC pipeline; see §19)
+│   └── file_structure.md                (stale — predates the gRPC era; see §19)
 │
 └── src/
     ├── main.cpp
@@ -801,13 +933,14 @@ axiomdlp-agent/
     │       └── service.cpp
     │
     ├── net/
-    │   ├── http_client.{h,cpp}
-    │   └── outbound_queue.{h,cpp}
+    │   └── i_request_client.h           Transport-agnostic request/response interface
+    │                                    (is_connected, set_agent_id, request, subscribe)
     │
     ├── util/
     │   ├── glob_match.{h,cpp}
     │   ├── file_hash.{h,cpp}
-    │   └── base64.{h,cpp}
+    │   ├── base64.{h,cpp}
+    │   └── ulid.{h,cpp}
     │
     ├── storage/
     │   ├── sqlite_database.{h,cpp}
@@ -823,13 +956,13 @@ axiomdlp-agent/
         │   └── inventory_scanner.{h,cpp}
         ├── event_logger/
         │   └── event_logger_module.{h,cpp}
+        ├── mqtt_transport/
+        │   ├── mqtt_transport_module.{h,cpp}    IRequestClient implementation, libmosquitto client
+        │   └── (see docs/mqtt_protocol.md)
         ├── agent_sync/
-        │   └── agent_sync_module.{h,cpp}
-        ├── content_scanner/
-        │   └── content_scanner_module.{h,cpp}
-        └── grpc_transport/
-            ├── agent.proto
-            └── grpc_transport_module.{h,cpp}
+        │   └── agent_sync_module.{h,cpp}        register + heartbeat over MQTT
+        └── content_scanner/
+            └── content_scanner_module.{h,cpp}   scan/batch over MQTT
 ```
 
 ---
@@ -887,60 +1020,141 @@ complete.
 **Purpose:** Observability.
 
 **Behavior:** Subscribes to all events on the bus and logs them at INFO
-level. No business logic. Provides a complete trace of what the agent is
-processing.
+level. Includes `mqtt_state` events (connect / disconnect) published by
+the transport module. No business logic.
 
 **Events published:** none
 
-### 13.4 `agent_sync`
+### 13.4 `mqtt_transport`
 
-**Purpose:** Agent identity management and liveness.
+**Purpose:** The sole server-facing transport. Implements `IRequestClient`
+so feature modules can reach the Core without knowing the transport is
+MQTT-specific.
+
+**Implementation:** libmosquitto 2.x with MQTT 5 protocol mode, plus a
+manager thread, a bounded request/response correlation map, and
+per-topic subscriber dispatch.
+
+**Lifecycle:**
+
+1. `initialize` reads `server.base_url` (host), `mqtt_port`, `mqtt_tls`,
+   `mqtt_ca_path`, `mqtt_keepalive_seconds`, `api_token`, and the two
+   backoff bounds from config. Registers `mosquitto_lib_init()`.
+   Loads or generates `instance_uuid` from the state table.
+2. `start` spawns the manager thread.
+3. Manager thread calls `connect_and_setup`:
+   - `mosquitto_new(client_id="axiomdlp-{instance_uuid}", clean_start=false, this)`
+   - `mosquitto_int_option(MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5)`
+   - `mosquitto_username_pw_set(username=token, password=nullptr)`
+     — the `nullptr` is important: `""` sets the MQTT 5 password flag to
+     an empty value, which mochi-mqtt rejects with CONNACK `0x82`
+   - `mosquitto_tls_set` / `mosquitto_tls_opts_set` if `mqtt_tls`
+   - register v5 callbacks (connect, disconnect, message) + log callback
+   - `mosquitto_will_set_v5` for the LWT (5-second Will Delay)
+   - `mosquitto_connect_bind_v5` with CONNECT properties
+     (`Session Expiry=3600`, `Receive Max=100`, `Max Packet Size=128 MB`,
+     `Topic Alias Max=0`)
+   - `mosquitto_loop_start`
+   - Wait up to 5 s for CONNACK (`connect_attempt_done_`)
+   - Subscribe to `axiomdlp/replies/{instance_uuid}` and, if `agent_id`
+     is already known, to `axiomdlp/agents/{id}/{command,policy,revoke}`
+4. Manager thread parks on `connect_cv_` until `connected_` flips to
+   false (disconnect) or shutdown is requested.
+5. On reconnect, applies jittered backoff, tears down the client, and
+   repeats.
+
+**Server-to-agent messages** (delivered via `subscribe()` handlers or
+internal dispatch):
+
+| Topic | Delivered to |
+| --- | --- |
+| `axiomdlp/agents/{id}/command` | `subscribe("axiomdlp/agents/{id}/command", handler)` — currently no handler installed (Phase 2 milestone 22) |
+| `axiomdlp/agents/{id}/policy` (retained) | `subscribe(...)` — currently no handler installed (Phase 2) |
+| `axiomdlp/agents/{id}/revoke` (retained) | Handled internally — maps `token_revoked` → `AuthRevoked`, `agent_revoked` → `AgentRevoked` |
+
+**Correlation-ID handling:** every PUBLISH response is matched against
+the in-flight `pending_` map by `Correlation-Data` (MQTT 5 property)
+or, as a fallback, by the JSON `correlation_id` field. On match, the
+`PendingRequest` is woken and its response returned to the caller.
+
+**Error mapping** (from CONNACK reason codes and response bodies):
+
+| Condition | Action |
+| --- | --- |
+| CONNACK `0x87` (Not authorized) | `ShutdownController::request(AuthRevoked)` — permanent, no retry |
+| Network failure (any `errno`) | Reconnect with jittered backoff |
+| Response `{"error":"agent_revoked"}` | `ShutdownController::request(AgentRevoked)` |
+| Response `{"error":"not_found"}` on heartbeat | Clear local `agent_id`, re-enroll |
+| Server `ServerRevoke{token_revoked}` | `ShutdownController::request(AuthRevoked)` |
+| Server `ServerRevoke{agent_revoked}` | `ShutdownController::request(AgentRevoked)` |
+
+**Thread safety:** `mosq_` is guarded by `mosq_mu_` for cross-thread
+access (request, publish, subscribe, teardown). The manager thread owns
+the connect/teardown lifecycle; the loop thread handles callbacks;
+`set_agent_id()` is safe to call from `agent_sync`'s thread. All three
+synchronize through `mosq_mu_`.
+
+**Health:** returns `ok("connected")` when the MQTT session is live,
+`degraded("disconnected")` when the module is running but the session
+is down, `failed` when the module isn't running.
+
+### 13.5 `agent_sync`
+
+**Purpose:** Agent identity management and liveness over MQTT.
 
 **Behavior:**
 
-- Enrolls with the Core via `POST /api/v1/agent/register` on first run
-- Stores `agent_id` in the local `state` table
-- Sends a heartbeat every `server.heartbeat_interval_seconds` (default
-  60 s)
+- Calls `req_->request("axiomdlp/register", ...)` on first run when
+  `agent_id` is not present in the local `state` table
+- Persists the returned `agent_id` to `state` and calls
+  `req_->set_agent_id(id)` so the transport subscribes to the
+  agent-scoped `command`/`policy`/`revoke` topics
+- Sends a heartbeat to `axiomdlp/agents/{id}/heartbeat` every
+  `server.heartbeat_interval_seconds` (default 60 s)
 - Sends an immediate validation heartbeat at startup when a saved
-  `agent_id` exists — a revoked token is detected within milliseconds
+  `agent_id` exists — a revoked token or unknown agent is detected within
+  milliseconds
 - Interruptible sleep — wakes immediately on shutdown request
-- HTTP client: cpp-httplib with unconditional certificate verification
+- Waits up to 30 s for the transport to report `is_connected()` before
+  the first register attempt, so a slow broker connect doesn't trigger
+  a spurious retry
 
 **Error handling:**
 
-| HTTP status | Action |
+| Response | Action |
 | --- | --- |
-| 200 | Heartbeat recorded; continue |
-| 401 | `ShutdownController::request(AuthRevoked)` — token invalid, expired, or revoked |
-| 403 | `ShutdownController::request(AgentRevoked)` — this specific agent revoked |
-| 404 | Clear `agent_id` from `state`, trigger re-enrollment |
-| 5xx | Log and retry on next interval |
-| Connection error | Log and retry on next interval |
+| `{"ok":true, "agent_id":N, ...}` | Persist `agent_id`, call `set_agent_id(N)`, enter heartbeat loop |
+| `{"ok":false, "error":"agent_revoked"}` | `ShutdownController::request(AgentRevoked)` |
+| `{"ok":false, "error":"not_found"}` (heartbeat) | Clear `agent_id` from `state`, call `set_agent_id(0)`, re-enroll after 5 s |
+| Timeout or transport not connected | Retry next interval (60 s) |
+| CONNACK rejection (broker → transport) | Handled by the transport — triggers shutdown via `AuthRevoked` |
 
-**Planned migration:** Phase 5.4 will move to gRPC unary `Register` and
-`Heartbeat` RPCs defined in `agent.proto`.
-
-### 13.5 `content_scanner`
+### 13.6 `content_scanner`
 
 **Purpose:** Detect PII in text files by sending content chunks to the
-Core and merging the verdicts.
+Core over MQTT and merging the verdicts.
 
 **Behavior:**
 
+- Waits for `agent_id` to appear in the local `state` table (populated
+  by `agent_sync`), then enters its scan loop
 - Queries `fetch_pending_for_scan` on the local `files` table
 - Filters by extension (against `text_extensions`), size, existence
 - Computes SHA-256 of the current content; if an identical hash was
-  previously scanned, reuses the cached verdict without an HTTP call
+  previously scanned, reuses the cached verdict without an MQTT call
 - Splits content into overlapping chunks:
   - Default 1 MB chunk size, 256-byte overlap
   - Overlap prevents PII from straddling a chunk boundary
 - Batches chunks to respect `batch_size` (max chunks per request) and
   `batch_max_bytes` (max estimated payload per request)
-- Sends to `POST /api/v1/agent/scan/batch` with base64-encoded content
+- Publishes to `axiomdlp/agents/{id}/scan/batch` with `content_b64` fields
+  (base64 — matches the server's `ScanChunk.ContentB64`)
 - Merges per-chunk verdicts by `file_hash + chunk_index`
 - Writes results back to the `files` table via
   `update_scan_result_by_path`
+- **Never commits a partial verdict** — if any chunk in a file is missing
+  a score (chunk error, timeout, or rejected batch), the whole file stays
+  `pending` and is retried next cycle
 - Content is never persisted on disk; read into memory, transmitted,
   and discarded
 
@@ -948,66 +1162,29 @@ Core and merging the verdicts.
 
 | Condition | Action |
 | --- | --- |
-| 401 / 403 | Log error, stop scanning, mark module as failed |
-| 5xx | Leave file `pending`; retry next cycle |
-| Chunk-level error | Leave file `pending`; do not abort the whole batch |
-| Transport error | Leave file `pending`; retry next cycle |
+| Transport not connected | Skip this cycle, retry next interval |
+| `agent_id` not yet known | Skip this cycle, retry next interval |
+| Request timeout | Leave chunks buffered, retry next cycle |
+| `{"ok":false, "error":"agent_revoked"}` | `ShutdownController::request(AgentRevoked)` |
+| `{"ok":false, "error":"not_found"}` | Clear `agent_id` from `state`, wait for `agent_sync` to re-enroll |
+| Chunk-level `error` in `results[]` | Skip that chunk; file stays `pending` |
+| Batch-level `{"ok":false, "error":"invalid_request"}` | Log, retry next cycle |
 
-**Planned migration:** Phase 5.5 will switch to gRPC `ScanBatch` with
-native `bytes` payloads (no base64).
+### 13.7 Agent-to-server message summary
 
-### 13.6 `grpc_transport`
+Every frame the agent sends is defined in `docs/mqtt_protocol.md`.
+Summarised:
 
-**Purpose:** Long-lived server-push channel and graceful shutdown
-notification.
+| Message | Topic | QoS | Retain | Response |
+| --- | --- | --- | --- | --- |
+| Register | `axiomdlp/register` | 1 | no | via `Response-Topic` |
+| Heartbeat | `axiomdlp/agents/{id}/heartbeat` | 1 | no | via `Response-Topic` |
+| ScanBatch | `axiomdlp/agents/{id}/scan/batch` | 1 | no | via `Response-Topic` |
+| Shutdown | `axiomdlp/agents/{id}/shutdown` | 1 | no | none |
 
-**Implementation:** `grpc::ClientReaderWriter` on the `AgentService::Channel`
-bidirectional streaming RPC.
-
-**Lifecycle:**
-
-1. `initialize` reads `server.base_url`, `grpc_port`, `grpc_tls`,
-   `grpc_ca_path`, and `api_token` from config. Derives the gRPC target
-   from `base_url` and `grpc_port`.
-2. `start` spawns the manager thread.
-3. Manager thread polls `state` for `agent_id` every 1 second.
-4. Once enrolled, creates a `grpc::Channel` once:
-   - `grpc_tls=true` — `grpc::SslCredentials` with `pem_root_certs`
-     loaded from `grpc_ca_path` if set
-   - `grpc_tls=false` — `grpc::InsecureChannelCredentials` (dev only)
-5. Creates an `AgentService::Stub` over the channel.
-6. Opens the `Channel` bidi stream with metadata
-   `authorization: Bearer <api_token>` and `x-agent-id: <agent_id>`.
-7. Loops on `stream->Read(&resp)` and dispatches messages.
-8. On disconnect, applies exponential backoff with 20 % jitter, base
-   `reconnect_backoff_seconds`, cap `reconnect_backoff_max_seconds`.
-
-**Server-to-agent messages (`ChannelResponse` oneof):**
-
-| Message | Action |
-| --- | --- |
-| `ServerPolicyUpdate` | Log version. Full policy-apply logic is deferred to the policy engine (Phase 2). |
-| `ServerCommand` | Log `command_type`. Full command handling is deferred (Phase 2, milestone 22). |
-| `ServerRevoke` | Map reason: `TOKEN_REVOKED` to `AuthRevoked`, `AGENT_REVOKED` to `AgentRevoked`. Request shutdown. |
-
-**Agent-to-server messages:** `ClientShutdown` on graceful stop, carrying
-the mapped `ShutdownReason`.
-
-**Status code handling:**
-
-| gRPC status | Behavior |
-| --- | --- |
-| `OK` | Clean exit (agent-initiated stop) |
-| `UNAVAILABLE` | Reconnect with backoff |
-| `DEADLINE_EXCEEDED` | Reconnect with backoff |
-| `RESOURCE_EXHAUSTED` | Reconnect with backoff |
-| `INTERNAL` | Reconnect with backoff |
-| `CANCELLED` (when not stopping) | Reconnect with backoff |
-| `UNAUTHENTICATED` | `ShutdownController::request(AuthRevoked)` — no reconnect |
-| `PERMISSION_DENIED` | `ShutdownController::request(AgentRevoked)` — no reconnect |
-
-`UNIMPLEMENTED` is not yet wired — it should trigger
-`ShutdownController::request(FatalError)` (tracked for Phase 5.3c).
+Every request carries `{"v":1, "correlation_id":"<ulid>", ...}` and the
+MQTT 5 `Response-Topic` + `Correlation-Data` PUBLISH properties. The
+server echoes both on the response.
 
 ---
 
@@ -1024,12 +1201,12 @@ the mapped `ShutdownReason`.
 2. Content scanner queries pending files
    └── Reads content from disk, computes SHA-256
        └── If hash was previously scanned: reuse cached verdict,
-           no HTTP call
+           no MQTT call
        └── Otherwise:
            ├── Splits into overlapping chunks
            ├── Batches chunks up to batch_size / batch_max_bytes
-           ├── POST /api/v1/agent/scan/batch
-           └── Merges per-chunk verdicts
+           ├── Publishes to axiomdlp/agents/{id}/scan/batch (QoS 1)
+           └── Merges per-chunk verdicts from the response
 
 3. Verdict written back to `files` table
    └── is_sensitive, sensitivity, scan_status = 'scanned'
@@ -1040,21 +1217,29 @@ the mapped `ShutdownReason`.
 ### 14.2 Enrollment to heartbeat
 
 ```
-1. agent_sync starts
-   └── Reads agent_id from `state` table
-       ├── If present: sends immediate validation heartbeat
-       │   └── 401 → ShutdownController::request(AuthRevoked)
-       │   └── 403 → ShutdownController::request(AgentRevoked)
-       │   └── 200 → enter heartbeat loop
-       └── If absent: POST /api/v1/agent/register
-           └── Persists returned agent_id to `state`
-           └── Enters heartbeat loop
+1. mqtt_transport starts
+   └── Connects to the broker
+       └── Subscribes axiomdlp/replies/{instance_uuid}
 
-2. grpc_transport starts
-   └── Polls `state` for agent_id every 1 s
-       └── Once present: opens Channel bidi stream
-           └── Reads server-pushed messages
-           └── Sends ClientShutdown on stop
+2. agent_sync starts
+   └── Waits for transport.is_connected() (30 s budget)
+       └── Reads agent_id from `state` table
+           ├── If present:
+           │   ├── req_->set_agent_id(id) → transport subscribes to
+           │   │   agents/{id}/{command,policy,revoke}
+           │   └── Sends validation heartbeat
+           │       └── error:"agent_revoked" → Shutdown(AgentRevoked)
+           │       └── error:"not_found"     → clear state, re-enroll
+           │       └── ok → enter heartbeat loop
+           └── If absent:
+               ├── Publishes register request
+               │   └── error:"agent_revoked" → Shutdown(AgentRevoked)
+               │   └── ok: persists agent_id, set_agent_id(id)
+               └── Enters heartbeat loop
+
+3. content_scanner starts
+   └── Polls `state` for agent_id (1 s ticks)
+       └── Once present: enters scan loop (30 s interval default)
 ```
 
 ### 14.3 Shutdown
@@ -1063,11 +1248,10 @@ the mapped `ShutdownReason`.
 Any source:
   - SIGTERM / Ctrl+C → ShutdownController::request(UserRequested)
   - Service control stop → ShutdownController::request(UserRequested)
-  - HTTP 401 → ShutdownController::request(AuthRevoked)
-  - HTTP 403 → ShutdownController::request(AgentRevoked)
-  - gRPC UNAUTHENTICATED → ShutdownController::request(AuthRevoked)
-  - gRPC PERMISSION_DENIED → ShutdownController::request(AgentRevoked)
-  - gRPC ServerRevoke → ShutdownController::request(...)
+  - CONNACK 0x87 → ShutdownController::request(AuthRevoked)
+  - Response {"error":"agent_revoked"} → ShutdownController::request(AgentRevoked)
+  - ServerRevoke{token_revoked} → ShutdownController::request(AuthRevoked)
+  - ServerRevoke{agent_revoked} → ShutdownController::request(AgentRevoked)
   - Any module fatal error → ShutdownController::request(FatalError)
 
 ShutdownController:
@@ -1078,8 +1262,19 @@ Service main loop:
   - Unblocks from ShutdownController::wait()
   - Calls ModuleManager::stop_all() in reverse order
   - Calls ModuleManager::shutdown_all() in reverse order
-  - grpc_transport sends ClientShutdown with the mapped reason
   - Returns rc=0
+
+During stop_all():
+  - content_scanner joins its thread
+  - agent_sync joins its thread
+  - mqtt_transport:
+      - publishes axiomdlp/agents/{id}/shutdown with the typed reason
+      - calls mosquitto_disconnect_v5(reason=0x00)
+      - calls mosquitto_loop_stop(force=false) — drains any pending publishes
+      - calls mosquitto_destroy
+  - event_logger unsubscribes
+  - inventory joins its thread
+  - filesystem_watcher stops efsw
 
 Application:
   - Logs "Service returned rc=0 (reason=<reason>)"
@@ -1087,69 +1282,108 @@ Application:
   - Shuts down the logger last
 ```
 
+The `mosquitto_loop_stop(force=false)` call is important — it drains
+the loop's outbound queue, which is what guarantees the `shutdown`
+message is actually sent before the transport is torn down.
+
 ---
 
 ## 15. TLS and Security
 
 ### 15.1 Threat model
 
-Every outbound connection carries the `axdlp_user_...` bearer token. If
-this token is intercepted, an attacker can impersonate the agent against
-the Core server, receiving policy updates, commands, and revocations that
-were intended for the legitimate agent. For this reason, TLS is
-mandatory and never optional.
+Every MQTT CONNECT carries the `axdlp_user_...` API token as the
+`Username` field. If this token is intercepted, an attacker can
+impersonate the agent, receiving policy updates, commands, and
+revocations that were intended for the legitimate agent, and can also
+publish scan batches under the agent's identity. For this reason, TLS is
+mandatory and never optional in production.
 
 ### 15.2 Transport security
 
-- **HTTP** — cpp-httplib with
-  `cli.enable_server_certificate_verification(true)` set unconditionally
-  on every `https://` call. Certificate chain and hostname are both
-  verified.
-- **gRPC** — `grpc::SslCredentials` with either the system trust store
-  or a custom PEM bundle (`server.grpc_ca_path`). The gRPC runtime
-  verifies chain and hostname.
+- **MQTT (TLS enabled)** — `mosquitto_tls_set` with either the system
+  trust store or a custom PEM bundle (`server.mqtt_ca_path`).
+  `mosquitto_tls_opts_set(SSL_VERIFY_PEER, ...)` forces peer
+  verification. Chain and hostname are both verified.
+- **MQTT (TLS disabled)** — plaintext. **Development only.** A startup
+  log line at WARN level makes this obvious.
 
 ### 15.3 No verification opt-out
 
 The `verify_tls` field has been removed from every layer:
 
 - Not parsed in `Config`
-- Not passed to `HttpClient`
-- Not accepted by `WebSocketClient` (which itself has been removed)
+- Not passed to `MqttTransportModule`
 - Not present in `agent.schema.json`
 
 Legacy config files that contain `verify_tls` produce a warning that the
-field is ignored. Verification still happens.
+field is ignored. Verification still happens when TLS is on.
 
 ### 15.4 Certificate and hostname verification details
 
-- SNI is set before every TLS handshake on both HTTP and gRPC.
-- Hostname verification uses `X509_VERIFY_PARAM_set1_host` on the HTTP
-  path (via OpenSSL's cpp-httplib integration) and gRPC's built-in
-  name verification on the gRPC path.
+- SNI is set automatically by libmosquitto when the broker is
+  identified by hostname (which it is — `host_` is parsed from
+  `base_url`).
+- Hostname verification uses libmosquitto's built-in TLS validation
+  (OpenSSL's `X509_VERIFY_PARAM_set1_host` under the hood).
+- `mqtt_ca_path` overrides the system trust store. When it is empty,
+  the OpenSSL default trust paths are used.
 
 ### 15.5 Static linking
 
-Both platforms link OpenSSL and gRPC statically. Verification:
+On Linux, the agent links OpenSSL statically but uses the system
+`libmosquitto.so.1`. On Windows, vcpkg's `x64-windows-static` and
+`x86-windows-static` triplets statically link everything, so the
+resulting binary has no non-system DLL dependencies.
+
+Verification:
 
 ```bash
-ldd build/linux-x86_64-release/axiomdlp-agent | grep -E 'ssl|grpc'
-# (empty)
+ldd build/linux-x86_64-release/axiomdlp-agent | grep -E 'ssl|crypto|mosquitto'
+# libmosquitto.so.1 => /usr/lib/x86_64-linux-gnu/libmosquitto.so.1
+# (ssl and crypto are static — no dynamic libssl / libcrypto)
 ```
 
 ```powershell
 dumpbin /dependents build\windows-x64-msvc-release\axiomdlp-agent.exe
-# No libssl-*.dll, no libcrypto-*.dll, no grpc-*.dll
+# No libssl-*.dll, no libcrypto-*.dll, no libmosquitto.dll
 ```
 
 ### 15.6 Token handling
 
 - The token is read from `server.api_token` at startup.
-- If it is empty, `agent_sync` and `content_scanner` fail initialization
-  with the message "no valid API token".
+- If it is empty, `mqtt_transport`, `agent_sync`, and `content_scanner`
+  all fail initialization with a clear error message.
 - The token is never written to disk by the agent; it lives only in the
   config file, which the operator is responsible for protecting.
-- The token is never logged.
+- The token is never logged in full. The only place it can leak is
+  libmosquitto's own debug log output (which is routed to `debug` level
+  and prefixed `[mqtt/*]`); at `info` level and above, the token never
+  appears in the log.
+- The `AuthHook` on the server side **does** log the first 20 characters
+  of the token prefix on authentication failure so operators can
+  distinguish "unknown token" from "revoked token". The remainder of the
+  token never leaves the client.
+
+### 15.7 Last Will & Testament
+
+Every agent sets an LWT at CONNECT time:
+
+- Topic: `axiomdlp/sessions/{instance_uuid}/status`
+- Payload: `{"status":"offline"}`
+- QoS: 1
+- Retain: false
+- Will Delay Interval: 5 s
+
+If the agent disconnects ungracefully (network drop, crash, kill -9),
+the broker publishes the LWT payload after 5 seconds. The server uses
+`SessionHooks.OnDisconnect` as the authoritative disconnect signal; the
+LWT is a secondary presence notification that only distinguishes
+"network lost" from "graceful shutdown" in the SSE `EventAgent` event's
+`reason` field.
+
+A graceful shutdown suppresses the LWT via a clean MQTT disconnect
+(`mosquitto_disconnect_v5(reason=0x00)`).
 
 ---
 
@@ -1173,11 +1407,11 @@ component that can initiate a shutdown. It exposes:
 | --- | --- |
 | `None` | Initial state — not shutting down |
 | `UserRequested` | Ctrl+C, SIGTERM, systemctl stop, SCM stop |
-| `AuthRevoked` | HTTP 401, gRPC `UNAUTHENTICATED`, or `ServerRevoke{TOKEN_REVOKED}` |
-| `AgentRevoked` | HTTP 403, gRPC `PERMISSION_DENIED`, or `ServerRevoke{AGENT_REVOKED}` |
+| `AuthRevoked` | CONNACK 0x87 or `ServerRevoke{token_revoked}` |
+| `AgentRevoked` | `ServerRevoke{agent_revoked}` or heartbeat `{"error":"agent_revoked"}` |
 | `ConfigError` | Fatal configuration error at startup |
 | `FatalError` | Unrecoverable module failure |
-| `ServerShutdown` | Server-side shutdown notice |
+| `ServerShutdown` | Server-side shutdown notice (reserved; not currently used) |
 
 ### 16.3 Propagation
 
@@ -1189,9 +1423,10 @@ log line always reports the reason:
 Service returned rc=0 (reason=user_requested)
 ```
 
-The gRPC transport sends a `ClientShutdown` message with the same reason
-before closing the stream, so the Core server also sees the reason in its
-logs.
+The MQTT transport publishes a `shutdown` message to
+`axiomdlp/agents/{id}/shutdown` with the same reason before closing the
+session, so the Core server also sees the reason in its logs (`mqtt
+shutdown: agent disconnecting` on the server side).
 
 ---
 
@@ -1199,23 +1434,28 @@ logs.
 
 ### 17.1 Manual smoke test
 
-Prerequisites: a running AxiomDLP Core server on `http://127.0.0.1:3000`
-(HTTP) and `grpc://127.0.0.1:50051` (gRPC) with a valid
-`axdlp_user_...` token.
+Prerequisites: a running AxiomDLP Core server on
+`http://127.0.0.1:3000` (HTTP) and `mqtt://127.0.0.1:1883` (MQTT), with a
+valid `axdlp_user_...` token already written to `config/agent.default.json`
+at `server.api_token`.
 
 Linux:
 
 ```bash
 # Terminal 1: start the Core
-# (refer to the Core server repository for startup instructions)
+cd ~/axiomdlp-core && air
+# Wait for:
+#   {"msg":"MQTT broker listening","port":1883,"tls":false}
+#   {"msg":"Microservice pipeline listening online",...,"mqtt_enabled":true,...}
 
 # Terminal 2: start the agent
+cd ~/axiomdlp-agent
 ./build/linux-x86_64-release/axiomdlp-agent \
     --foreground \
     --config config/agent.default.json
 ```
 
-Expected log output:
+Expected log output on the agent:
 
 ```
 [info] AxiomDLP Agent v0.1.0
@@ -1225,100 +1465,169 @@ Expected log output:
 [info] ModuleManager: registering module 'filesystem_watcher' v1.0.0
 [info] ModuleManager: registering module 'inventory' v1.0.0
 [info] ModuleManager: registering module 'event_logger' v1.0.0
-[info] ModuleManager: registering module 'grpc_transport' v1.0.0
+[info] ModuleManager: registering module 'mqtt_transport' v1.0.0
 [info] ModuleManager: registering module 'agent_sync' v1.0.0
 [info] ModuleManager: registering module 'content_scanner' v1.0.0
-[info] agent_sync: enrolled (agent_id=1, user_id=1, org_id=2)
-[info] grpc_transport: opening Channel bidi stream...
-[info] grpc_transport: state = connected
+[info] mqtt_transport: initialized (host=127.0.0.1, port=1883, tls=false, keepalive=60s, instance=<hex>, agent_id=0)
+[info] mqtt_transport: connected to 127.0.0.1:1883
+[info] [event] type=mqtt_state path=-
+[info] mqtt_transport: subscribed 'axiomdlp/replies/<hex>' (qos=1)
+[info] agent_sync: registering over MQTT (hostname=<host>)
+[info] mqtt_transport: agent_id set to N (was 0)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/command' (qos=2)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/policy' (qos=2)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/revoke' (qos=2)
+[info] agent_sync: enrolled (agent_id=N, user_id=U, org_id=O)
 ```
 
-Press Ctrl+C. Expected shutdown output:
+Expected log output on the Core server (same second):
+
+```
+{"msg":"mqtt auth: authenticated","client_id":"axiomdlp-<hex>","user_id":U,"org_id":O,"token_id":K,...}
+{"msg":"mqtt session: established","client_id":"axiomdlp-<hex>","user_id":U,"org_id":O,...}
+{"msg":"agent hub: registered","agent_id":N,"user_id":U,"org_id":O,"kind":"mqtt","total":1}
+{"msg":"mqtt register: success","agent_id":N,...,"hostname":"<host>","os":"linux","agent_version":"0.1.0"}
+```
+
+Press Ctrl+C on the agent. Expected shutdown output on the agent:
 
 ```
 [info] axiomdlp-agent received stop request (reason=user_requested)
 [info] ModuleManager: stopping 6 module(s)
-[info] grpc_transport: sending graceful goodbye...
-[info] grpc_transport: stream disconnected (OK)
+[info] mqtt_transport: published shutdown message
+[info] mqtt_transport: disconnected (reason=0x00 The normal disconnection)
+[info] mqtt_transport: stopped
 [info] Service returned rc=0 (reason=user_requested)
 [info] Application shutting down
 ```
 
-### 17.2 Automation roadmap
+And on the server:
 
-A comprehensive automated test suite is planned for Phase 6 of the
-migration roadmap. It will include:
+```
+{"msg":"mqtt session: terminated","client_id":"axiomdlp-<hex>","agent_id":N,"had_session":true,...}
+```
 
-- **Unit tests** — C++ test binaries for the policy decision table,
-  status-code mapping, backoff bounds, outbound queue backpressure,
-  and base64 usage rules
-- **Integration tests** — end-to-end against a live Core server with
-  both real and mocked transports
-- **Load tests** — 10,000 simulated agents against one Core instance
-- **Chaos tests** — kill the Core mid-scan, network partition, corrupt
-  frames, disk full
+### 17.2 What the smoke test proves
+
+- **Transport layer** — libmosquitto connects, MQTT 5 CONNECT properties
+  are accepted by the broker, MQTT 5 message callbacks fire.
+- **Authentication** — the API token hashes to a `user_api_tokens` row,
+  the broker's `AuthHook` accepts the CONNECT, `{user_id, org_id,
+  token_id}` are populated.
+- **Correlation** — request/response round-trips over `Response-Topic` +
+  `Correlation-Data` return the correct payload to the correct caller.
+- **Subscriptions** — the reply topic is subscribed, and after register
+  the per-agent `command`/`policy`/`revoke` topics are subscribed.
+- **Graceful shutdown** — the `shutdown` frame is delivered before the
+  client disconnects, the broker fires `OnDisconnect`, the hub
+  unregisters the session.
+
+### 17.3 What the smoke test does NOT prove
+
+- **PII verdicts** — unless the Core's PII service on port 8000 is
+  running, every scan batch returns per-chunk errors and no files
+  commit. Start the PII service before running the smoke test if you
+  want to see `content_scanner: cycle done (committed=N, ...)`.
+- **Windows build** — the MQTT connect path from a Windows host has not
+  been verified end-to-end yet (Phase 12).
+- **Reconnect behaviour** — the agent reconnects automatically if the
+  broker restarts, but exercising that is a Phase 12 chaos test.
+- **LWT firing** — a `kill -9` on the agent leaves the broker to
+  publish the LWT after 5 s. Verifying this requires killing the agent
+  ungracefully and watching `axiomdlp/sessions/{instance}/status` from a
+  third MQTT client. See the protocol doc §8.3.
+
+### 17.4 Verifying the MQTT protocol doc
+
+The wire contract is kept byte-identical between the two repositories:
+
+```bash
+diff -q ~/axiomdlp-core/docs/mqtt_protocol.md \
+        ~/axiomdlp-agent/docs/mqtt_protocol.md
+# Expected: no output
+```
+
+Any difference is a contract drift — a coordinated commit is required
+in both repositories. This diff is planned as a CI gate in Phase 12.
+
+### 17.5 Test roadmap (Phase 12)
+
+The full automated test suite is planned for Phase 12 of the migration
+roadmap. It will include:
+
+- **Unit tests** — C++ test binaries for:
+  - `IRequestClient` request/response correlation (mock transport)
+  - `agent_sync` state machine (register, heartbeat, re-enroll, revoked)
+  - `content_scanner` chunking, deduplication, verdict merging
+  - `shutdown` typed-reason propagation
+  - `config` env-var expansion and fail-safe defaults
+- **Integration tests** — end-to-end against a live Core broker, using
+  a real agent process
+- **Load tests** — 10,000 simulated agents against one Core instance,
+  verifying broker stability and dispatcher behaviour under
+  `maxInflight=256`
+- **Chaos tests** — kill the broker mid-scan, corrupt MQTT frames, fill
+  the send buffer, SIGKILL the agent and observe LWT
 - **TLS tests** — wrong CA, wrong hostname, expired cert, plaintext
-  attempt on TLS port
-- **Wire format tests** — confirm base64 is absent from `ScanBatch`
-  payloads; measure wire-size reduction
+  attempt on a TLS port
+- **Wire format tests** — confirm `content_b64` is the only chunk field,
+  `correlation_id` is echoed correctly, MQTT 5 properties round-trip
 
-This roadmap is fully specified in the migration TODO and is not yet
-implemented.
+### 17.6 Build verification (regression check)
+
+After every change to a feature module, the four-target build is the
+fastest regression check:
+
+```bash
+rm -rf build/
+./scripts/linux/build-all.sh
+```
+
+Both Linux binaries should link cleanly. The only warnings expected are
+from the vendored `sqlite3.c` amalgamation (upstream, unrelated to the
+agent's code).
 
 ---
 
 ## 18. Roadmap
 
-### 18.1 Phase 5 — gRPC migration (in progress)
+### 18.1 Migration phases 0–11 — complete
 
-Completed:
+- **Phase 0** — wire protocol design (locked, in `docs/mqtt_protocol.md`)
+- **Phase 7** — MQTT client foundation (`mqtt_transport` module,
+  `IRequestClient` interface, config, EventBus `mqtt_state` events)
+- **Phase 8** — `agent_sync` on MQTT (`register`, `heartbeat`)
+- **Phase 9** — `content_scanner` on MQTT (`scan/batch`)
+- **Phase 10** — removal of gRPC artifacts (deleted `grpc_transport/`,
+  `agent.proto`, `build-grpc.sh`, `http_client.{h,cpp}`,
+  `outbound_queue.{h,cpp}`; removed gRPC/protobuf from `vcpkg.json`
+  and CMakeLists; removed transitional `grpc_*` config fields)
+- **Phase 11** — config cleanup (JSON schema, defaults, `.bak` removal)
 
-- gRPC and Protobuf as mandatory build dependencies
-- Removal of WebSocket, Boost, and Boost.Beast
-- `HttpClient` rewritten on top of cpp-httplib
-- `grpc_transport` module with bidirectional Channel stream
-- Status-code-to-shutdown mapping on the gRPC path
-
-Remaining:
-
-- 5.4 — `agent_sync` on gRPC unary (`Register`, `Heartbeat`)
-- 5.5 — `content_scanner` on gRPC `ScanBatch` (native bytes, no base64)
-- 5.7 — unify server-pushed message dispatch (typed handler signatures
-  preferred over JSON adapter)
-- 5.8 — `server.transport` config selector (`grpc` | `websocket`), with
-  `grpc` becoming the default in Phase 7
-- 5.3c — wire `UNIMPLEMENTED` gRPC status to `FatalError`
-
-### 18.2 Phase 6 — testing and hardening
+### 18.2 Phase 12 — automated tests (in progress next)
 
 Unit, integration, load, chaos, TLS, and wire-format regression tests on
-all four targets and both transports (during the transition period).
-Observability baseline (server-side gRPC metrics, structured logs on
-both sides). Security review pass. Full specification is in the
-migration TODO.
+all four targets. Full specification is in §17.5.
 
-### 18.3 Phase 7 — cutover and deletion
+### 18.3 Phase 13 — documentation polish
 
-- Flip `server.transport` default to `grpc`
-- Ship one release cycle with `grpc` as the default while keeping the
-  HTTP fallback compiled in
-- After one clean release cycle, delete all remaining HTTP transport code
-  from both the agent and the Core
-- Rewrite or delete stale documentation
-- Confirm no WebSocket or HTTP transport code remains in either
-  repository
+- Rewrite `done.md` as a snapshot of the current MQTT-native state
+- Rewrite `docs/architecture.md` for the MQTT pipeline
+- Delete or rewrite `docs/file_structure.md`
+- Publish `docs/mqtt_client.md` describing the libmosquitto integration,
+  reconnect strategy, LWT, and config keys on the agent side
 
 ### 18.4 Phase 2 (product) — see `next.md`
 
 Milestones 15 through 25:
 
-- Policy engine
+- Policy engine (local evaluation of `ServerPolicyUpdate` bundles)
 - User-mode enforcement (file, clipboard, print)
 - Extended content extraction (PDF, DOCX, XLSX, OCR)
 - Advanced detection (EDM, PDM, document registry)
 - IPC and tray helper
 - Kernel enforcement (Linux eBPF, Windows Minifilter)
-- Remote commands and auto-update
+- Remote command handling (wired to the `command` topic)
 - Platform expansion (macOS, ARM64)
 - Observability and telemetry
 - Hardening and tamper resistance
@@ -1331,28 +1640,29 @@ Milestones 15 through 25:
 
 The file describes an architecture that does not exist in the current
 source tree (`src/core/`, `src/interfaces/`, `kernel/`, `helper/`,
-`external/`, `tests/unit/`, `tests/integration/`). It must be rewritten
-against the actual tree or deleted. Tracked as Phase 7.5.
+`external/`, `tests/unit/`, `tests/integration/`). It predates even the
+gRPC era. Must be rewritten against the actual tree or deleted —
+tracked as Phase 13.
 
-### 19.2 `src/net/outbound_queue.{h,cpp}` is dead code
+### 19.2 `docs/architecture.md` is stale
 
-The file is compiled and linked but no module references it after the
-WebSocket removal. It is a candidate for deletion or for repurposing as
-a future gRPC send-queue.
+Describes the old gRPC pipeline. Needs a full rewrite for the MQTT
+transport — tracked as Phase 13.
 
-### 19.3 `grpc_transport::health()` reports degraded
+### 19.3 `done.md` says "Phase 5 of the gRPC migration"
 
-The module returns
-`degraded("stub — RPC implementation pending")` even though the Channel
-bidi stream is implemented and functioning. This is conservative: the
-module has not been load-tested, and its message dispatch is inline
-rather than going through a unified router.
+The file was last updated before the MQTT migration started. It needs a
+full rewrite to reflect the current MQTT-native state — tracked as
+Phase 13.
 
-### 19.4 `config/agent.schema.json` describes an aspirational state
+### 19.4 Windows MQTT connect path not yet smoke-tested
 
-The schema description says "Uses gRPC exclusively" but `agent_sync`
-and `content_scanner` still use HTTP. The schema should be updated when
-Phase 5 finishes.
+The Windows build (x64 and x86) produces a working binary per the
+CMake/vcpkg toolchain, but the agent has not been started against a
+live Core broker from a Windows host. The most likely gap is TLS
+certificate path handling on Windows (`%ProgramData%` layout), which
+uses the same OpenSSL code path as Linux but has not been exercised.
+Tracked as Phase 12.
 
 ### 19.5 Windows path case sensitivity
 
@@ -1367,7 +1677,9 @@ improvement.
 No `SetConsoleCtrlHandler` is registered on the Windows side.
 `taskkill /PID` terminates the process without graceful shutdown. The
 SCM path handles stop correctly; only the foreground path lacks graceful
-handling.
+handling. This means the shutdown frame is not published on Windows
+foreground-mode `taskkill`, and the LWT is what eventually notifies the
+broker.
 
 ### 19.7 `ModuleManager` does not skip failed modules
 
@@ -1399,31 +1711,36 @@ Events carry a path but not the process or user that caused the
 operation. This requires fanotify on Linux and a Minifilter on Windows,
 both of which are Phase 2 milestones.
 
-### 19.12 Windows binary sizes need re-measuring
+### 19.12 Base64 overhead in scan batches
 
-The previously verified sizes (8.61 MB x64, 6.37 MB x86) predate the
-mandatory gRPC and protobuf dependency. Current sizes will be larger.
-Re-measure after a clean Windows build and update this document.
+Scan batches send file content base64-encoded in `content_b64` (to
+match the server's `ScanChunk.ContentB64`), which costs ~33 % bandwidth
+vs a binary payload. For the current workload (hundreds of KB to a few
+MB per batch) this is fine. A future protocol revision could add a
+CBOR binary mode negotiated via a message-level field. See
+`docs/mqtt_protocol.md` §12 for the deferred CBOR option.
 
-### 19.13 No `server.transport` selector
+### 19.13 Command and policy frames are not yet consumed
 
-The agent runs the gRPC Channel transport and the HTTP sync path
-simultaneously. This works because the two paths are independent, but
-it is not what the final architecture will look like. The selector is a
-Phase 5.8 item.
+`mqtt_transport` subscribes to `axiomdlp/agents/{id}/command` and
+`/policy` (retained), but no subscriber handler is installed yet — the
+frames are received and logged at DEBUG level then dropped. This is
+intentional for Phase 0–11. Phase 2 milestone 15 (local policy engine)
+will install a policy handler, and Phase 2 milestone 22 (remote
+commands) will install a command handler.
 
-### 19.14 Windows setup requires manual workarounds on slow networks
+### 19.14 No automated MQTT protocol doc identity check
 
-The `setup-windows-msvc.ps1` fast-mode uses `Invoke-WebRequest`, which
-can stall on slow GitHub CDN links. The documented fallback (aria2c in
-WSL, then copy into `%USERPROFILE%\vcpkg\downloads\`) works but is not
-scripted. Future improvement: switch to `Start-BitsTransfer`.
+The `diff -q` between the two `docs/mqtt_protocol.md` files is currently
+a manual pre-merge check. It should be scripted as a CI gate in
+Phase 12.
 
-### 19.15 Linux OpenSSL and gRPC build times
+### 19.15 Linux OpenSSL build times
 
-Building OpenSSL 3.3.2 and gRPC 1.62.0 for both Linux targets takes
-30–60 minutes on first run. This is a one-time cost per version bump.
-Cached trees under `.deps/` are reused across subsequent builds.
+Building OpenSSL 3.3.2 for both Linux targets takes 15–25 minutes on
+first run. This is a one-time cost per version bump. Cached trees under
+`.deps/` are reused across subsequent builds. (libmosquitto is not built
+locally — it is expected to be a system package.)
 
 ---
 
@@ -1439,6 +1756,9 @@ Cached trees under `.deps/` are reused across subsequent builds.
 - Update `next.md` when a roadmap item changes.
 - Keep `docs/` accurate — if the source tree changes, the docs must
   change too. Stale documentation is treated as a bug.
+- **Changes to `docs/mqtt_protocol.md` require a coordinated commit in
+  both the Core and agent repositories.** The file is the wire contract;
+  a unilateral change is a bug even if it compiles.
 
 ### 20.2 Code style
 
@@ -1454,13 +1774,15 @@ Cached trees under `.deps/` are reused across subsequent builds.
 - Bug fix: reproduce the bug first, then fix, then verify the fix
   resolves the reproduction
 - New dependency: verify it builds on all four targets and does not
-  introduce shared library dependencies
+  introduce shared library dependencies beyond the OS + libmosquitto
 
 ### 20.4 Documentation requirements
 
 - New module: add a subsection under section 13 of this README
 - New config field: update section 10 and `config/agent.schema.json`
 - New dependency: update section 6 and the appropriate platform section
+- New MQTT message type: update `docs/mqtt_protocol.md` (in **both**
+  repos) and bump the `"v"` field if the change is breaking
 - Bug fix that required non-trivial debugging: add an entry under the
   appropriate section in `done.md`
 
@@ -1473,29 +1795,31 @@ specific bug identifiers (for example `W22`, `G4`) when applicable.
 
 ## 21. Related Documents
 
-- **`done.md`** — Complete implementation log, bug history, and lessons
-  learned. Includes all fixed bugs from the initial design through the
-  Windows MSVC migration and the Phase 5 gRPC migration.
+- **`docs/mqtt_protocol.md`** — Authoritative MQTT wire contract.
+  **Byte-identical** with the matching file in the Core repository.
+  Sections 4 (topics), 5 (QoS), 6 (correlation), 9 (message schemas),
+  and 11 (gRPC→MQTT mapping) are the ones implementation code must match
+  exactly.
+- **`done.md`** — Implementation log, bug history, and lessons learned.
+  Currently stale (still describes the pre-MQTT state); needs a rewrite
+  in Phase 13.
 - **`next.md`** — Phase 2 product roadmap with milestones 15 through 25
   covering the policy engine, enforcement, extraction, IPC, kernel
   hooks, remote commands, platform expansion, observability, and
   hardening.
-- **`docs/file_structure.md`** — Currently stale (describes an
-  architecture from an earlier design). Do not rely on it. A rewrite is
-  tracked in Phase 7.5 of the migration roadmap.
+- **`docs/architecture.md`** — Currently describes the old gRPC pipeline.
+  Needs a rewrite in Phase 13.
+- **`docs/file_structure.md`** — Stale since before the gRPC era. Do not
+  rely on it. Deletion or rewrite tracked in Phase 13.
 - **`config/agent.schema.json`** — Machine-readable JSON schema for the
   configuration file. Authoritative for field types, defaults, and
   allowed values.
-- **`src/features/grpc_transport/agent.proto`** — Protocol buffer
-  definition for the agent-to-Core API. Must be byte-identical to the
-  matching file in the Core repository; a CI check for this is planned
-  for Phase 6.
 
 ---
 
 **AxiomDLP Endpoint Agent** is designed to be a long-lived, extendable
 foundation. Every capability added from here on slots into the module
 framework without touching the core, and every wire change goes through
-`agent.proto` so both sides stay in sync. The current release is a
-working observe-and-report layer; the enforcement layer on top of it is
-the next product milestone.
+`docs/mqtt_protocol.md` so both sides stay in sync. The current release
+is a working observe-and-report layer over a persistent MQTT 5 session;
+the enforcement layer on top of it is the next product milestone.

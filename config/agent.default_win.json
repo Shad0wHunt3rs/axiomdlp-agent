@@ -13,9 +13,10 @@
     "heartbeat_interval_seconds": 60,
     "reconnect_backoff_seconds": 10,
     "reconnect_backoff_max_seconds": 300,
-    "grpc_port": 50051,
-    "grpc_tls": false,
-    "grpc_ca_path": ""
+    "mqtt_port": 1883,
+    "mqtt_tls": false,
+    "mqtt_ca_path": "",
+    "mqtt_keepalive_seconds": 60
   },
   "modules": {
     "filesystem_watcher": {

@@ -9,13 +9,14 @@
   },
   "server": {
     "base_url": "http://127.0.0.1:3000",
-    "api_token": "axdlp_user_gNAHsaK1QoFwVq3H3kMFMku0f8nJjkVugecDQfxF",
+    "api_token": "axdlp_user_Ozg4nkYld0lTwfYmUjaBC2PFxIyzm6u7Xxhy7T41",
     "heartbeat_interval_seconds": 60,
     "reconnect_backoff_seconds": 10,
     "reconnect_backoff_max_seconds": 300,
-    "grpc_port": 50051,
-    "grpc_tls": true,
-    "grpc_ca_path": ""
+    "mqtt_port": 1883,
+    "mqtt_tls": false,
+    "mqtt_ca_path": "",
+    "mqtt_keepalive_seconds": 60
   },
   "modules": {
     "filesystem_watcher": {

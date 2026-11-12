@@ -141,30 +141,43 @@ void parse_server(const json& root, Config& cfg) {
         read_int   (s, "heartbeat_interval_seconds",  cfg.server.heartbeat_interval_seconds,  cfg.load_warnings, section);
         read_int   (s, "reconnect_backoff_seconds",   cfg.server.reconnect_backoff_seconds,   cfg.load_warnings, section);
         read_int   (s, "reconnect_backoff_max_seconds", cfg.server.reconnect_backoff_max_seconds, cfg.load_warnings, section);
-        read_int   (s, "grpc_port",                   cfg.server.grpc_port,                   cfg.load_warnings, section);
-        read_bool  (s, "grpc_tls",                    cfg.server.grpc_tls,                    cfg.load_warnings, section);
-        read_string(s, "grpc_ca_path",                cfg.server.grpc_ca_path,                cfg.load_warnings, section);
+
+        // ── MQTT ───────────────────────────────────────────────────
+        read_int   (s, "mqtt_port",              cfg.server.mqtt_port,              cfg.load_warnings, section);
+        read_bool  (s, "mqtt_tls",               cfg.server.mqtt_tls,               cfg.load_warnings, section);
+        read_string(s, "mqtt_ca_path",           cfg.server.mqtt_ca_path,           cfg.load_warnings, section);
+        read_int   (s, "mqtt_keepalive_seconds", cfg.server.mqtt_keepalive_seconds, cfg.load_warnings, section);
     }
-    if (cfg.server.grpc_port < 1 || cfg.server.grpc_port > 65535) {
-        cfg.load_warnings.push_back(section + ".grpc_port must be between 1 and 65535; using 50051");
-        cfg.server.grpc_port = 50051;
+
+    if (cfg.server.mqtt_port < 1 || cfg.server.mqtt_port > 65535) {
+        cfg.load_warnings.push_back(section + ".mqtt_port must be between 1 and 65535; using 8883");
+        cfg.server.mqtt_port = 8883;
     }
+    if (cfg.server.mqtt_keepalive_seconds < 10) {
+        cfg.load_warnings.push_back(section + ".mqtt_keepalive_seconds must be >= 10; using 60");
+        cfg.server.mqtt_keepalive_seconds = 60;
+    }
+    if (!cfg.server.mqtt_tls && !cfg.server.mqtt_ca_path.empty()) {
+        cfg.load_warnings.push_back(section + ".mqtt_ca_path is set but mqtt_tls is false; "
+                                    "the CA path will be ignored");
+    }
+
     cfg.server.base_url = strip_trailing_slashes(cfg.server.base_url);
     if (cfg.server.base_url.empty()) {
         cfg.load_warnings.push_back("server.base_url is empty; using default");
         cfg.server.base_url = "http://127.0.0.1:3000";
     }
     if (cfg.server.heartbeat_interval_seconds < 5) {
-        cfg.load_warnings.push_back("server.heartbeat_interval_seconds must be >= 5; using 30");
-        cfg.server.heartbeat_interval_seconds = 30;
+        cfg.load_warnings.push_back("server.heartbeat_interval_seconds must be >= 5; using 60");
+        cfg.server.heartbeat_interval_seconds = 60;
     }
     if (cfg.server.reconnect_backoff_seconds < 1) {
-        cfg.load_warnings.push_back("server.reconnect_backoff_seconds must be >= 1; using 5");
-        cfg.server.reconnect_backoff_seconds = 5;
+        cfg.load_warnings.push_back("server.reconnect_backoff_seconds must be >= 1; using 10");
+        cfg.server.reconnect_backoff_seconds = 10;
     }
     if (cfg.server.reconnect_backoff_max_seconds < cfg.server.reconnect_backoff_seconds) {
-        cfg.load_warnings.push_back("server.reconnect_backoff_max_seconds must be >= reconnect_backoff_seconds; using 60");
-        cfg.server.reconnect_backoff_max_seconds = 60;
+        cfg.load_warnings.push_back("server.reconnect_backoff_max_seconds must be >= reconnect_backoff_seconds; using 300");
+        cfg.server.reconnect_backoff_max_seconds = 300;
     }
 }
 

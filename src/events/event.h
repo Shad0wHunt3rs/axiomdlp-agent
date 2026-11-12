@@ -57,6 +57,12 @@ inline constexpr const char* kProcessSpawn  = "process_spawn";
 inline constexpr const char* kScanResult    = "scan_result";
 inline constexpr const char* kDecision      = "decision";
 
+// Transport lifecycle. Published by the transport module on every
+// connect / disconnect. `metadata["state"]` is "connected" or
+// "disconnected"; `metadata["source"]` is the transport kind
+// ("mqtt_transport").
+inline constexpr const char* kMqttState     = "mqtt_state";
+
 } // namespace event_types
 
 } // namespace axiom::core
