@@ -9,6 +9,13 @@
       - VCPKG_ROOT -> VS-bundled vcpkg (wrong one)
       - PATH       -> VS toolchain only (drops chocolatey, ninja, etc.)
 
+    Also exports CMAKE_MAKE_PROGRAM to the resolved Ninja path and passes
+    it to CMake as a cache variable. This is required when
+    VCPKG_FORCE_SYSTEM_BINARIES=1 is set (CI does this) -- vcpkg's nested
+    CMake invocations for its detect_compiler port do not inherit the
+    parent process env, so the only reliable way to make Ninja visible
+    inside vcpkg is via -DCMAKE_MAKE_PROGRAM=... on the configure line.
+
 .PARAMETER Configuration
     Debug or Release (default: Release).
 
@@ -125,9 +132,7 @@ if ($savedVcpkgRoot) {
 
 # ----------------------------------------------------------------
 # Restore PATH so chocolatey-installed tools (ninja in particular)
-# remain visible to CMake and to vcpkg. VS toolchain paths stay first
-# so cl.exe wins over any other compiler that might be on the original
-# PATH; the original PATH is appended after.
+# remain visible to CMake and to vcpkg.
 # ----------------------------------------------------------------
 if ($savedPath) {
     $env:PATH = $env:PATH + ";" + $savedPath
@@ -151,17 +156,55 @@ $env:CC = "cl.exe"
 $env:CXX = "cl.exe"
 
 # ----------------------------------------------------------------
-# Belt-and-braces: pin CMAKE_MAKE_PROGRAM to ninja.exe if we can find
-# it on the restored PATH. CMake normally finds it via PATH, but doing
-# this explicitly ensures the Ninja generator works even if a future
-# environment change hides ninja again.
+# Resolve Ninja and make it unmissable.
+#
+# This is the fix for the CI failure:
+#
+#     error: while detecting compiler information:
+#     error: Could not fetch ninja. A downloadable copy of this tool
+#     is available and can be used by unsetting
+#     %VCPKG_FORCE_SYSTEM_BINARIES%.
+#
+# CI sets VCPKG_FORCE_SYSTEM_BINARIES=1, which forbids vcpkg from
+# downloading its own Ninja. vcpkg's detect_compiler port then runs
+# a NESTED cmake that does NOT inherit the parent process env, so a
+# bare `$env:CMAKE_MAKE_PROGRAM = ...` is insufficient. We must both:
+#
+#   1. Put the Ninja directory FIRST on PATH (so any nested
+#      find_program(NINJA) sees it before anything else), and
+#   2. Pass -DCMAKE_MAKE_PROGRAM=<path> on the configure line (so
+#      the value is baked into the CMake cache that every nested
+#      cmake inherits from its parent CMakeLists.txt).
+#
+# We also fail fast if Ninja is absent, so the operator gets a clear
+# error instead of vcpkg's opaque one.
 # ----------------------------------------------------------------
 $ninjaCmd = Get-Command ninja.exe -ErrorAction SilentlyContinue
-if ($ninjaCmd) {
-    $env:CMAKE_MAKE_PROGRAM = $ninjaCmd.Source
-    Write-Host "  [OK] CMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM" -ForegroundColor Green
-} else {
-    Write-Host "  [WARN] ninja.exe not found on PATH; CMake will search and vcpkg may download its own copy" -ForegroundColor Yellow
+if (-not $ninjaCmd) {
+    Write-Host @"
+[ERROR] ninja.exe not found on PATH.
+
+CI relies on VCPKG_FORCE_SYSTEM_BINARIES=1, which forbids vcpkg from
+downloading its own Ninja. A system Ninja MUST be present.
+
+Install it with:
+    choco install ninja -y
+
+Then re-open the shell (or re-run the workflow) so PATH picks it up.
+"@ -ForegroundColor Red
+    exit 1
+}
+
+$ninjaDir = Split-Path $ninjaCmd.Source -Parent
+$env:PATH = "$ninjaDir;$env:PATH"
+$env:CMAKE_MAKE_PROGRAM = $ninjaCmd.Source
+Write-Host "  [OK] Ninja: $env:CMAKE_MAKE_PROGRAM" -ForegroundColor Green
+Write-Host "  [OK] Ninja dir prepended to PATH: $ninjaDir" -ForegroundColor Green
+
+# Sanity check: the file must actually exist.
+if (-not (Test-Path $env:CMAKE_MAKE_PROGRAM)) {
+    Write-Host "[ERROR] CMAKE_MAKE_PROGRAM points at a missing file: $env:CMAKE_MAKE_PROGRAM" -ForegroundColor Red
+    exit 1
 }
 
 # ----------------------------------------------------------------
@@ -218,10 +261,19 @@ if (Test-Path $cacheFile) {
 }
 
 # ----------------------------------------------------------------
-# Configure
+# Configure.
+#
+# The preset's cacheVariables block already carries
+#   "CMAKE_MAKE_PROGRAM": "$env{CMAKE_MAKE_PROGRAM}"
+# so we only need to make sure the env var is set (it is, above).
+# We ALSO pass -DCMAKE_MAKE_PROGRAM explicitly as a belt-and-braces
+# measure: if a future preset edit forgets the cacheVariables entry,
+# the build still works.
 # ----------------------------------------------------------------
 Write-Host "`n--- Configure (preset: $presetName) ---" -ForegroundColor Yellow
-cmake --preset $presetName
+Write-Host "  CMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM"
+
+cmake --preset $presetName "-DCMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Configure failed." -ForegroundColor Red
     exit $LASTEXITCODE

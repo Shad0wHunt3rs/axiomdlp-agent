@@ -1,6 +1,6 @@
 # AxiomDLP Agent — Source Bundle
 
-- **Generated:** 2026-11-10 09:32:28 UTC
+- **Generated:** 2026-11-12 10:05:24 UTC
 - **Root:** `/home/kali/axiomdlp-agent`
 
 This bundle contains **only the project's own source code** —
@@ -31,7 +31,6 @@ If you need any of them, ask the user — do not guess.
 ./compile_commands.json
 ./config
 ./config/agent.default.json
-./config/agent.default.json.bak
 ./config/agent.default_win.json
 ./config/agent.schema.json
 ./docs
@@ -59,7 +58,6 @@ If you need any of them, ask the user — do not guess.
 ./scripts
 ./scripts/linux
 ./scripts/linux/build-all.sh
-./scripts/linux/build-grpc.sh
 ./scripts/linux/build-openssl.sh
 ./scripts/linux/merge-compile-commands.sh
 ./scripts/win
@@ -84,16 +82,14 @@ If you need any of them, ask the user — do not guess.
 ./src/features/filesystem_watcher
 ./src/features/filesystem_watcher/filesystem_watcher_module.cpp
 ./src/features/filesystem_watcher/filesystem_watcher_module.h
-./src/features/grpc_transport
-./src/features/grpc_transport/agent.proto
-./src/features/grpc_transport/grpc_transport_module.cpp
-./src/features/grpc_transport/grpc_transport_module.h
 ./src/features/inventory
 ./src/features/inventory/inventory_module.cpp
 ./src/features/inventory/inventory_module.h
 ./src/features/inventory/inventory_scanner.cpp
 ./src/features/inventory/inventory_scanner.h
 ./src/features/mqtt_transport
+./src/features/mqtt_transport/mqtt_transport_module.cpp
+./src/features/mqtt_transport/mqtt_transport_module.h
 ./src/foundation
 ./src/foundation/application.cpp
 ./src/foundation/application.h
@@ -111,10 +107,7 @@ If you need any of them, ask the user — do not guess.
 ./src/modules/module_manager.cpp
 ./src/modules/module_manager.h
 ./src/net
-./src/net/http_client.cpp
-./src/net/http_client.h
-./src/net/outbound_queue.cpp
-./src/net/outbound_queue.h
+./src/net/i_request_client.h
 ./src/platform
 ./src/platform/common
 ./src/platform/common/efsw_file_watcher.cpp
@@ -143,6 +136,8 @@ If you need any of them, ask the user — do not guess.
 ./src/util/file_hash.h
 ./src/util/glob_match.cpp
 ./src/util/glob_match.h
+./src/util/ulid.cpp
+./src/util/ulid.h
 ./tests
 ./tests/test_phase6.py
 ./triplets
@@ -163,6 +158,11 @@ cmake_minimum_required(VERSION 3.24)
 project(axiomdlp-agent VERSION 0.1.0 LANGUAGES C CXX)
 
 # ----------------------------------------------------------------
+# Build options
+# ----------------------------------------------------------------
+option(AXIOM_USE_MQTT "Build the MQTT transport module (requires libmosquitto 2.x)" ON)
+
+# ----------------------------------------------------------------
 # Shared source cache for FetchContent dependencies
 # ----------------------------------------------------------------
 set(AXIOM_DEPS_DIR "${CMAKE_SOURCE_DIR}/.deps" CACHE PATH "Shared FetchContent source cache")
@@ -177,9 +177,6 @@ endif()
 if(EXISTS "${AXIOM_DEPS_DIR}/efsw-src")
     set(FETCHCONTENT_SOURCE_DIR_EFSW "${AXIOM_DEPS_DIR}/efsw-src" CACHE PATH "efsw source cache" FORCE)
 endif()
-if(EXISTS "${AXIOM_DEPS_DIR}/cpp-httplib-src")
-    set(FETCHCONTENT_SOURCE_DIR_HTTPLIB "${AXIOM_DEPS_DIR}/cpp-httplib-src" CACHE PATH "cpp-httplib source cache" FORCE)
-endif()
 
 # ----------------------------------------------------------------
 # Language settings
@@ -189,6 +186,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------
 # Dependency acquisition strategy
@@ -226,71 +226,16 @@ endif()
 message(STATUS "AxiomDLP Agent target: ${AXIOM_TARGET}")
 
 # ----------------------------------------------------------------
+# pkg-config search path for i686 cross-builds
+# ----------------------------------------------------------------
+if(UNIX AND NOT APPLE AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(ENV{PKG_CONFIG_LIBDIR} "/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig")
+endif()
+
+# ----------------------------------------------------------------
 # Third-party dependencies
 # ----------------------------------------------------------------
 include(FetchContent)
-
-# ----------------------------------------------------------------
-# Brotli targets — created manually for i686
-# ----------------------------------------------------------------
-if(UNIX AND NOT APPLE AND CMAKE_SIZEOF_VOID_P EQUAL 4)
-
-    set(_brotli_inc    "/usr/include")
-    set(_brotli_common "/usr/lib/i386-linux-gnu/libbrotlicommon.so")
-    set(_brotli_enc    "/usr/lib/i386-linux-gnu/libbrotlienc.so")
-    set(_brotli_dec    "/usr/lib/i386-linux-gnu/libbrotlidec.so")
-
-    if(NOT EXISTS "${_brotli_common}" OR
-       NOT EXISTS "${_brotli_enc}"    OR
-       NOT EXISTS "${_brotli_dec}")
-        message(FATAL_ERROR
-            "i386 Brotli libraries not found. Install with:\n"
-            "    sudo apt install libbrotli-dev:i386")
-    endif()
-
-    # Modern names — used by gRPC
-    if(NOT TARGET Brotli::brotlicommon)
-        add_library(Brotli::brotlicommon SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::brotlicommon PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_common}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-    if(NOT TARGET Brotli::brotlienc)
-        add_library(Brotli::brotlienc SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::brotlienc PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_enc}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-    if(NOT TARGET Brotli::brotlidec)
-        add_library(Brotli::brotlidec SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::brotlidec PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_dec}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-
-    # Legacy names — used by cpp-httplib and some older packages
-    if(NOT TARGET Brotli::common)
-        add_library(Brotli::common SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::common PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_common}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-    if(NOT TARGET Brotli::encoder)
-        add_library(Brotli::encoder SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::encoder PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_enc}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-    if(NOT TARGET Brotli::decoder)
-        add_library(Brotli::decoder SHARED IMPORTED GLOBAL)
-        set_target_properties(Brotli::decoder PROPERTIES
-            IMPORTED_LOCATION             "${_brotli_dec}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_brotli_inc}")
-    endif()
-
-    set(Brotli_FOUND TRUE CACHE BOOL "" FORCE)
-    message(STATUS "i686 Brotli targets created manually (i386 paths)")
-endif()
 
 # --- nlohmann/json ---
 if(AXIOM_USE_VCPKG_DEPS)
@@ -336,20 +281,8 @@ else()
     set(AXIOM_EFSW_TARGET efsw-static)
 endif()
 
-# --- cpp-httplib ---
-set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
-set(HTTPLIB_REQUIRE_BROTLI          OFF CACHE BOOL "" FORCE)
-set(HTTPLIB_COMPILE OFF) # header-only
-FetchContent_Declare(
-    httplib
-    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-    GIT_TAG        v0.15.3
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(httplib)
-
 # ----------------------------------------------------------------
-# OpenSSL (must run BEFORE find_package(gRPC))
+# OpenSSL (file hashing, base64, MQTT TLS)
 # ----------------------------------------------------------------
 if(AXIOM_USE_VCPKG_DEPS)
     find_package(OpenSSL REQUIRED)
@@ -388,99 +321,82 @@ else()
 endif()
 
 # ----------------------------------------------------------------
-# gRPC + Protobuf (Mandatory)
+# libmosquitto (agent transport) — optional via AXIOM_USE_MQTT
 # ----------------------------------------------------------------
-if(NOT AXIOM_USE_VCPKG_DEPS)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        list(PREPEND CMAKE_PREFIX_PATH "${AXIOM_DEPS_DIR}/grpc-linux-x86_64")
-    else()
-        list(PREPEND CMAKE_PREFIX_PATH "${AXIOM_DEPS_DIR}/grpc-linux-i686")
-    endif()
-endif()
+if(AXIOM_USE_MQTT)
+    if(AXIOM_USE_VCPKG_DEPS)
+        find_package(mosquitto CONFIG QUIET)
 
-find_package(Protobuf CONFIG REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
-
-# ----------------------------------------------------------------
-# Post-process gRPC's imported targets for i686
-#
-# gRPC's gRPCTargets.cmake was generated on a 64-bit host without
-# the i386 dev packages installed, so it contains hardcoded
-# /usr/lib/x86_64-linux-gnu/... paths for openssl, brotli, and
-# anything else its find_dependency calls saw at configure time.
-# This block rewrites every such path to i386 in one pass.
-# ----------------------------------------------------------------
-if(UNIX AND NOT APPLE AND CMAKE_SIZEOF_VOID_P EQUAL 4)
-    foreach(_grpc_target
-            gRPC::grpc++ gRPC::grpc gRPC::gpr
-            gRPC::upb gRPC::re2 gRPC::cares gRPC::zlibstatic
-            gRPC::address_sorting gRPC::grpc_plugin_support)
-        if(TARGET ${_grpc_target})
-            get_target_property(_libs ${_grpc_target} INTERFACE_LINK_LIBRARIES)
-            if(_libs)
-                set(_new_libs "")
-                foreach(_lib IN LISTS _libs)
-                    string(REPLACE
-                        "/usr/lib/x86_64-linux-gnu/libssl.so"
-                        "${AXIOM_OPENSSL_LIB_DIR}/libssl.a"
-                        _lib "${_lib}")
-                    string(REPLACE
-                        "/usr/lib/x86_64-linux-gnu/libcrypto.so"
-                        "${AXIOM_OPENSSL_LIB_DIR}/libcrypto.a"
-                        _lib "${_lib}")
-                    string(REPLACE
-                        "/usr/lib/x86_64-linux-gnu/"
-                        "/usr/lib/i386-linux-gnu/"
-                        _lib "${_lib}")
-                    list(APPEND _new_libs "${_lib}")
-                endforeach()
-                set_target_properties(${_grpc_target} PROPERTIES
-                    INTERFACE_LINK_LIBRARIES "${_new_libs}")
+        if(mosquitto_FOUND)
+            if(TARGET mosquitto::mosquitto)
+                add_library(AXIOM_MOSQUITTO ALIAS mosquitto::mosquitto)
+            elseif(TARGET mosquitto::libmosquitto)
+                add_library(AXIOM_MOSQUITTO ALIAS mosquitto::libmosquitto)
+            elseif(TARGET mosquitto::mosquitto_static)
+                add_library(AXIOM_MOSQUITTO ALIAS mosquitto::mosquitto_static)
+            elseif(TARGET mosquitto)
+                add_library(AXIOM_MOSQUITTO ALIAS mosquitto)
+            else()
+                message(WARNING "mosquitto CONFIG found but no recognized target; "
+                                "falling back to find_path/find_library")
+                unset(mosquitto_FOUND)
             endif()
         endif()
-    endforeach()
-    message(STATUS "i686: gRPC imported target paths sanitized")
-endif()
 
-set(AXIOM_PROTO_DIR     "${CMAKE_CURRENT_SOURCE_DIR}/src/features/grpc_transport")
-set(AXIOM_PROTO_FILE    "${AXIOM_PROTO_DIR}/agent.proto")
-set(AXIOM_PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
+        if(mosquitto_FOUND)
+            message(STATUS "libmosquitto: vcpkg config (aliased to AXIOM_MOSQUITTO)")
+        else()
+            find_path(MOSQUITTO_INCLUDE_DIR
+                NAMES mosquitto.h libmosquitto.h
+                PATH_SUFFIXES mosquitto)
+            find_library(MOSQUITTO_LIBRARY
+                NAMES mosquitto libmosquitto mosquitto_static libmosquitto_static)
+            if(NOT MOSQUITTO_INCLUDE_DIR OR NOT MOSQUITTO_LIBRARY)
+                message(FATAL_ERROR
+                    "\n"
+                    "libmosquitto not found via vcpkg.\n"
+                    "\n"
+                    "Make sure 'mosquitto' is listed in vcpkg.json dependencies.\n")
+            endif()
+            add_library(AXIOM_MOSQUITTO INTERFACE)
+            target_include_directories(AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_INCLUDE_DIR})
+            target_link_libraries     (AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_LIBRARY})
+            message(STATUS "libmosquitto: ${MOSQUITTO_LIBRARY} (manual find)")
+        endif()
+    else()
+        find_package(PkgConfig QUIET)
+        if(NOT PkgConfig_FOUND)
+            message(FATAL_ERROR "pkg-config executable not found. Install: sudo apt install pkg-config")
+        endif()
 
-set(AXIOM_PROTO_SRC
-    "${AXIOM_PROTO_GEN_DIR}/agent.pb.cc"
-    "${AXIOM_PROTO_GEN_DIR}/agent.grpc.pb.cc"
-)
-set(AXIOM_PROTO_HDR
-    "${AXIOM_PROTO_GEN_DIR}/agent.pb.h"
-    "${AXIOM_PROTO_GEN_DIR}/agent.grpc.pb.h"
-)
+        pkg_check_modules(MOSQUITTO QUIET libmosquitto)
+        if(NOT MOSQUITTO_FOUND)
+            message(FATAL_ERROR
+                "\n"
+                "libmosquitto not found via pkg-config.\n"
+                "\n"
+                "Install it with:\n"
+                "    sudo apt install libmosquitto-dev\n"
+                "\n"
+                "For i686: sudo apt install libmosquitto-dev:i386\n")
+        endif()
 
-if(AXIOM_USE_VCPKG_DEPS)
-    set(_protoc_exe "$<TARGET_FILE:protobuf::protoc>")
-    set(_grpc_plugin "$<TARGET_FILE:gRPC::grpc_cpp_plugin>")
-else()
-    set(_protoc_exe "${AXIOM_DEPS_DIR}/grpc-host-tools/bin/protoc")
-    set(_grpc_plugin "${AXIOM_DEPS_DIR}/grpc-host-tools/bin/grpc_cpp_plugin")
-    if(NOT EXISTS "${_protoc_exe}")
-        message(FATAL_ERROR "protoc not found. Please run ./scripts/linux/build-grpc.sh first.")
+        if(MOSQUITTO_VERSION VERSION_LESS "2.0")
+            message(FATAL_ERROR
+                "libmosquitto ${MOSQUITTO_VERSION} is too old. Requires 2.x for MQTT 5.")
+        endif()
+
+        add_library(AXIOM_MOSQUITTO INTERFACE)
+        target_include_directories(AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_INCLUDE_DIRS})
+        target_link_libraries     (AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_LIBRARIES})
+        if(MOSQUITTO_CFLAGS_OTHER)
+            target_compile_options(AXIOM_MOSQUITTO INTERFACE ${MOSQUITTO_CFLAGS_OTHER})
+        endif()
+        message(STATUS "libmosquitto: ${MOSQUITTO_LIBRARIES} (version ${MOSQUITTO_VERSION})")
     endif()
+else()
+    message(STATUS "libmosquitto: MQTT transport disabled (AXIOM_USE_MQTT=OFF)")
 endif()
-
-add_custom_command(
-    OUTPUT  ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR}
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${AXIOM_PROTO_GEN_DIR}"
-    COMMAND "${_protoc_exe}"
-        --proto_path=${AXIOM_PROTO_DIR}
-        --cpp_out=${AXIOM_PROTO_GEN_DIR}
-        --grpc_out=${AXIOM_PROTO_GEN_DIR}
-        --plugin=protoc-gen-grpc=${_grpc_plugin}
-        ${AXIOM_PROTO_FILE}
-    DEPENDS ${AXIOM_PROTO_FILE}
-    COMMENT "protoc: generating C++ from agent.proto"
-    VERBATIM
-)
-
-add_custom_target(axiom_grpc_gen DEPENDS ${AXIOM_PROTO_SRC} ${AXIOM_PROTO_HDR})
 
 # ----------------------------------------------------------------
 # SQLite3
@@ -520,11 +436,10 @@ add_executable(axiomdlp-agent
     src/events/event.cpp
     src/events/event_bus.cpp
     src/modules/module_manager.cpp
-    src/net/http_client.cpp
-    src/net/outbound_queue.cpp
     src/util/glob_match.cpp
     src/util/file_hash.cpp
     src/util/base64.cpp
+    src/util/ulid.cpp
     src/platform/common/efsw_file_watcher.cpp
     src/features/agent_sync/agent_sync_module.cpp
     src/features/content_scanner/content_scanner_module.cpp
@@ -532,37 +447,42 @@ add_executable(axiomdlp-agent
     src/features/filesystem_watcher/filesystem_watcher_module.cpp
     src/features/inventory/inventory_module.cpp
     src/features/inventory/inventory_scanner.cpp
-    src/features/grpc_transport/grpc_transport_module.cpp
     src/storage/sqlite_database.cpp
     src/storage/migrations.cpp
     src/storage/file_repository.cpp
     src/storage/state_repository.cpp
-    ${AXIOM_PROTO_SRC}
     ${AXIOM_PLATFORM_SOURCES}
 )
 
-target_include_directories(axiomdlp-agent PRIVATE src ${AXIOM_PROTO_GEN_DIR})
+if(AXIOM_USE_MQTT)
+    target_sources(axiomdlp-agent PRIVATE
+        src/features/mqtt_transport/mqtt_transport_module.cpp)
+endif()
+
+target_include_directories(axiomdlp-agent PRIVATE src)
 
 target_compile_definitions(axiomdlp-agent PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
     AXIOM_AGENT_VERSION="${PROJECT_VERSION}"
-    CPPHTTPLIB_OPENSSL_SUPPORT
 )
+
+if(AXIOM_USE_MQTT)
+    target_compile_definitions(axiomdlp-agent PRIVATE AXIOM_HAVE_MQTT=1)
+endif()
 
 target_link_libraries(axiomdlp-agent PRIVATE
     spdlog::spdlog
     nlohmann_json::nlohmann_json
-    httplib::httplib
     ${AXIOM_EFSW_TARGET}
     ${AXIOM_SQLITE_TARGET}
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
-    gRPC::grpc++
-    protobuf::libprotobuf
 )
 
-add_dependencies(axiomdlp-agent axiom_grpc_gen)
+if(AXIOM_USE_MQTT)
+    target_link_libraries(axiomdlp-agent PRIVATE AXIOM_MOSQUITTO)
+endif()
 
 # ----------------------------------------------------------------
 # Platform-specific settings
@@ -576,11 +496,6 @@ if(UNIX AND NOT APPLE)
     set(AXIOM_HAVE_SYSTEMD OFF)
     include(FindPkgConfig QUIET)
     if(PkgConfig_FOUND)
-        if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-            set(ENV{PKG_CONFIG_LIBDIR} "/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig")
-        else()
-            set(ENV{PKG_CONFIG_LIBDIR} "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig")
-        endif()
         pkg_check_modules(SYSTEMD QUIET libsystemd)
         if(SYSTEMD_FOUND)
             set(AXIOM_HAVE_SYSTEMD ON)
@@ -1854,14 +1769,13 @@ Triggered on every tag:
 
 Cross-platform endpoint data-loss-prevention agent written in C++20. Watches
 the filesystem, inventories files, hashes content, stores metadata in SQLite,
-connects to the AxiomDLP Core server over TLS (gRPC for server-pushed
-messages, HTTPS for enrollment/heartbeat/scan), and shuts down atomically
-with a typed reason.
+scans text files for PII over a persistent **MQTT 5** session with the
+AxiomDLP Core, and shuts down atomically with a typed reason.
 
-**Current status:** Phase 5 of the gRPC migration — the transport layer
-has been migrated to gRPC and WebSocket has been removed. `agent_sync`
-and `content_scanner` remain on HTTP pending Phase 5.4–5.5 of the
-migration roadmap.
+**Current status:** MQTT migration complete (Phases 0–11 of the migration
+roadmap). Agent transport is MQTT 5 exclusively; no gRPC, no HTTP client, no
+protobuf anywhere in the dependency tree. Windows MSVC build pipeline and
+the automated test suite (Phase 12) remain.
 
 ---
 
@@ -1899,8 +1813,10 @@ data-loss-prevention platform. It runs as a system service on Linux
 
 - Observing file-system activity in real time
 - Building and maintaining a local inventory of files with content hashes
-- Sending file content chunks to the Core server for PII detection
+- Sending file content chunks to the Core server for PII detection over
+  MQTT 5
 - Receiving server-pushed policy updates, commands, and revocation notices
+  on per-agent MQTT topics
 - Reporting agent identity and liveness via periodic heartbeats
 - Shutting down cleanly when instructed by the server, the user, or an
   internal failure
@@ -1915,7 +1831,10 @@ The codebase is organized around a strict separation between:
 - **Framework** — `foundation/`, `events/`, `modules/`
 - **Feature modules** — `features/<name>/`
 - **Platform bindings** — `platform/<os>/`
-- **Wire protocol** — `features/grpc_transport/agent.proto`
+- **Transport contract** — `net/i_request_client.h` (interface) plus the
+  concrete implementation in `features/mqtt_transport/`
+- **Wire protocol** — `docs/mqtt_protocol.md` (byte-identical with the
+  matching file in the Core repository)
 
 Every capability the agent offers is implemented as a module. Adding a new
 capability means adding a folder under `src/features/` and registering it in
@@ -1929,40 +1848,40 @@ capability means adding a folder under `src/features/` and registering it in
 
 - Cross-platform service life cycle (systemd on Linux, SCM on Windows,
   foreground mode for both)
-- Four verified build targets from two independent toolchains
+- Four build targets from two independent toolchains
 - Real-time filesystem watching via efsw (inotify on Linux,
   ReadDirectoryChangesW on Windows)
 - Periodic full-filesystem inventory with SHA-256 hashing
 - SQLite storage with automatic schema migrations (version 4)
-- gRPC `Channel` bidirectional stream to the Core with TLS, jittered
-  reconnect, and status-code-aware handling
-- HTTP enrollment (`POST /api/v1/agent/register`), heartbeat
-  (`POST /api/v1/agent/heartbeat`), and content scan
-  (`POST /api/v1/agent/scan/batch`) using cpp-httplib with unconditional
-  TLS verification
+- **MQTT 5 transport** via libmosquitto 2.x — persistent session, jittered
+  reconnect, MQTT 5 request/response correlation, Last Will & Testament,
+  TLS with verified peer certificate and hostname
+- **Enrollment and heartbeat over MQTT** — `agent_sync` publishes to
+  `axiomdlp/register` and `axiomdlp/agents/{id}/heartbeat`, with
+  `Response-Topic` / `Correlation-Data` correlation and typed error handling
+- **Content scanning over MQTT** — `content_scanner` publishes overlapping
+  text chunks to `axiomdlp/agents/{id}/scan/batch`, merges per-chunk
+  verdicts, and skips unscored files (never commits a partial verdict)
+- **Server-pushed control frames** — `command`, `policy` (retained), and
+  `revoke` (retained) are subscribed on `axiomdlp/agents/{id}/...` and
+  delivered to the shutdown controller or feature-module callbacks
 - Content scanner for text files: overlapping chunking, per-chunk verdicts,
   hash-based deduplication, local persistence of results
 - Atomic shutdown with typed reasons preserved end to end
-- Server-pushed revocation (`revoke` message from the gRPC stream triggers
-  immediate shutdown)
 - Fully static Windows binaries with static CRT (`/MT`) — no runtime
   redistributable required
 
-### 2.2 What is pending (Phase 5 remainder)
+### 2.2 What is pending (Phase 12–13)
 
-The following items from the Phase 5 migration roadmap are still open:
+The following items from the migration roadmap are still open:
 
-- `agent_sync` still uses HTTP unary calls instead of gRPC unary RPCs
-  (`Register`, `Heartbeat`) defined in `agent.proto`
-- `content_scanner` still uses HTTP with base64-encoded chunk payloads
-  instead of the gRPC `ScanBatch` method with native `bytes` payloads
-- Server-pushed messages are dispatched inline in
-  `grpc_transport_module.cpp` rather than through a unified `MessageRouter`
-- No `server.transport` config selector — the agent runs the gRPC Channel
-  and the HTTP sync path simultaneously, always
-- `UNIMPLEMENTED` gRPC status is not wired to `FatalError`
-- Windows binary sizes need re-measuring after gRPC and protobuf became
-  mandatory build dependencies
+- **Phase 12 — automated tests.** Unit, integration, load, chaos, TLS, and
+  wire-format regression tests on all four targets. Currently the manual
+  smoke test in §17 is the only verification.
+- **Phase 13 — documentation polish.** `done.md` still says "Phase 5 of the
+  gRPC migration" — needs a full rewrite. `docs/file_structure.md` is stale
+  (predates even the gRPC era). `docs/architecture.md` describes the old
+  gRPC pipeline. See §19.
 
 ### 2.3 What does not exist yet (Phase 2 product roadmap)
 
@@ -1999,18 +1918,28 @@ The following items from the Phase 5 migration roadmap are still open:
 - Content itself is never persisted; it is read into memory, transmitted,
   and discarded
 
-### 3.3 Server connectivity
+### 3.3 Server connectivity (MQTT 5)
 
-- **gRPC Channel bidi stream** — the primary server-push channel.
-  Carries `policy_update`, `command`, and `revoke` messages. Sends a
-  typed `ClientShutdown` on graceful stop.
-- **HTTP enrollment and heartbeat** — cpp-httplib over HTTPS with
-  unconditional certificate verification. Immediate validation heartbeat
-  at startup with a saved `agent_id` so a revoked token is detected
-  within milliseconds.
-- **HTTP scan batch** — chunked file content sent to
-  `POST /api/v1/agent/scan/batch`, verdicts merged back into the local
-  `files` table.
+- **Persistent MQTT 5 session** — the sole server-facing transport. All
+  server-pushed frames, all enrollment/heartbeat, and all content scans
+  travel over a single TCP/TLS connection to the broker.
+- **Request/response correlation** — every request carries a fresh ULID in
+  both the JSON `correlation_id` field and the MQTT 5 `Correlation-Data`
+  PUBLISH property. The response arrives on the topic named in
+  `Response-Topic`, and the client routes it by correlation ID.
+- **MQTT 5 CONNECT properties** — `Session Expiry Interval=3600`,
+  `Receive Maximum=100`, `Maximum Packet Size=128 MB`, `Topic Alias
+  Maximum=0`. Clean Start is false, so the broker retains subscriptions
+  across brief TCP blips.
+- **Last Will & Testament** — the agent sets a Will on
+  `axiomdlp/sessions/{instance_uuid}/status` with payload
+  `{"status":"offline"}` and a 5-second Will Delay Interval. A crashed
+  agent is detected in seconds.
+- **Jittered exponential backoff** — base 10 s, cap 300 s, ±20 % jitter.
+  Reconnects do not thundering-herd the broker.
+- **Typed shutdown frame** — on graceful stop, the agent publishes a
+  `shutdown` message with its typed `ShutdownReason` before disconnecting
+  cleanly. The broker does not fire the Will in this case.
 
 ### 3.4 Reliability
 
@@ -2020,6 +1949,12 @@ The following items from the Phase 5 migration roadmap are still open:
 - Per-module health status aggregated by `ModuleManager`
 - Fail-safe configuration: bad config never prevents startup
 - Async structured logging with non-blocking delivery and rotation
+- Cross-thread `mosq_` access protected by `mosq_mu_` in the transport
+  module — `set_agent_id()` (called from `agent_sync`'s thread) cannot race
+  the manager thread's connect/teardown
+- Subscriptions issued from the manager thread (after CONNACK), not from
+  inside the loop callback — avoids a deadlock against
+  `mosquitto_loop_stop` in the teardown path
 
 ### 3.5 Deployment
 
@@ -2036,43 +1971,58 @@ The following items from the Phase 5 migration roadmap are still open:
 
 ### 4.1 High-level diagram
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Application                                                 │
-│  Owns: Config, Logger, ShutdownController, Database,        │
-│        FileStore, StateStore, EventBus, ModuleContext,      │
-│        ModuleManager, Service                               │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Service                                                     │
-│  Linux:   systemd + sd_notify + signal handlers             │
-│  Windows: SCM + ServiceMain + control handler               │
-│  Blocks on ShutdownController::wait(); tears down on request│
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│ ModuleManager                                               │
-│  Lifecycle: initialize → start → stop → shutdown (reverse)  │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-   ┌─────────┬─────────────┼──────────────┬───────────────┐
-   ▼         ▼             ▼              ▼               ▼
-┌──────┐ ┌─────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐
-│ FS   │ │Inventory│ │Event     │ │gRPC        │ │AgentSync + │
-│Watch │ │         │ │Logger    │ │Transport   │ │ContentScan │
-└──┬───┘ └────┬────┘ └────┬─────┘ └─────┬──────┘ └─────┬──────┘
-   │          │           │             │              │
-   │ publish  │ hash      │ subscribe   │ Channel      │ HTTP + TLS
-   ▼          ▼           ▼             ▼              ▼
-┌──────┐ ┌─────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐
-│Event │ │FileStore│ │EventBus  │ │Core gRPC   │ │Core HTTP   │
-│Bus   │ │(SQLite) │ │          │ │(Channel)   │ │(register,  │
-│      │ │         │ │          │ │            │ │ heartbeat, │
-│      │ │         │ │          │ │            │ │ scan/batch)│
-└──────┘ └─────────┘ └──────────┘ └────────────┘ └────────────┘
+```mermaid
+flowchart TB
+    App["<b>Application</b><br/>Owns: Config, Logger, ShutdownController, Database,<br/>FileStore, StateStore, EventBus, ModuleContext,<br/>ModuleManager, Service"]
+    Svc["<b>Service</b><br/>Linux:   systemd + sd_notify + signal handlers<br/>Windows: SCM + ServiceMain + control handler<br/>Blocks on ShutdownController::wait(); tears down on request"]
+    MM["<b>ModuleManager</b><br/>Lifecycle: initialize → start → stop → shutdown (reverse)"]
+
+    FS["<b>FS</b><br/>Watch"]
+    Inv["<b>Inventory</b>"]
+    EL["<b>Event</b><br/>Logger"]
+    MT["<b>mqtt_transport</b><br/>(IRequestCli)"]
+    AS["<b>AgentSync</b><br/>(MQTT)"]
+    CS["<b>CS</b>"]
+
+    EB[("<b>Event</b><br/>Bus")]
+    FStore[("<b>FileStore</b><br/>(SQLite)")]
+    EBus[("<b>EventBus</b>")]
+
+    subgraph Broker["<b>axiomdlp-core MQTT broker</b><br/>(:1883 dev, :8883 prod)"]
+        direction LR
+        subgraph L[" "]
+            direction TB
+            Register["register"]
+            Scan["scan/batch"]
+            Command["command"]
+            Revoke["revoke*"]
+        end
+        subgraph R[" "]
+            direction TB
+            Heartbeat["heartbeat"]
+            Shutdown["shutdown"]
+            Policy["policy*"]
+            Retained["(* = retained)"]
+        end
+    end
+
+    App  --> Svc
+    Svc  --> MM
+
+    MM --> FS
+    MM --> Inv
+    MM --> EL
+    MM --> MT
+    MM --> AS
+    MM --> CS
+
+    FS  -->|"publish"| EB
+    Inv -->|"hash"| FStore
+    EL  -->|"subscribe"| EBus
+    MT  -->|"MQTT 5"| Broker
+    AS  -->|"req()"| MT
+    CS  -->|"req()"| MT
+
 ```
 
 ### 4.2 Layered source tree
@@ -2082,7 +2032,7 @@ The following items from the Phase 5 migration roadmap are still open:
 - `modules/` — module framework (interface, base, context, manager, health)
 - `features/` — one folder per capability
 - `platform/` — OS-specific implementations behind interfaces
-- `net/` — HTTP client (and reserved space for future transport helpers)
+- `net/` — the `IRequestClient` interface (transport-agnostic)
 - `util/` — hashing, glob matching, base64
 - `storage/` — SQLite wrapper, migrations, repositories
 
@@ -2095,7 +2045,8 @@ layers. Business logic never includes OS-specific headers.
    under `src/features/<name>/` and one registration line in
    `application.cpp`.
 2. **Modules communicate through the event bus.** No direct calls between
-   feature modules.
+   feature modules — except through interfaces exposed on
+   `ModuleContext` (such as `IRequestClient`).
 3. **One shutdown authority.** `ShutdownController` is the only place a
    shutdown is requested. Every module reads the same reason.
 4. **Fail-safe.** Bad config, missing paths, and failed modules never
@@ -2108,7 +2059,7 @@ layers. Business logic never includes OS-specific headers.
 
 ## 5. Supported Platforms
 
-Four build targets, all verified to build, link, and run:
+Four build targets:
 
 | Platform       | Toolchain             | Triplet / Toolchain File             |
 | -------------- | --------------------- | ------------------------------------ |
@@ -2117,9 +2068,16 @@ Four build targets, all verified to build, link, and run:
 | Windows x86_64 | MSVC 2022 + vcpkg     | `x64-windows-static`                  |
 | Windows x86    | MSVC 2022 + vcpkg     | `x86-windows-static`                  |
 
-All four targets support TLS, the gRPC Channel transport, HTTP
-enrollment/heartbeat/scan, filesystem watching, hashing, SQLite storage,
-and graceful shutdown.
+**Linux x86_64 and i686** are verified to build, link, and connect to a
+live Core broker end-to-end.
+
+**Windows x64 and x86** build cleanly via the CMake/vcpkg toolchain
+workflow, but the MQTT connect path has not yet been exercised against a
+live broker from a Windows host — that verification is part of Phase 12
+(automated tests).
+
+All four targets support TLS, the MQTT 5 transport, filesystem watching,
+hashing, SQLite storage, and graceful shutdown.
 
 ---
 
@@ -2127,33 +2085,42 @@ and graceful shutdown.
 
 ### 6.1 Per-component dependency table
 
-| Component        | Linux                                     | Windows                            |
-| ---------------- | ----------------------------------------- | ---------------------------------- |
-| HTTP client      | cpp-httplib 0.15.3 (FetchContent)         | cpp-httplib 0.15.3 (FetchContent)  |
-| gRPC             | `.deps/grpc-linux-*` (built locally)      | vcpkg `grpc`                       |
-| Protobuf         | built with gRPC                           | vcpkg `protobuf`                   |
-| TLS / crypto     | `.deps/openssl-linux-*` (built locally)   | vcpkg `openssl`                    |
-| SQLite           | amalgamation from `.deps/sqlite3-src`     | vcpkg `sqlite3`                    |
-| JSON             | system package or FetchContent            | vcpkg `nlohmann-json`              |
-| Logging          | FetchContent spdlog 1.14.1                | vcpkg `spdlog` + `fmt`             |
-| File watching    | FetchContent efsw 1.7.2                   | vcpkg `efsw`                       |
-| Service manager  | libsystemd (via pkg-config, optional)     | SCM (part of `advapi32`)           |
+| Component        | Linux                                          | Windows                              |
+| ---------------- | ---------------------------------------------- | ------------------------------------ |
+| MQTT 5 client    | `libmosquitto-dev` 2.x via pkg-config          | vcpkg `mosquitto` 2.x                |
+| TLS / crypto     | `.deps/openssl-linux-*` (built locally)        | vcpkg `openssl`                      |
+| SQLite           | amalgamation from `.deps/sqlite3-src`          | vcpkg `sqlite3`                      |
+| JSON             | system package or FetchContent                 | vcpkg `nlohmann-json`                |
+| Logging          | FetchContent spdlog 1.14.1                     | vcpkg `spdlog` + `fmt`               |
+| File watching    | FetchContent efsw 1.7.2                        | vcpkg `efsw`                         |
+| Service manager  | libsystemd (via pkg-config, optional)          | SCM (part of `advapi32`)             |
 
 ### 6.2 Removed dependencies
 
-The following were dependencies in earlier revisions and have been removed:
+The following were dependencies in earlier revisions and have been
+removed:
 
-- **Boost 1.90 / 1.92** — no longer used anywhere
-- **Boost.Asio** — replaced by gRPC for async I/O
-- **Boost.Beast** — replaced by cpp-httplib for HTTP; WebSocket path
-  deleted entirely
+- **gRPC** — replaced by libmosquitto. gRPC's `protoc` codegen,
+  i686 target path pollution, and static Brotli/OpenSSL linking
+  requirements made 32-bit cross-compilation fragile.
+- **Protobuf** — removed with gRPC. Wire format is JSON over MQTT 5.
+- **cpp-httplib** — was the HTTP client for `agent_sync` and
+  `content_scanner`. Both modules now use `IRequestClient` backed by
+  `MqttTransportModule`.
+- **Boost 1.90 / 1.92** — removed several revisions ago.
+- **Boost.Asio / Boost.Beast** — replaced by cpp-httplib (later gRPC,
+  later MQTT).
 
-### 6.3 Why gRPC and Protobuf are mandatory
+### 6.3 Why MQTT 5
 
-The Core server exposes a `Channel` bidirectional RPC that is the primary
-server-to-agent push channel. It carries policy updates, remote commands,
-and revocation notices. The stream is implemented and used; it is not
-optional scaffolding.
+`docs/mqtt_protocol.md` is the authoritative wire contract and is kept
+byte-identical with the matching file in the Core repository. The choice
+of MQTT 5 over WebSocket or gRPC is documented there in §1 — short
+version: broker-managed session state, retained messages for
+policy/revoke, native LWT for crash detection, per-message QoS, and
+broker-level ACL for cross-agent isolation. These are all properties
+gRPC and WebSocket do not provide without application-level
+reimplementation.
 
 ---
 
@@ -2171,6 +2138,7 @@ sudo apt install -y \
     gcc-multilib g++-multilib \
     ninja-build git file clangd \
     libsystemd-dev libsystemd-dev:i386 \
+    libmosquitto-dev libmosquitto-dev:i386 \
     pkg-config curl make
 ```
 
@@ -2179,6 +2147,9 @@ Notes:
 - `gcc-multilib` and `g++-multilib` are required only for the i686 target
 - `libsystemd-dev:i386` is required for the i686 target's `sd_notify`
   integration
+- `libmosquitto-dev:i386` is required for the i686 target — without it,
+  CMake fails at configure time with a clear message pointing at the
+  missing package
 - `curl` is used by `scripts/linux/build-openssl.sh` for the source
   download
 
@@ -2218,14 +2189,15 @@ On first run this script:
 2. Runs `scripts/linux/build-openssl.sh` if either OpenSSL tree is
    incomplete — downloads and builds OpenSSL 3.3.2 for both
    `linux-x86_64` and `linux-i686` (takes 15–25 minutes)
-3. Runs `scripts/linux/build-grpc.sh` if either gRPC tree is incomplete —
-   downloads gRPC 1.62.0 with submodules, builds host tools (`protoc`,
-   `grpc_cpp_plugin`), then builds gRPC statically for both Linux targets
-   (takes 30–60 minutes)
-4. Configures and builds the agent for both targets
+3. Configures and builds the agent for both targets
 
 On subsequent runs, everything is incremental and completes in around
 30 seconds.
+
+**libmosquitto is not built by the script.** It is expected to be
+installed as a system package (`libmosquitto-dev` and, for i686,
+`libmosquitto-dev:i386`). CMake finds it via pkg-config and fails with a
+clear message if the package is missing.
 
 ### 8.2 Manual build
 
@@ -2244,7 +2216,7 @@ cmake --build --preset linux-i686-release
 | `linux-x86_64-debug`           | Debug      | `build/linux-x86_64-debug/axiomdlp-agent`     |
 | `linux-x86_64-release`         | Release    | `build/linux-x86_64-release/axiomdlp-agent`   |
 | `linux-i686-debug`             | Debug      | `build/linux-i686-debug/axiomdlp-agent`       |
-| `linux-i686-release`           | Release    | `build/linux-i686-release/axiomdlp-agent`     |
+| `linux-i686-release`           | Release      | `build/linux-i686-release/axiomdlp-agent`     |
 
 ### 8.4 Verifying the build
 
@@ -2255,9 +2227,15 @@ file build/linux-x86_64-release/axiomdlp-agent
 file build/linux-i686-release/axiomdlp-agent
 # ELF 32-bit LSB pie executable, Intel 80386
 
-ldd build/linux-x86_64-release/axiomdlp-agent | grep -E 'ssl|grpc|protobuf'
-# (empty — all static)
+ldd build/linux-x86_64-release/axiomdlp-agent | grep -E 'ssl|mosquitto|grpc|protobuf'
+# libmosquitto.so.1 (system lib — the only external dependency)
+# libssl/libcrypto are static; no gRPC, no protobuf
 ```
+
+The one runtime dependency outside libc is `libmosquitto.so.1`. This is
+the only shared library the agent requires — everything else (OpenSSL,
+SQLite, spdlog, efsw, nlohmann/json) is statically linked into the
+binary.
 
 ---
 
@@ -2278,9 +2256,7 @@ This script:
    3 MB) — avoids a bootstrap compile
 4. Sets `VCPKG_ROOT` persistently for the current user
 
-Total runtime is approximately 3 minutes on a normal connection. The
-script uses `Invoke-WebRequest` and falls back to `setx` if the .NET
-environment API fails.
+Total runtime is approximately 3 minutes on a normal connection.
 
 ### 9.2 Build
 
@@ -2304,16 +2280,15 @@ The build script:
   (otherwise `vcvarsall.bat` would overwrite it with the VS-bundled
   vcpkg, which requires `builtin-baseline` and lacks the required ports)
 - Sets `CC=cl.exe` and `CXX=cl.exe` to override any GCC found on `PATH`
-  (for example MSYS2's toolchain)
 - Detects and cleans stale `CMakeCache.txt` files that reference a
   non-MSVC compiler
 - Cleans the build directory when `-Clean` is passed
 
-First Windows build takes 40–60 minutes per architecture while vcpkg
-compiles the full dependency tree (OpenSSL, gRPC, protobuf, abseil,
-c-ares, re2, upb, spdlog, fmt, nlohmann-json, efsw, SQLite,
-cpp-httplib). Subsequent builds restore from vcpkg's binary cache in
-5–10 seconds.
+First Windows build takes ~20–30 minutes per architecture while vcpkg
+compiles the dependency tree (OpenSSL, spdlog, fmt, nlohmann-json,
+efsw, SQLite, mosquitto). Subsequent builds restore from vcpkg's binary
+cache in 5–10 seconds. **The gRPC + protobuf dependency is gone**, which
+is where most of the previous 40–60 min first-build time was spent.
 
 ### 9.3 Available presets
 
@@ -2335,6 +2310,11 @@ dumpbin /headers build\windows-x64-msvc-release\axiomdlp-agent.exe |
 dumpbin /dependents build\windows-x64-msvc-release\axiomdlp-agent.exe
 # Expected: KERNEL32, ADVAPI32, WS2_32, SHELL32, ole32, USER32, CRYPT32
 ```
+
+On Windows, vcpkg's `mosquitto` port is linked statically by the
+`x64-windows-static` and `x86-windows-static` triplets, so
+`libmosquitto.dll` does **not** appear in the dependency list. The
+resulting binary is fully self-contained.
 
 ### 9.5 Troubleshooting vcpkg downloads
 
@@ -2398,25 +2378,39 @@ talks to the Core reads from this section.
   "heartbeat_interval_seconds": 60,
   "reconnect_backoff_seconds": 10,
   "reconnect_backoff_max_seconds": 300,
-  "grpc_port": 50051,
-  "grpc_tls": true,
-  "grpc_ca_path": ""
+  "mqtt_port": 1883,
+  "mqtt_tls": false,
+  "mqtt_ca_path": "",
+  "mqtt_keepalive_seconds": 60
 }
 ```
 
-| Field                          | Type    | Default                 | Purpose                                         |
-| ------------------------------ | ------- | ----------------------- | ----------------------------------------------- |
-| `base_url`                     | string  | `http://127.0.0.1:3000` | Core base URL; derives gRPC target host         |
-| `api_token`                    | string  | `""`                    | Bearer token (`axdlp_user_...`)                 |
-| `heartbeat_interval_seconds`   | integer | `60`                    | Heartbeat period for `agent_sync`               |
-| `reconnect_backoff_seconds`    | integer | `10`                    | Initial backoff for reconnect                   |
-| `reconnect_backoff_max_seconds`| integer | `300`                   | Maximum backoff cap                             |
-| `grpc_port`                    | integer | `50051`                 | gRPC service port                               |
-| `grpc_tls`                     | boolean | `true`                  | Enable TLS on the gRPC channel                  |
-| `grpc_ca_path`                 | string  | `""`                    | Optional PEM CA bundle; empty means system roots |
+| Field                          | Type    | Default                 | Purpose                                                |
+| ------------------------------ | ------- | ----------------------- | ------------------------------------------------------ |
+| `base_url`                     | string  | `http://127.0.0.1:3000` | Core base URL; the host is reused as the MQTT target   |
+| `api_token`                    | string  | `""`                    | Bearer token (`axdlp_user_...`); sent as MQTT username |
+| `heartbeat_interval_seconds`   | integer | `60`                    | Heartbeat period for `agent_sync`                      |
+| `reconnect_backoff_seconds`    | integer | `10`                    | Initial backoff for reconnect                          |
+| `reconnect_backoff_max_seconds`| integer | `300`                   | Maximum backoff cap                                    |
+| `mqtt_port`                    | integer | `8883` (TLS default)    | TCP port for the MQTT broker. `1883` for plaintext.    |
+| `mqtt_tls`                     | boolean | `true`                  | Enable TLS on the MQTT connection                      |
+| `mqtt_ca_path`                 | string  | `""`                    | Optional PEM CA bundle; empty means system roots       |
+| `mqtt_keepalive_seconds`       | integer | `60`                    | MQTT CONNECT keep-alive interval (seconds)             |
 
-`grpc_tls` should only be set to `false` in local development. Production
-deployments must keep it at `true`.
+**`mqtt_tls` must be `true` in production.** The dev configs
+(`agent.default.json`, `agent.default_win.json`) ship with it set to
+`false` because the local dev broker is plaintext on `1883`. Before
+deploying anywhere, set:
+
+```json
+"mqtt_port": 8883,
+"mqtt_tls": true,
+"mqtt_ca_path": "/path/to/ca.pem"
+```
+
+**`mqtt_ca_path` is ignored when `mqtt_tls` is false.** The config loader
+logs a warning if you set it while TLS is off, so the mismatch is
+visible at startup.
 
 ### 10.4 Module sections
 
@@ -2464,13 +2458,13 @@ default for that field. The agent always starts.
 
 ### 10.7 Deprecated fields
 
-`verify_tls` at any level produces a warning that the field is ignored.
-The agent always verifies TLS certificates and hostnames on `https://`
-and `wss://`.
+`grpc_port`, `grpc_tls`, and `grpc_ca_path` — removed in Phase 10. If
+they appear in a config file they are silently ignored; replace them
+with the `mqtt_*` equivalents.
 
-`modules.transport.*` and legacy fields under `modules.agent_sync.*`
-are still read for backwards compatibility but the canonical location is
-the top-level `server` section.
+`verify_tls` at any level produces a warning that the field is ignored.
+The agent always verifies TLS certificates and hostnames on `mqtts://`
+and `https://`.
 
 ---
 
@@ -2555,6 +2549,63 @@ Levels follow standard severity: `trace`, `debug`, `info`, `warn`,
 `error`, `critical`. The default level is `info`. Rotation is configured
 for 5 MB per file and 3 historical files (approximately 20 MB total).
 
+### 11.6 Getting a token
+
+Before the first run, obtain an `axdlp_user_...` token from the Core:
+
+```bash
+# Register a new org + admin user; the response contains the API token
+curl -s -X POST http://127.0.0.1:3000/api/v1/register \
+  -H 'Content-Type: application/json' \
+  -d '{"organization_name":"MyOrg","admin_username":"admin",
+       "admin_email":"admin@myorg.local","admin_password":"TestPass123x"}' \
+  | jq -r '.api_token'
+```
+
+Paste the resulting `axdlp_user_...` into `config/agent.default.json`
+at `server.api_token`. The token is shown only once by the server — if
+you lose it, generate a fresh one via `POST /api/v1/me/tokens` (from an
+authenticated session) or `POST /api/v1/users/:id/tokens` (as an
+`org_admin`).
+
+### 11.7 Expected startup log
+
+```
+[info] AxiomDLP Agent v0.1.0
+[info] Config loaded from: config/agent.default.json
+[info] Database: opened 'data/agent.db'
+[info] Migrations: schema version 4 -> 4
+[info] ModuleManager: registering module 'filesystem_watcher' v1.0.0
+[info] ModuleManager: registering module 'inventory' v1.0.0
+[info] ModuleManager: registering module 'event_logger' v1.0.0
+[info] ModuleManager: registering module 'mqtt_transport' v1.0.0
+[info] ModuleManager: registering module 'agent_sync' v1.0.0
+[info] ModuleManager: registering module 'content_scanner' v1.0.0
+[info] mqtt_transport: initialized (host=127.0.0.1, port=1883, tls=false, keepalive=60s, instance=<hex>, agent_id=0)
+[info] agent_sync module: initialized (heartbeat=60s)
+[info] mqtt_transport: connected to 127.0.0.1:1883
+[info] [event] type=mqtt_state path=-
+[info] mqtt_transport: subscribed 'axiomdlp/replies/<hex>' (qos=1)
+[info] agent_sync: registering over MQTT (hostname=<hostname>)
+[info] mqtt_transport: agent_id set to N (was 0)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/command' (qos=2)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/policy' (qos=2)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/revoke' (qos=2)
+[info] agent_sync: enrolled (agent_id=N, user_id=U, org_id=O)
+```
+
+Press Ctrl+C. Expected shutdown output:
+
+```
+[info] axiomdlp-agent received stop request (reason=user_requested)
+[info] ModuleManager: stopping 6 module(s)
+[info] mqtt_transport: published shutdown message
+[info] mqtt_transport: disconnected (reason=0x00 The normal disconnection)
+[info] mqtt_transport: stopped
+[info] Service returned rc=0 (reason=user_requested)
+[info] Application shutting down
+```
+
 ---
 
 ## 12. Project Structure
@@ -2565,7 +2616,7 @@ axiomdlp-agent/
 ├── CMakePresets.json                    Preset definitions for all targets
 ├── vcpkg.json                           Windows dependency manifest
 ├── README.md                            This document
-├── done.md                              Implementation log and bug history
+├── done.md                              Implementation log and bug history (stale — see §19)
 ├── next.md                              Phase 2 product roadmap
 ├── LICENSE
 ├── .clangd
@@ -2575,15 +2626,10 @@ axiomdlp-agent/
 │   ├── spdlog-src/
 │   ├── nlohmann_json-src/
 │   ├── efsw-src/
-│   ├── cpp-httplib-src/
 │   ├── sqlite3-src/
 │   ├── openssl-src/
 │   ├── openssl-linux-x86_64/
-│   ├── openssl-linux-i686/
-│   ├── grpc-src/
-│   ├── grpc-host-tools/
-│   ├── grpc-linux-x86_64/
-│   └── grpc-linux-i686/
+│   └── openssl-linux-i686/
 │
 ├── vcpkg_installed/                     Windows dependency cache (gitignored)
 │   ├── x64-windows-static/
@@ -2605,7 +2651,6 @@ axiomdlp-agent/
 ├── scripts/
 │   ├── linux/
 │   │   ├── build-all.sh
-│   │   ├── build-grpc.sh
 │   │   ├── build-openssl.sh
 │   │   └── merge-compile-commands.sh
 │   └── win/
@@ -2617,7 +2662,9 @@ axiomdlp-agent/
 │   └── windows/service_install.ps1
 │
 ├── docs/
-│   └── file_structure.md                (stale — see §19)
+│   ├── mqtt_protocol.md                 AUTHORITATIVE MQTT wire contract (byte-identical with Core repo)
+│   ├── architecture.md                  (stale — describes the old gRPC pipeline; see §19)
+│   └── file_structure.md                (stale — predates the gRPC era; see §19)
 │
 └── src/
     ├── main.cpp
@@ -2653,13 +2700,14 @@ axiomdlp-agent/
     │       └── service.cpp
     │
     ├── net/
-    │   ├── http_client.{h,cpp}
-    │   └── outbound_queue.{h,cpp}
+    │   └── i_request_client.h           Transport-agnostic request/response interface
+    │                                    (is_connected, set_agent_id, request, subscribe)
     │
     ├── util/
     │   ├── glob_match.{h,cpp}
     │   ├── file_hash.{h,cpp}
-    │   └── base64.{h,cpp}
+    │   ├── base64.{h,cpp}
+    │   └── ulid.{h,cpp}
     │
     ├── storage/
     │   ├── sqlite_database.{h,cpp}
@@ -2675,13 +2723,13 @@ axiomdlp-agent/
         │   └── inventory_scanner.{h,cpp}
         ├── event_logger/
         │   └── event_logger_module.{h,cpp}
+        ├── mqtt_transport/
+        │   ├── mqtt_transport_module.{h,cpp}    IRequestClient implementation, libmosquitto client
+        │   └── (see docs/mqtt_protocol.md)
         ├── agent_sync/
-        │   └── agent_sync_module.{h,cpp}
-        ├── content_scanner/
-        │   └── content_scanner_module.{h,cpp}
-        └── grpc_transport/
-            ├── agent.proto
-            └── grpc_transport_module.{h,cpp}
+        │   └── agent_sync_module.{h,cpp}        register + heartbeat over MQTT
+        └── content_scanner/
+            └── content_scanner_module.{h,cpp}   scan/batch over MQTT
 ```
 
 ---
@@ -2739,60 +2787,141 @@ complete.
 **Purpose:** Observability.
 
 **Behavior:** Subscribes to all events on the bus and logs them at INFO
-level. No business logic. Provides a complete trace of what the agent is
-processing.
+level. Includes `mqtt_state` events (connect / disconnect) published by
+the transport module. No business logic.
 
 **Events published:** none
 
-### 13.4 `agent_sync`
+### 13.4 `mqtt_transport`
 
-**Purpose:** Agent identity management and liveness.
+**Purpose:** The sole server-facing transport. Implements `IRequestClient`
+so feature modules can reach the Core without knowing the transport is
+MQTT-specific.
+
+**Implementation:** libmosquitto 2.x with MQTT 5 protocol mode, plus a
+manager thread, a bounded request/response correlation map, and
+per-topic subscriber dispatch.
+
+**Lifecycle:**
+
+1. `initialize` reads `server.base_url` (host), `mqtt_port`, `mqtt_tls`,
+   `mqtt_ca_path`, `mqtt_keepalive_seconds`, `api_token`, and the two
+   backoff bounds from config. Registers `mosquitto_lib_init()`.
+   Loads or generates `instance_uuid` from the state table.
+2. `start` spawns the manager thread.
+3. Manager thread calls `connect_and_setup`:
+   - `mosquitto_new(client_id="axiomdlp-{instance_uuid}", clean_start=false, this)`
+   - `mosquitto_int_option(MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5)`
+   - `mosquitto_username_pw_set(username=token, password=nullptr)`
+     — the `nullptr` is important: `""` sets the MQTT 5 password flag to
+     an empty value, which mochi-mqtt rejects with CONNACK `0x82`
+   - `mosquitto_tls_set` / `mosquitto_tls_opts_set` if `mqtt_tls`
+   - register v5 callbacks (connect, disconnect, message) + log callback
+   - `mosquitto_will_set_v5` for the LWT (5-second Will Delay)
+   - `mosquitto_connect_bind_v5` with CONNECT properties
+     (`Session Expiry=3600`, `Receive Max=100`, `Max Packet Size=128 MB`,
+     `Topic Alias Max=0`)
+   - `mosquitto_loop_start`
+   - Wait up to 5 s for CONNACK (`connect_attempt_done_`)
+   - Subscribe to `axiomdlp/replies/{instance_uuid}` and, if `agent_id`
+     is already known, to `axiomdlp/agents/{id}/{command,policy,revoke}`
+4. Manager thread parks on `connect_cv_` until `connected_` flips to
+   false (disconnect) or shutdown is requested.
+5. On reconnect, applies jittered backoff, tears down the client, and
+   repeats.
+
+**Server-to-agent messages** (delivered via `subscribe()` handlers or
+internal dispatch):
+
+| Topic | Delivered to |
+| --- | --- |
+| `axiomdlp/agents/{id}/command` | `subscribe("axiomdlp/agents/{id}/command", handler)` — currently no handler installed (Phase 2 milestone 22) |
+| `axiomdlp/agents/{id}/policy` (retained) | `subscribe(...)` — currently no handler installed (Phase 2) |
+| `axiomdlp/agents/{id}/revoke` (retained) | Handled internally — maps `token_revoked` → `AuthRevoked`, `agent_revoked` → `AgentRevoked` |
+
+**Correlation-ID handling:** every PUBLISH response is matched against
+the in-flight `pending_` map by `Correlation-Data` (MQTT 5 property)
+or, as a fallback, by the JSON `correlation_id` field. On match, the
+`PendingRequest` is woken and its response returned to the caller.
+
+**Error mapping** (from CONNACK reason codes and response bodies):
+
+| Condition | Action |
+| --- | --- |
+| CONNACK `0x87` (Not authorized) | `ShutdownController::request(AuthRevoked)` — permanent, no retry |
+| Network failure (any `errno`) | Reconnect with jittered backoff |
+| Response `{"error":"agent_revoked"}` | `ShutdownController::request(AgentRevoked)` |
+| Response `{"error":"not_found"}` on heartbeat | Clear local `agent_id`, re-enroll |
+| Server `ServerRevoke{token_revoked}` | `ShutdownController::request(AuthRevoked)` |
+| Server `ServerRevoke{agent_revoked}` | `ShutdownController::request(AgentRevoked)` |
+
+**Thread safety:** `mosq_` is guarded by `mosq_mu_` for cross-thread
+access (request, publish, subscribe, teardown). The manager thread owns
+the connect/teardown lifecycle; the loop thread handles callbacks;
+`set_agent_id()` is safe to call from `agent_sync`'s thread. All three
+synchronize through `mosq_mu_`.
+
+**Health:** returns `ok("connected")` when the MQTT session is live,
+`degraded("disconnected")` when the module is running but the session
+is down, `failed` when the module isn't running.
+
+### 13.5 `agent_sync`
+
+**Purpose:** Agent identity management and liveness over MQTT.
 
 **Behavior:**
 
-- Enrolls with the Core via `POST /api/v1/agent/register` on first run
-- Stores `agent_id` in the local `state` table
-- Sends a heartbeat every `server.heartbeat_interval_seconds` (default
-  60 s)
+- Calls `req_->request("axiomdlp/register", ...)` on first run when
+  `agent_id` is not present in the local `state` table
+- Persists the returned `agent_id` to `state` and calls
+  `req_->set_agent_id(id)` so the transport subscribes to the
+  agent-scoped `command`/`policy`/`revoke` topics
+- Sends a heartbeat to `axiomdlp/agents/{id}/heartbeat` every
+  `server.heartbeat_interval_seconds` (default 60 s)
 - Sends an immediate validation heartbeat at startup when a saved
-  `agent_id` exists — a revoked token is detected within milliseconds
+  `agent_id` exists — a revoked token or unknown agent is detected within
+  milliseconds
 - Interruptible sleep — wakes immediately on shutdown request
-- HTTP client: cpp-httplib with unconditional certificate verification
+- Waits up to 30 s for the transport to report `is_connected()` before
+  the first register attempt, so a slow broker connect doesn't trigger
+  a spurious retry
 
 **Error handling:**
 
-| HTTP status | Action |
+| Response | Action |
 | --- | --- |
-| 200 | Heartbeat recorded; continue |
-| 401 | `ShutdownController::request(AuthRevoked)` — token invalid, expired, or revoked |
-| 403 | `ShutdownController::request(AgentRevoked)` — this specific agent revoked |
-| 404 | Clear `agent_id` from `state`, trigger re-enrollment |
-| 5xx | Log and retry on next interval |
-| Connection error | Log and retry on next interval |
+| `{"ok":true, "agent_id":N, ...}` | Persist `agent_id`, call `set_agent_id(N)`, enter heartbeat loop |
+| `{"ok":false, "error":"agent_revoked"}` | `ShutdownController::request(AgentRevoked)` |
+| `{"ok":false, "error":"not_found"}` (heartbeat) | Clear `agent_id` from `state`, call `set_agent_id(0)`, re-enroll after 5 s |
+| Timeout or transport not connected | Retry next interval (60 s) |
+| CONNACK rejection (broker → transport) | Handled by the transport — triggers shutdown via `AuthRevoked` |
 
-**Planned migration:** Phase 5.4 will move to gRPC unary `Register` and
-`Heartbeat` RPCs defined in `agent.proto`.
-
-### 13.5 `content_scanner`
+### 13.6 `content_scanner`
 
 **Purpose:** Detect PII in text files by sending content chunks to the
-Core and merging the verdicts.
+Core over MQTT and merging the verdicts.
 
 **Behavior:**
 
+- Waits for `agent_id` to appear in the local `state` table (populated
+  by `agent_sync`), then enters its scan loop
 - Queries `fetch_pending_for_scan` on the local `files` table
 - Filters by extension (against `text_extensions`), size, existence
 - Computes SHA-256 of the current content; if an identical hash was
-  previously scanned, reuses the cached verdict without an HTTP call
+  previously scanned, reuses the cached verdict without an MQTT call
 - Splits content into overlapping chunks:
   - Default 1 MB chunk size, 256-byte overlap
   - Overlap prevents PII from straddling a chunk boundary
 - Batches chunks to respect `batch_size` (max chunks per request) and
   `batch_max_bytes` (max estimated payload per request)
-- Sends to `POST /api/v1/agent/scan/batch` with base64-encoded content
+- Publishes to `axiomdlp/agents/{id}/scan/batch` with `content_b64` fields
+  (base64 — matches the server's `ScanChunk.ContentB64`)
 - Merges per-chunk verdicts by `file_hash + chunk_index`
 - Writes results back to the `files` table via
   `update_scan_result_by_path`
+- **Never commits a partial verdict** — if any chunk in a file is missing
+  a score (chunk error, timeout, or rejected batch), the whole file stays
+  `pending` and is retried next cycle
 - Content is never persisted on disk; read into memory, transmitted,
   and discarded
 
@@ -2800,66 +2929,29 @@ Core and merging the verdicts.
 
 | Condition | Action |
 | --- | --- |
-| 401 / 403 | Log error, stop scanning, mark module as failed |
-| 5xx | Leave file `pending`; retry next cycle |
-| Chunk-level error | Leave file `pending`; do not abort the whole batch |
-| Transport error | Leave file `pending`; retry next cycle |
+| Transport not connected | Skip this cycle, retry next interval |
+| `agent_id` not yet known | Skip this cycle, retry next interval |
+| Request timeout | Leave chunks buffered, retry next cycle |
+| `{"ok":false, "error":"agent_revoked"}` | `ShutdownController::request(AgentRevoked)` |
+| `{"ok":false, "error":"not_found"}` | Clear `agent_id` from `state`, wait for `agent_sync` to re-enroll |
+| Chunk-level `error` in `results[]` | Skip that chunk; file stays `pending` |
+| Batch-level `{"ok":false, "error":"invalid_request"}` | Log, retry next cycle |
 
-**Planned migration:** Phase 5.5 will switch to gRPC `ScanBatch` with
-native `bytes` payloads (no base64).
+### 13.7 Agent-to-server message summary
 
-### 13.6 `grpc_transport`
+Every frame the agent sends is defined in `docs/mqtt_protocol.md`.
+Summarised:
 
-**Purpose:** Long-lived server-push channel and graceful shutdown
-notification.
+| Message | Topic | QoS | Retain | Response |
+| --- | --- | --- | --- | --- |
+| Register | `axiomdlp/register` | 1 | no | via `Response-Topic` |
+| Heartbeat | `axiomdlp/agents/{id}/heartbeat` | 1 | no | via `Response-Topic` |
+| ScanBatch | `axiomdlp/agents/{id}/scan/batch` | 1 | no | via `Response-Topic` |
+| Shutdown | `axiomdlp/agents/{id}/shutdown` | 1 | no | none |
 
-**Implementation:** `grpc::ClientReaderWriter` on the `AgentService::Channel`
-bidirectional streaming RPC.
-
-**Lifecycle:**
-
-1. `initialize` reads `server.base_url`, `grpc_port`, `grpc_tls`,
-   `grpc_ca_path`, and `api_token` from config. Derives the gRPC target
-   from `base_url` and `grpc_port`.
-2. `start` spawns the manager thread.
-3. Manager thread polls `state` for `agent_id` every 1 second.
-4. Once enrolled, creates a `grpc::Channel` once:
-   - `grpc_tls=true` — `grpc::SslCredentials` with `pem_root_certs`
-     loaded from `grpc_ca_path` if set
-   - `grpc_tls=false` — `grpc::InsecureChannelCredentials` (dev only)
-5. Creates an `AgentService::Stub` over the channel.
-6. Opens the `Channel` bidi stream with metadata
-   `authorization: Bearer <api_token>` and `x-agent-id: <agent_id>`.
-7. Loops on `stream->Read(&resp)` and dispatches messages.
-8. On disconnect, applies exponential backoff with 20 % jitter, base
-   `reconnect_backoff_seconds`, cap `reconnect_backoff_max_seconds`.
-
-**Server-to-agent messages (`ChannelResponse` oneof):**
-
-| Message | Action |
-| --- | --- |
-| `ServerPolicyUpdate` | Log version. Full policy-apply logic is deferred to the policy engine (Phase 2). |
-| `ServerCommand` | Log `command_type`. Full command handling is deferred (Phase 2, milestone 22). |
-| `ServerRevoke` | Map reason: `TOKEN_REVOKED` to `AuthRevoked`, `AGENT_REVOKED` to `AgentRevoked`. Request shutdown. |
-
-**Agent-to-server messages:** `ClientShutdown` on graceful stop, carrying
-the mapped `ShutdownReason`.
-
-**Status code handling:**
-
-| gRPC status | Behavior |
-| --- | --- |
-| `OK` | Clean exit (agent-initiated stop) |
-| `UNAVAILABLE` | Reconnect with backoff |
-| `DEADLINE_EXCEEDED` | Reconnect with backoff |
-| `RESOURCE_EXHAUSTED` | Reconnect with backoff |
-| `INTERNAL` | Reconnect with backoff |
-| `CANCELLED` (when not stopping) | Reconnect with backoff |
-| `UNAUTHENTICATED` | `ShutdownController::request(AuthRevoked)` — no reconnect |
-| `PERMISSION_DENIED` | `ShutdownController::request(AgentRevoked)` — no reconnect |
-
-`UNIMPLEMENTED` is not yet wired — it should trigger
-`ShutdownController::request(FatalError)` (tracked for Phase 5.3c).
+Every request carries `{"v":1, "correlation_id":"<ulid>", ...}` and the
+MQTT 5 `Response-Topic` + `Correlation-Data` PUBLISH properties. The
+server echoes both on the response.
 
 ---
 
@@ -2876,12 +2968,12 @@ the mapped `ShutdownReason`.
 2. Content scanner queries pending files
    └── Reads content from disk, computes SHA-256
        └── If hash was previously scanned: reuse cached verdict,
-           no HTTP call
+           no MQTT call
        └── Otherwise:
            ├── Splits into overlapping chunks
            ├── Batches chunks up to batch_size / batch_max_bytes
-           ├── POST /api/v1/agent/scan/batch
-           └── Merges per-chunk verdicts
+           ├── Publishes to axiomdlp/agents/{id}/scan/batch (QoS 1)
+           └── Merges per-chunk verdicts from the response
 
 3. Verdict written back to `files` table
    └── is_sensitive, sensitivity, scan_status = 'scanned'
@@ -2892,21 +2984,29 @@ the mapped `ShutdownReason`.
 ### 14.2 Enrollment to heartbeat
 
 ```
-1. agent_sync starts
-   └── Reads agent_id from `state` table
-       ├── If present: sends immediate validation heartbeat
-       │   └── 401 → ShutdownController::request(AuthRevoked)
-       │   └── 403 → ShutdownController::request(AgentRevoked)
-       │   └── 200 → enter heartbeat loop
-       └── If absent: POST /api/v1/agent/register
-           └── Persists returned agent_id to `state`
-           └── Enters heartbeat loop
+1. mqtt_transport starts
+   └── Connects to the broker
+       └── Subscribes axiomdlp/replies/{instance_uuid}
 
-2. grpc_transport starts
-   └── Polls `state` for agent_id every 1 s
-       └── Once present: opens Channel bidi stream
-           └── Reads server-pushed messages
-           └── Sends ClientShutdown on stop
+2. agent_sync starts
+   └── Waits for transport.is_connected() (30 s budget)
+       └── Reads agent_id from `state` table
+           ├── If present:
+           │   ├── req_->set_agent_id(id) → transport subscribes to
+           │   │   agents/{id}/{command,policy,revoke}
+           │   └── Sends validation heartbeat
+           │       └── error:"agent_revoked" → Shutdown(AgentRevoked)
+           │       └── error:"not_found"     → clear state, re-enroll
+           │       └── ok → enter heartbeat loop
+           └── If absent:
+               ├── Publishes register request
+               │   └── error:"agent_revoked" → Shutdown(AgentRevoked)
+               │   └── ok: persists agent_id, set_agent_id(id)
+               └── Enters heartbeat loop
+
+3. content_scanner starts
+   └── Polls `state` for agent_id (1 s ticks)
+       └── Once present: enters scan loop (30 s interval default)
 ```
 
 ### 14.3 Shutdown
@@ -2915,11 +3015,10 @@ the mapped `ShutdownReason`.
 Any source:
   - SIGTERM / Ctrl+C → ShutdownController::request(UserRequested)
   - Service control stop → ShutdownController::request(UserRequested)
-  - HTTP 401 → ShutdownController::request(AuthRevoked)
-  - HTTP 403 → ShutdownController::request(AgentRevoked)
-  - gRPC UNAUTHENTICATED → ShutdownController::request(AuthRevoked)
-  - gRPC PERMISSION_DENIED → ShutdownController::request(AgentRevoked)
-  - gRPC ServerRevoke → ShutdownController::request(...)
+  - CONNACK 0x87 → ShutdownController::request(AuthRevoked)
+  - Response {"error":"agent_revoked"} → ShutdownController::request(AgentRevoked)
+  - ServerRevoke{token_revoked} → ShutdownController::request(AuthRevoked)
+  - ServerRevoke{agent_revoked} → ShutdownController::request(AgentRevoked)
   - Any module fatal error → ShutdownController::request(FatalError)
 
 ShutdownController:
@@ -2930,8 +3029,19 @@ Service main loop:
   - Unblocks from ShutdownController::wait()
   - Calls ModuleManager::stop_all() in reverse order
   - Calls ModuleManager::shutdown_all() in reverse order
-  - grpc_transport sends ClientShutdown with the mapped reason
   - Returns rc=0
+
+During stop_all():
+  - content_scanner joins its thread
+  - agent_sync joins its thread
+  - mqtt_transport:
+      - publishes axiomdlp/agents/{id}/shutdown with the typed reason
+      - calls mosquitto_disconnect_v5(reason=0x00)
+      - calls mosquitto_loop_stop(force=false) — drains any pending publishes
+      - calls mosquitto_destroy
+  - event_logger unsubscribes
+  - inventory joins its thread
+  - filesystem_watcher stops efsw
 
 Application:
   - Logs "Service returned rc=0 (reason=<reason>)"
@@ -2939,69 +3049,108 @@ Application:
   - Shuts down the logger last
 ```
 
+The `mosquitto_loop_stop(force=false)` call is important — it drains
+the loop's outbound queue, which is what guarantees the `shutdown`
+message is actually sent before the transport is torn down.
+
 ---
 
 ## 15. TLS and Security
 
 ### 15.1 Threat model
 
-Every outbound connection carries the `axdlp_user_...` bearer token. If
-this token is intercepted, an attacker can impersonate the agent against
-the Core server, receiving policy updates, commands, and revocations that
-were intended for the legitimate agent. For this reason, TLS is
-mandatory and never optional.
+Every MQTT CONNECT carries the `axdlp_user_...` API token as the
+`Username` field. If this token is intercepted, an attacker can
+impersonate the agent, receiving policy updates, commands, and
+revocations that were intended for the legitimate agent, and can also
+publish scan batches under the agent's identity. For this reason, TLS is
+mandatory and never optional in production.
 
 ### 15.2 Transport security
 
-- **HTTP** — cpp-httplib with
-  `cli.enable_server_certificate_verification(true)` set unconditionally
-  on every `https://` call. Certificate chain and hostname are both
-  verified.
-- **gRPC** — `grpc::SslCredentials` with either the system trust store
-  or a custom PEM bundle (`server.grpc_ca_path`). The gRPC runtime
-  verifies chain and hostname.
+- **MQTT (TLS enabled)** — `mosquitto_tls_set` with either the system
+  trust store or a custom PEM bundle (`server.mqtt_ca_path`).
+  `mosquitto_tls_opts_set(SSL_VERIFY_PEER, ...)` forces peer
+  verification. Chain and hostname are both verified.
+- **MQTT (TLS disabled)** — plaintext. **Development only.** A startup
+  log line at WARN level makes this obvious.
 
 ### 15.3 No verification opt-out
 
 The `verify_tls` field has been removed from every layer:
 
 - Not parsed in `Config`
-- Not passed to `HttpClient`
-- Not accepted by `WebSocketClient` (which itself has been removed)
+- Not passed to `MqttTransportModule`
 - Not present in `agent.schema.json`
 
 Legacy config files that contain `verify_tls` produce a warning that the
-field is ignored. Verification still happens.
+field is ignored. Verification still happens when TLS is on.
 
 ### 15.4 Certificate and hostname verification details
 
-- SNI is set before every TLS handshake on both HTTP and gRPC.
-- Hostname verification uses `X509_VERIFY_PARAM_set1_host` on the HTTP
-  path (via OpenSSL's cpp-httplib integration) and gRPC's built-in
-  name verification on the gRPC path.
+- SNI is set automatically by libmosquitto when the broker is
+  identified by hostname (which it is — `host_` is parsed from
+  `base_url`).
+- Hostname verification uses libmosquitto's built-in TLS validation
+  (OpenSSL's `X509_VERIFY_PARAM_set1_host` under the hood).
+- `mqtt_ca_path` overrides the system trust store. When it is empty,
+  the OpenSSL default trust paths are used.
 
 ### 15.5 Static linking
 
-Both platforms link OpenSSL and gRPC statically. Verification:
+On Linux, the agent links OpenSSL statically but uses the system
+`libmosquitto.so.1`. On Windows, vcpkg's `x64-windows-static` and
+`x86-windows-static` triplets statically link everything, so the
+resulting binary has no non-system DLL dependencies.
+
+Verification:
 
 ```bash
-ldd build/linux-x86_64-release/axiomdlp-agent | grep -E 'ssl|grpc'
-# (empty)
+ldd build/linux-x86_64-release/axiomdlp-agent | grep -E 'ssl|crypto|mosquitto'
+# libmosquitto.so.1 => /usr/lib/x86_64-linux-gnu/libmosquitto.so.1
+# (ssl and crypto are static — no dynamic libssl / libcrypto)
 ```
 
 ```powershell
 dumpbin /dependents build\windows-x64-msvc-release\axiomdlp-agent.exe
-# No libssl-*.dll, no libcrypto-*.dll, no grpc-*.dll
+# No libssl-*.dll, no libcrypto-*.dll, no libmosquitto.dll
 ```
 
 ### 15.6 Token handling
 
 - The token is read from `server.api_token` at startup.
-- If it is empty, `agent_sync` and `content_scanner` fail initialization
-  with the message "no valid API token".
+- If it is empty, `mqtt_transport`, `agent_sync`, and `content_scanner`
+  all fail initialization with a clear error message.
 - The token is never written to disk by the agent; it lives only in the
   config file, which the operator is responsible for protecting.
-- The token is never logged.
+- The token is never logged in full. The only place it can leak is
+  libmosquitto's own debug log output (which is routed to `debug` level
+  and prefixed `[mqtt/*]`); at `info` level and above, the token never
+  appears in the log.
+- The `AuthHook` on the server side **does** log the first 20 characters
+  of the token prefix on authentication failure so operators can
+  distinguish "unknown token" from "revoked token". The remainder of the
+  token never leaves the client.
+
+### 15.7 Last Will & Testament
+
+Every agent sets an LWT at CONNECT time:
+
+- Topic: `axiomdlp/sessions/{instance_uuid}/status`
+- Payload: `{"status":"offline"}`
+- QoS: 1
+- Retain: false
+- Will Delay Interval: 5 s
+
+If the agent disconnects ungracefully (network drop, crash, kill -9),
+the broker publishes the LWT payload after 5 seconds. The server uses
+`SessionHooks.OnDisconnect` as the authoritative disconnect signal; the
+LWT is a secondary presence notification that only distinguishes
+"network lost" from "graceful shutdown" in the SSE `EventAgent` event's
+`reason` field.
+
+A graceful shutdown suppresses the LWT via a clean MQTT disconnect
+(`mosquitto_disconnect_v5(reason=0x00)`).
 
 ---
 
@@ -3025,11 +3174,11 @@ component that can initiate a shutdown. It exposes:
 | --- | --- |
 | `None` | Initial state — not shutting down |
 | `UserRequested` | Ctrl+C, SIGTERM, systemctl stop, SCM stop |
-| `AuthRevoked` | HTTP 401, gRPC `UNAUTHENTICATED`, or `ServerRevoke{TOKEN_REVOKED}` |
-| `AgentRevoked` | HTTP 403, gRPC `PERMISSION_DENIED`, or `ServerRevoke{AGENT_REVOKED}` |
+| `AuthRevoked` | CONNACK 0x87 or `ServerRevoke{token_revoked}` |
+| `AgentRevoked` | `ServerRevoke{agent_revoked}` or heartbeat `{"error":"agent_revoked"}` |
 | `ConfigError` | Fatal configuration error at startup |
 | `FatalError` | Unrecoverable module failure |
-| `ServerShutdown` | Server-side shutdown notice |
+| `ServerShutdown` | Server-side shutdown notice (reserved; not currently used) |
 
 ### 16.3 Propagation
 
@@ -3041,9 +3190,10 @@ log line always reports the reason:
 Service returned rc=0 (reason=user_requested)
 ```
 
-The gRPC transport sends a `ClientShutdown` message with the same reason
-before closing the stream, so the Core server also sees the reason in its
-logs.
+The MQTT transport publishes a `shutdown` message to
+`axiomdlp/agents/{id}/shutdown` with the same reason before closing the
+session, so the Core server also sees the reason in its logs (`mqtt
+shutdown: agent disconnecting` on the server side).
 
 ---
 
@@ -3051,23 +3201,28 @@ logs.
 
 ### 17.1 Manual smoke test
 
-Prerequisites: a running AxiomDLP Core server on `http://127.0.0.1:3000`
-(HTTP) and `grpc://127.0.0.1:50051` (gRPC) with a valid
-`axdlp_user_...` token.
+Prerequisites: a running AxiomDLP Core server on
+`http://127.0.0.1:3000` (HTTP) and `mqtt://127.0.0.1:1883` (MQTT), with a
+valid `axdlp_user_...` token already written to `config/agent.default.json`
+at `server.api_token`.
 
 Linux:
 
 ```bash
 # Terminal 1: start the Core
-# (refer to the Core server repository for startup instructions)
+cd ~/axiomdlp-core && air
+# Wait for:
+#   {"msg":"MQTT broker listening","port":1883,"tls":false}
+#   {"msg":"Microservice pipeline listening online",...,"mqtt_enabled":true,...}
 
 # Terminal 2: start the agent
+cd ~/axiomdlp-agent
 ./build/linux-x86_64-release/axiomdlp-agent \
     --foreground \
     --config config/agent.default.json
 ```
 
-Expected log output:
+Expected log output on the agent:
 
 ```
 [info] AxiomDLP Agent v0.1.0
@@ -3077,100 +3232,169 @@ Expected log output:
 [info] ModuleManager: registering module 'filesystem_watcher' v1.0.0
 [info] ModuleManager: registering module 'inventory' v1.0.0
 [info] ModuleManager: registering module 'event_logger' v1.0.0
-[info] ModuleManager: registering module 'grpc_transport' v1.0.0
+[info] ModuleManager: registering module 'mqtt_transport' v1.0.0
 [info] ModuleManager: registering module 'agent_sync' v1.0.0
 [info] ModuleManager: registering module 'content_scanner' v1.0.0
-[info] agent_sync: enrolled (agent_id=1, user_id=1, org_id=2)
-[info] grpc_transport: opening Channel bidi stream...
-[info] grpc_transport: state = connected
+[info] mqtt_transport: initialized (host=127.0.0.1, port=1883, tls=false, keepalive=60s, instance=<hex>, agent_id=0)
+[info] mqtt_transport: connected to 127.0.0.1:1883
+[info] [event] type=mqtt_state path=-
+[info] mqtt_transport: subscribed 'axiomdlp/replies/<hex>' (qos=1)
+[info] agent_sync: registering over MQTT (hostname=<host>)
+[info] mqtt_transport: agent_id set to N (was 0)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/command' (qos=2)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/policy' (qos=2)
+[info] mqtt_transport: subscribed 'axiomdlp/agents/N/revoke' (qos=2)
+[info] agent_sync: enrolled (agent_id=N, user_id=U, org_id=O)
 ```
 
-Press Ctrl+C. Expected shutdown output:
+Expected log output on the Core server (same second):
+
+```
+{"msg":"mqtt auth: authenticated","client_id":"axiomdlp-<hex>","user_id":U,"org_id":O,"token_id":K,...}
+{"msg":"mqtt session: established","client_id":"axiomdlp-<hex>","user_id":U,"org_id":O,...}
+{"msg":"agent hub: registered","agent_id":N,"user_id":U,"org_id":O,"kind":"mqtt","total":1}
+{"msg":"mqtt register: success","agent_id":N,...,"hostname":"<host>","os":"linux","agent_version":"0.1.0"}
+```
+
+Press Ctrl+C on the agent. Expected shutdown output on the agent:
 
 ```
 [info] axiomdlp-agent received stop request (reason=user_requested)
 [info] ModuleManager: stopping 6 module(s)
-[info] grpc_transport: sending graceful goodbye...
-[info] grpc_transport: stream disconnected (OK)
+[info] mqtt_transport: published shutdown message
+[info] mqtt_transport: disconnected (reason=0x00 The normal disconnection)
+[info] mqtt_transport: stopped
 [info] Service returned rc=0 (reason=user_requested)
 [info] Application shutting down
 ```
 
-### 17.2 Automation roadmap
+And on the server:
 
-A comprehensive automated test suite is planned for Phase 6 of the
-migration roadmap. It will include:
+```
+{"msg":"mqtt session: terminated","client_id":"axiomdlp-<hex>","agent_id":N,"had_session":true,...}
+```
 
-- **Unit tests** — C++ test binaries for the policy decision table,
-  status-code mapping, backoff bounds, outbound queue backpressure,
-  and base64 usage rules
-- **Integration tests** — end-to-end against a live Core server with
-  both real and mocked transports
-- **Load tests** — 10,000 simulated agents against one Core instance
-- **Chaos tests** — kill the Core mid-scan, network partition, corrupt
-  frames, disk full
+### 17.2 What the smoke test proves
+
+- **Transport layer** — libmosquitto connects, MQTT 5 CONNECT properties
+  are accepted by the broker, MQTT 5 message callbacks fire.
+- **Authentication** — the API token hashes to a `user_api_tokens` row,
+  the broker's `AuthHook` accepts the CONNECT, `{user_id, org_id,
+  token_id}` are populated.
+- **Correlation** — request/response round-trips over `Response-Topic` +
+  `Correlation-Data` return the correct payload to the correct caller.
+- **Subscriptions** — the reply topic is subscribed, and after register
+  the per-agent `command`/`policy`/`revoke` topics are subscribed.
+- **Graceful shutdown** — the `shutdown` frame is delivered before the
+  client disconnects, the broker fires `OnDisconnect`, the hub
+  unregisters the session.
+
+### 17.3 What the smoke test does NOT prove
+
+- **PII verdicts** — unless the Core's PII service on port 8000 is
+  running, every scan batch returns per-chunk errors and no files
+  commit. Start the PII service before running the smoke test if you
+  want to see `content_scanner: cycle done (committed=N, ...)`.
+- **Windows build** — the MQTT connect path from a Windows host has not
+  been verified end-to-end yet (Phase 12).
+- **Reconnect behaviour** — the agent reconnects automatically if the
+  broker restarts, but exercising that is a Phase 12 chaos test.
+- **LWT firing** — a `kill -9` on the agent leaves the broker to
+  publish the LWT after 5 s. Verifying this requires killing the agent
+  ungracefully and watching `axiomdlp/sessions/{instance}/status` from a
+  third MQTT client. See the protocol doc §8.3.
+
+### 17.4 Verifying the MQTT protocol doc
+
+The wire contract is kept byte-identical between the two repositories:
+
+```bash
+diff -q ~/axiomdlp-core/docs/mqtt_protocol.md \
+        ~/axiomdlp-agent/docs/mqtt_protocol.md
+# Expected: no output
+```
+
+Any difference is a contract drift — a coordinated commit is required
+in both repositories. This diff is planned as a CI gate in Phase 12.
+
+### 17.5 Test roadmap (Phase 12)
+
+The full automated test suite is planned for Phase 12 of the migration
+roadmap. It will include:
+
+- **Unit tests** — C++ test binaries for:
+  - `IRequestClient` request/response correlation (mock transport)
+  - `agent_sync` state machine (register, heartbeat, re-enroll, revoked)
+  - `content_scanner` chunking, deduplication, verdict merging
+  - `shutdown` typed-reason propagation
+  - `config` env-var expansion and fail-safe defaults
+- **Integration tests** — end-to-end against a live Core broker, using
+  a real agent process
+- **Load tests** — 10,000 simulated agents against one Core instance,
+  verifying broker stability and dispatcher behaviour under
+  `maxInflight=256`
+- **Chaos tests** — kill the broker mid-scan, corrupt MQTT frames, fill
+  the send buffer, SIGKILL the agent and observe LWT
 - **TLS tests** — wrong CA, wrong hostname, expired cert, plaintext
-  attempt on TLS port
-- **Wire format tests** — confirm base64 is absent from `ScanBatch`
-  payloads; measure wire-size reduction
+  attempt on a TLS port
+- **Wire format tests** — confirm `content_b64` is the only chunk field,
+  `correlation_id` is echoed correctly, MQTT 5 properties round-trip
 
-This roadmap is fully specified in the migration TODO and is not yet
-implemented.
+### 17.6 Build verification (regression check)
+
+After every change to a feature module, the four-target build is the
+fastest regression check:
+
+```bash
+rm -rf build/
+./scripts/linux/build-all.sh
+```
+
+Both Linux binaries should link cleanly. The only warnings expected are
+from the vendored `sqlite3.c` amalgamation (upstream, unrelated to the
+agent's code).
 
 ---
 
 ## 18. Roadmap
 
-### 18.1 Phase 5 — gRPC migration (in progress)
+### 18.1 Migration phases 0–11 — complete
 
-Completed:
+- **Phase 0** — wire protocol design (locked, in `docs/mqtt_protocol.md`)
+- **Phase 7** — MQTT client foundation (`mqtt_transport` module,
+  `IRequestClient` interface, config, EventBus `mqtt_state` events)
+- **Phase 8** — `agent_sync` on MQTT (`register`, `heartbeat`)
+- **Phase 9** — `content_scanner` on MQTT (`scan/batch`)
+- **Phase 10** — removal of gRPC artifacts (deleted `grpc_transport/`,
+  `agent.proto`, `build-grpc.sh`, `http_client.{h,cpp}`,
+  `outbound_queue.{h,cpp}`; removed gRPC/protobuf from `vcpkg.json`
+  and CMakeLists; removed transitional `grpc_*` config fields)
+- **Phase 11** — config cleanup (JSON schema, defaults, `.bak` removal)
 
-- gRPC and Protobuf as mandatory build dependencies
-- Removal of WebSocket, Boost, and Boost.Beast
-- `HttpClient` rewritten on top of cpp-httplib
-- `grpc_transport` module with bidirectional Channel stream
-- Status-code-to-shutdown mapping on the gRPC path
-
-Remaining:
-
-- 5.4 — `agent_sync` on gRPC unary (`Register`, `Heartbeat`)
-- 5.5 — `content_scanner` on gRPC `ScanBatch` (native bytes, no base64)
-- 5.7 — unify server-pushed message dispatch (typed handler signatures
-  preferred over JSON adapter)
-- 5.8 — `server.transport` config selector (`grpc` | `websocket`), with
-  `grpc` becoming the default in Phase 7
-- 5.3c — wire `UNIMPLEMENTED` gRPC status to `FatalError`
-
-### 18.2 Phase 6 — testing and hardening
+### 18.2 Phase 12 — automated tests (in progress next)
 
 Unit, integration, load, chaos, TLS, and wire-format regression tests on
-all four targets and both transports (during the transition period).
-Observability baseline (server-side gRPC metrics, structured logs on
-both sides). Security review pass. Full specification is in the
-migration TODO.
+all four targets. Full specification is in §17.5.
 
-### 18.3 Phase 7 — cutover and deletion
+### 18.3 Phase 13 — documentation polish
 
-- Flip `server.transport` default to `grpc`
-- Ship one release cycle with `grpc` as the default while keeping the
-  HTTP fallback compiled in
-- After one clean release cycle, delete all remaining HTTP transport code
-  from both the agent and the Core
-- Rewrite or delete stale documentation
-- Confirm no WebSocket or HTTP transport code remains in either
-  repository
+- Rewrite `done.md` as a snapshot of the current MQTT-native state
+- Rewrite `docs/architecture.md` for the MQTT pipeline
+- Delete or rewrite `docs/file_structure.md`
+- Publish `docs/mqtt_client.md` describing the libmosquitto integration,
+  reconnect strategy, LWT, and config keys on the agent side
 
 ### 18.4 Phase 2 (product) — see `next.md`
 
 Milestones 15 through 25:
 
-- Policy engine
+- Policy engine (local evaluation of `ServerPolicyUpdate` bundles)
 - User-mode enforcement (file, clipboard, print)
 - Extended content extraction (PDF, DOCX, XLSX, OCR)
 - Advanced detection (EDM, PDM, document registry)
 - IPC and tray helper
 - Kernel enforcement (Linux eBPF, Windows Minifilter)
-- Remote commands and auto-update
+- Remote command handling (wired to the `command` topic)
 - Platform expansion (macOS, ARM64)
 - Observability and telemetry
 - Hardening and tamper resistance
@@ -3183,28 +3407,29 @@ Milestones 15 through 25:
 
 The file describes an architecture that does not exist in the current
 source tree (`src/core/`, `src/interfaces/`, `kernel/`, `helper/`,
-`external/`, `tests/unit/`, `tests/integration/`). It must be rewritten
-against the actual tree or deleted. Tracked as Phase 7.5.
+`external/`, `tests/unit/`, `tests/integration/`). It predates even the
+gRPC era. Must be rewritten against the actual tree or deleted —
+tracked as Phase 13.
 
-### 19.2 `src/net/outbound_queue.{h,cpp}` is dead code
+### 19.2 `docs/architecture.md` is stale
 
-The file is compiled and linked but no module references it after the
-WebSocket removal. It is a candidate for deletion or for repurposing as
-a future gRPC send-queue.
+Describes the old gRPC pipeline. Needs a full rewrite for the MQTT
+transport — tracked as Phase 13.
 
-### 19.3 `grpc_transport::health()` reports degraded
+### 19.3 `done.md` says "Phase 5 of the gRPC migration"
 
-The module returns
-`degraded("stub — RPC implementation pending")` even though the Channel
-bidi stream is implemented and functioning. This is conservative: the
-module has not been load-tested, and its message dispatch is inline
-rather than going through a unified router.
+The file was last updated before the MQTT migration started. It needs a
+full rewrite to reflect the current MQTT-native state — tracked as
+Phase 13.
 
-### 19.4 `config/agent.schema.json` describes an aspirational state
+### 19.4 Windows MQTT connect path not yet smoke-tested
 
-The schema description says "Uses gRPC exclusively" but `agent_sync`
-and `content_scanner` still use HTTP. The schema should be updated when
-Phase 5 finishes.
+The Windows build (x64 and x86) produces a working binary per the
+CMake/vcpkg toolchain, but the agent has not been started against a
+live Core broker from a Windows host. The most likely gap is TLS
+certificate path handling on Windows (`%ProgramData%` layout), which
+uses the same OpenSSL code path as Linux but has not been exercised.
+Tracked as Phase 12.
 
 ### 19.5 Windows path case sensitivity
 
@@ -3219,7 +3444,9 @@ improvement.
 No `SetConsoleCtrlHandler` is registered on the Windows side.
 `taskkill /PID` terminates the process without graceful shutdown. The
 SCM path handles stop correctly; only the foreground path lacks graceful
-handling.
+handling. This means the shutdown frame is not published on Windows
+foreground-mode `taskkill`, and the LWT is what eventually notifies the
+broker.
 
 ### 19.7 `ModuleManager` does not skip failed modules
 
@@ -3251,31 +3478,36 @@ Events carry a path but not the process or user that caused the
 operation. This requires fanotify on Linux and a Minifilter on Windows,
 both of which are Phase 2 milestones.
 
-### 19.12 Windows binary sizes need re-measuring
+### 19.12 Base64 overhead in scan batches
 
-The previously verified sizes (8.61 MB x64, 6.37 MB x86) predate the
-mandatory gRPC and protobuf dependency. Current sizes will be larger.
-Re-measure after a clean Windows build and update this document.
+Scan batches send file content base64-encoded in `content_b64` (to
+match the server's `ScanChunk.ContentB64`), which costs ~33 % bandwidth
+vs a binary payload. For the current workload (hundreds of KB to a few
+MB per batch) this is fine. A future protocol revision could add a
+CBOR binary mode negotiated via a message-level field. See
+`docs/mqtt_protocol.md` §12 for the deferred CBOR option.
 
-### 19.13 No `server.transport` selector
+### 19.13 Command and policy frames are not yet consumed
 
-The agent runs the gRPC Channel transport and the HTTP sync path
-simultaneously. This works because the two paths are independent, but
-it is not what the final architecture will look like. The selector is a
-Phase 5.8 item.
+`mqtt_transport` subscribes to `axiomdlp/agents/{id}/command` and
+`/policy` (retained), but no subscriber handler is installed yet — the
+frames are received and logged at DEBUG level then dropped. This is
+intentional for Phase 0–11. Phase 2 milestone 15 (local policy engine)
+will install a policy handler, and Phase 2 milestone 22 (remote
+commands) will install a command handler.
 
-### 19.14 Windows setup requires manual workarounds on slow networks
+### 19.14 No automated MQTT protocol doc identity check
 
-The `setup-windows-msvc.ps1` fast-mode uses `Invoke-WebRequest`, which
-can stall on slow GitHub CDN links. The documented fallback (aria2c in
-WSL, then copy into `%USERPROFILE%\vcpkg\downloads\`) works but is not
-scripted. Future improvement: switch to `Start-BitsTransfer`.
+The `diff -q` between the two `docs/mqtt_protocol.md` files is currently
+a manual pre-merge check. It should be scripted as a CI gate in
+Phase 12.
 
-### 19.15 Linux OpenSSL and gRPC build times
+### 19.15 Linux OpenSSL build times
 
-Building OpenSSL 3.3.2 and gRPC 1.62.0 for both Linux targets takes
-30–60 minutes on first run. This is a one-time cost per version bump.
-Cached trees under `.deps/` are reused across subsequent builds.
+Building OpenSSL 3.3.2 for both Linux targets takes 15–25 minutes on
+first run. This is a one-time cost per version bump. Cached trees under
+`.deps/` are reused across subsequent builds. (libmosquitto is not built
+locally — it is expected to be a system package.)
 
 ---
 
@@ -3291,6 +3523,9 @@ Cached trees under `.deps/` are reused across subsequent builds.
 - Update `next.md` when a roadmap item changes.
 - Keep `docs/` accurate — if the source tree changes, the docs must
   change too. Stale documentation is treated as a bug.
+- **Changes to `docs/mqtt_protocol.md` require a coordinated commit in
+  both the Core and agent repositories.** The file is the wire contract;
+  a unilateral change is a bug even if it compiles.
 
 ### 20.2 Code style
 
@@ -3306,13 +3541,15 @@ Cached trees under `.deps/` are reused across subsequent builds.
 - Bug fix: reproduce the bug first, then fix, then verify the fix
   resolves the reproduction
 - New dependency: verify it builds on all four targets and does not
-  introduce shared library dependencies
+  introduce shared library dependencies beyond the OS + libmosquitto
 
 ### 20.4 Documentation requirements
 
 - New module: add a subsection under section 13 of this README
 - New config field: update section 10 and `config/agent.schema.json`
 - New dependency: update section 6 and the appropriate platform section
+- New MQTT message type: update `docs/mqtt_protocol.md` (in **both**
+  repos) and bump the `"v"` field if the change is breaking
 - Bug fix that required non-trivial debugging: add an entry under the
   appropriate section in `done.md`
 
@@ -3325,32 +3562,34 @@ specific bug identifiers (for example `W22`, `G4`) when applicable.
 
 ## 21. Related Documents
 
-- **`done.md`** — Complete implementation log, bug history, and lessons
-  learned. Includes all fixed bugs from the initial design through the
-  Windows MSVC migration and the Phase 5 gRPC migration.
+- **`docs/mqtt_protocol.md`** — Authoritative MQTT wire contract.
+  **Byte-identical** with the matching file in the Core repository.
+  Sections 4 (topics), 5 (QoS), 6 (correlation), 9 (message schemas),
+  and 11 (gRPC→MQTT mapping) are the ones implementation code must match
+  exactly.
+- **`done.md`** — Implementation log, bug history, and lessons learned.
+  Currently stale (still describes the pre-MQTT state); needs a rewrite
+  in Phase 13.
 - **`next.md`** — Phase 2 product roadmap with milestones 15 through 25
   covering the policy engine, enforcement, extraction, IPC, kernel
   hooks, remote commands, platform expansion, observability, and
   hardening.
-- **`docs/file_structure.md`** — Currently stale (describes an
-  architecture from an earlier design). Do not rely on it. A rewrite is
-  tracked in Phase 7.5 of the migration roadmap.
+- **`docs/architecture.md`** — Currently describes the old gRPC pipeline.
+  Needs a rewrite in Phase 13.
+- **`docs/file_structure.md`** — Stale since before the gRPC era. Do not
+  rely on it. Deletion or rewrite tracked in Phase 13.
 - **`config/agent.schema.json`** — Machine-readable JSON schema for the
   configuration file. Authoritative for field types, defaults, and
   allowed values.
-- **`src/features/grpc_transport/agent.proto`** — Protocol buffer
-  definition for the agent-to-Core API. Must be byte-identical to the
-  matching file in the Core repository; a CI check for this is planned
-  for Phase 6.
 
 ---
 
 **AxiomDLP Endpoint Agent** is designed to be a long-lived, extendable
 foundation. Every capability added from here on slots into the module
 framework without touching the core, and every wire change goes through
-`agent.proto` so both sides stay in sync. The current release is a
-working observe-and-report layer; the enforcement layer on top of it is
-the next product milestone.
+`docs/mqtt_protocol.md` so both sides stay in sync. The current release
+is a working observe-and-report layer over a persistent MQTT 5 session;
+the enforcement layer on top of it is the next product milestone.
 ~~~~
 
   + .gitignore
@@ -3713,90 +3952,14 @@ log "  skipped:  $skipped"
   },
   "server": {
     "base_url": "http://127.0.0.1:3000",
-    "api_token": "axdlp_user_gNAHsaK1QoFwVq3H3kMFMku0f8nJjkVugecDQfxF",
+    "api_token": "axdlp_user_Ozg4nkYld0lTwfYmUjaBC2PFxIyzm6u7Xxhy7T41",
     "heartbeat_interval_seconds": 60,
     "reconnect_backoff_seconds": 10,
     "reconnect_backoff_max_seconds": 300,
-    "grpc_port": 50051,
-    "grpc_tls": true,
-    "grpc_ca_path": ""
-  },
-  "modules": {
-    "filesystem_watcher": {
-      "enabled": true,
-      "watch_paths": [
-        "/home/kali/Downloads"
-      ],
-      "exclude_paths": [
-        "*/logs/*",
-        "*/.cache/*"
-      ],
-      "debounce_ms": 300
-    },
-    "inventory": {
-      "enabled": true,
-      "watch_paths": [
-        "/home/kali/Downloads"
-      ],
-      "exclude_paths": [
-        "*/logs/*"
-      ],
-      "interval_seconds": 60,
-      "compute_hashes": true,
-      "max_file_size_bytes": 104857600,
-      "scannable_categories": [
-        "document",
-        "code",
-        "data",
-        "config"
-      ]
-    },
-    "agent_sync": {
-      "enabled": true
-    },
-    "content_scanner": {
-      "enabled": true,
-      "batch_size": 50,
-      "batch_max_bytes": 52428800,
-      "scan_interval_seconds": 30,
-      "chunk_size_bytes": 1048576,
-      "chunk_overlap_bytes": 256,
-      "max_file_bytes": 104857600,
-      "max_retries": 3,
-      "request_timeout_seconds": 300,
-      "text_extensions": [
-        "txt", "md", "log", "csv", "tsv", "json", "yaml", "yml", "toml", "xml",
-        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx", "py", "js", "ts", "jsx", "tsx",
-        "go", "rs", "java", "kt", "scala", "cs", "swift", "rb", "php", "pl", "lua",
-        "sql", "sh", "bash", "zsh", "ps1", "html", "css", "scss", "less", "conf",
-        "cfg", "ini", "env", "properties"
-      ]
-    }
-  }
-}
-```
-
-### \`config/agent.default.json.bak\`
-
-```
-{
-  "logging": {
-    "dir": "logs",
-    "file": "agent.log",
-    "level": "info"
-  },
-  "storage": {
-    "db_path": "data/agent.db"
-  },
-  "server": {
-    "base_url": "http://127.0.0.1:3000",
-    "api_token": "axdlp_user_gNAHsaK1QoFwVq3H3kMFMku0f8nJjkVugecDQfxF",
-    "heartbeat_interval_seconds": 60,
-    "reconnect_backoff_seconds": 10,
-    "reconnect_backoff_max_seconds": 300,
-    "grpc_port": 50051,
-    "grpc_tls": true,
-    "grpc_ca_path": ""
+    "mqtt_port": 1883,
+    "mqtt_tls": false,
+    "mqtt_ca_path": "",
+    "mqtt_keepalive_seconds": 60
   },
   "modules": {
     "filesystem_watcher": {
@@ -3871,9 +4034,10 @@ log "  skipped:  $skipped"
     "heartbeat_interval_seconds": 60,
     "reconnect_backoff_seconds": 10,
     "reconnect_backoff_max_seconds": 300,
-    "grpc_port": 50051,
-    "grpc_tls": false,
-    "grpc_ca_path": ""
+    "mqtt_port": 1883,
+    "mqtt_tls": false,
+    "mqtt_ca_path": "",
+    "mqtt_keepalive_seconds": 60
   },
   "modules": {
     "filesystem_watcher": {
@@ -3964,7 +4128,7 @@ log "  skipped:  $skipped"
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://axiomdlp.example.com/schemas/agent.schema.json",
   "title": "AxiomDLP Agent Configuration",
-  "description": "Configuration file for the AxiomDLP endpoint agent. Uses gRPC exclusively.",
+  "description": "Configuration file for the AxiomDLP endpoint agent. Uses MQTT 5 for agent transport.",
   "type": "object",
 
   "properties": {
@@ -3994,12 +4158,12 @@ log "  skipped:  $skipped"
 
     "server": {
       "type": "object",
-      "description": "Identity and connection information for the Core server. Shared by agent_sync and content_scanner.",
+      "description": "Identity and connection information for the Core server. Shared by agent_sync, content_scanner, and mqtt_transport.",
       "properties": {
         "base_url": {
           "type": "string",
           "default": "http://127.0.0.1:3000",
-          "description": "Base URL of the Core, used to derive the gRPC target host."
+          "description": "Base URL of the Core; the host is reused for the MQTT target."
         },
         "api_token": {
           "type": "string",
@@ -4016,30 +4180,36 @@ log "  skipped:  $skipped"
           "type": "integer",
           "minimum": 1,
           "default": 10,
-          "description": "Initial reconnect delay used by grpc_transport."
+          "description": "Initial reconnect delay used by mqtt_transport."
         },
         "reconnect_backoff_max_seconds": {
           "type": "integer",
           "minimum": 1,
           "default": 300,
-          "description": "Maximum reconnect delay used by grpc_transport."
+          "description": "Maximum reconnect delay used by mqtt_transport."
         },
-        "grpc_port": {
+        "mqtt_port": {
           "type": "integer",
           "minimum": 1,
           "maximum": 65535,
-          "default": 50051,
-          "description": "The port used for the gRPC transport."
+          "default": 8883,
+          "description": "TCP port the embedded MQTT broker is listening on. 8883 for TLS, 1883 for plaintext (dev only)."
         },
-        "grpc_tls": {
+        "mqtt_tls": {
           "type": "boolean",
           "default": true,
-          "description": "Whether to use TLS for the gRPC channel. Must be true in production."
+          "description": "Enable TLS on the MQTT connection. Must be true in production."
         },
-        "grpc_ca_path": {
+        "mqtt_ca_path": {
           "type": "string",
           "default": "",
-          "description": "Optional path to a PEM CA certificate file. If empty, system default root CAs are used."
+          "description": "Optional path to a PEM CA certificate file. If empty, the system default root CAs are used."
+        },
+        "mqtt_keepalive_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "default": 60,
+          "description": "MQTT CONNECT keep-alive interval in seconds."
         }
       },
       "additionalProperties": false
@@ -4119,7 +4289,7 @@ log "  skipped:  $skipped"
 
         "agent_sync": {
           "type": "object",
-          "description": "gRPC enrollment + heartbeat. URL, token, and interval come from the top-level 'server' section.",
+          "description": "Agent enrollment and heartbeat over MQTT. URL, token, and interval come from the top-level 'server' section.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -4131,7 +4301,7 @@ log "  skipped:  $skipped"
 
         "content_scanner": {
           "type": "object",
-          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection via gRPC, and writes the merged verdict back to the local files table.",
+          "description": "Reads text files, splits into overlapping chunks, sends them to the server for PII detection over MQTT, and writes the merged verdict back to the local files table.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -4141,13 +4311,13 @@ log "  skipped:  $skipped"
               "type": "integer",
               "minimum": 1,
               "default": 50,
-              "description": "Maximum number of chunks per gRPC ScanBatch call."
+              "description": "Maximum number of chunks per scan-batch request."
             },
             "batch_max_bytes": {
               "type": "integer",
               "minimum": 1024,
               "default": 52428800,
-              "description": "Maximum estimated payload size per gRPC call."
+              "description": "Maximum estimated payload size per request."
             },
             "scan_interval_seconds": {
               "type": "integer",
@@ -4183,7 +4353,7 @@ log "  skipped:  $skipped"
               "type": "integer",
               "minimum": 10,
               "default": 300,
-              "description": "Timeout for one gRPC ScanBatch call."
+              "description": "Timeout for one scan-batch request."
             },
             "text_extensions": {
               "type": "array",
@@ -4467,6 +4637,12 @@ inline constexpr const char* kProcessSpawn  = "process_spawn";
 inline constexpr const char* kScanResult    = "scan_result";
 inline constexpr const char* kDecision      = "decision";
 
+// Transport lifecycle. Published by the transport module on every
+// connect / disconnect. `metadata["state"]` is "connected" or
+// "disconnected"; `metadata["source"]` is the transport kind
+// ("mqtt_transport").
+inline constexpr const char* kMqttState     = "mqtt_state";
+
 } // namespace event_types
 
 } // namespace axiom::core
@@ -4476,16 +4652,21 @@ inline constexpr const char* kDecision      = "decision";
 
 ```cpp
 // src/features/agent_sync/agent_sync_module.cpp
+//
+// Phase 8: enrollment and heartbeat run over MQTT (IRequestClient::request)
+// against the topics defined in docs/mqtt_protocol.md §9.1 and §9.2.
+//
+// The response envelope is {"ok": bool, "error"?: string, ...payload}.
+// On successful register we persist agent_id and call set_agent_id() on
+// the transport so it subscribes to the per-agent topics.
+
 #include "features/agent_sync/agent_sync_module.h"
-#include "net/http_client.h"
 #include "storage/state_repository.h"
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 #include <chrono>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <thread>
 
@@ -4501,10 +4682,13 @@ using json = nlohmann::json;
 using namespace std::chrono_literals;
 
 namespace {
-constexpr const char* kAgentVersion = "0.1.0";
+
+constexpr const char* kAgentVersion   = "0.1.0";
 constexpr const char* kStateKeyAgentId = "agent_id";
 
-void interruptible_sleep(std::atomic<bool>& stop_flag, ShutdownController& shutdown, std::chrono::seconds total) {
+void interruptible_sleep(std::atomic<bool>& stop_flag,
+                         ShutdownController& shutdown,
+                         std::chrono::seconds total) {
     constexpr auto tick = 100ms;
     auto elapsed = 0ms;
     const auto target = std::chrono::duration_cast<std::chrono::milliseconds>(total);
@@ -4515,6 +4699,7 @@ void interruptible_sleep(std::atomic<bool>& stop_flag, ShutdownController& shutd
         elapsed += tick;
     }
 }
+
 } // namespace
 
 AgentSyncModule::AgentSyncModule()  = default;
@@ -4560,21 +4745,24 @@ bool AgentSyncModule::initialize(ModuleContext& context) {
     ModuleBase::initialize(context);
 
     const auto& mcfg = ctx_->config.modules.agent_sync;
-    const auto& scfg = ctx_->config.server;
 
-    enabled_                = mcfg.enabled;
-    base_url_               = scfg.base_url;
-    api_token_              = scfg.api_token;
-    heartbeat_interval_sec_ = scfg.heartbeat_interval_seconds;
+    enabled_ = mcfg.enabled;
+    heartbeat_interval_sec_ = ctx_->config.server.heartbeat_interval_seconds;
+    if (heartbeat_interval_sec_ < 5) heartbeat_interval_sec_ = 60;
 
     if (!enabled_) return true;
 
-    if (base_url_.empty() || api_token_.empty()) {
-        SPDLOG_ERROR("agent_sync module: no valid API token — server.base_url or api_token is empty");
-        return false;
+    // The request client is provided by the transport module through
+    // ModuleContext. If MQTT is disabled at build time it is null; the
+    // module then stays idle instead of failing the whole app.
+    if (ctx_->request_client == nullptr) {
+        SPDLOG_ERROR("agent_sync module: no request client available "
+                     "(MQTT disabled?); module will remain idle");
+        enabled_ = false;
+        return true;
     }
+    req_ = ctx_->request_client;
 
-    http_ = std::make_unique<HttpClient>();
     SPDLOG_INFO("agent_sync module: initialized (heartbeat={}s)", heartbeat_interval_sec_);
     return true;
 }
@@ -4593,7 +4781,6 @@ void AgentSyncModule::stop() {
     if (!running_.load(std::memory_order_relaxed)) return;
     stop_requested_.store(true, std::memory_order_relaxed);
     if (sync_thread_.joinable()) sync_thread_.join();
-    http_.reset();
     running_.store(false, std::memory_order_relaxed);
     SPDLOG_INFO("agent_sync module: stopped");
 }
@@ -4606,15 +4793,38 @@ HealthStatus AgentSyncModule::health() const {
     if (ctx_ == nullptr) return HealthStatus::unknown("not initialized");
     if (!enabled_)       return HealthStatus::ok("disabled");
     if (!running_.load(std::memory_order_relaxed)) return HealthStatus::failed("sync thread not running");
-    if (agent_id_ == 0) return HealthStatus::degraded("not yet enrolled");
+    if (agent_id_ == 0)  return HealthStatus::degraded("not yet enrolled");
     return HealthStatus::ok("enrolled (agent_id=" + std::to_string(agent_id_) + ")");
 }
 
+void AgentSyncModule::wait_for_transport_ready() {
+    // The transport starts before us in registration order, but its
+    // connect is asynchronous. Give it a bounded window to come up so
+    // the very first register attempt has a chance to succeed.
+    constexpr int kReadyTimeoutSec = 30;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kReadyTimeoutSec);
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (stop_requested_.load(std::memory_order_relaxed)) return;
+        if (ctx_->shutdown.is_requested()) return;
+        if (req_->is_connected()) return;
+        std::this_thread::sleep_for(200ms);
+    }
+    SPDLOG_WARN("agent_sync: transport not connected after {}s; "
+                "registration will be retried", kReadyTimeoutSec);
+}
+
 void AgentSyncModule::sync_loop() {
+    wait_for_transport_ready();
+    if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) return;
+
+    // Load agent_id from local state; if present, tell the transport
+    // immediately so its subscriptions include the per-agent topics.
     if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
         try {
             agent_id_ = std::stoi(*saved);
             SPDLOG_INFO("agent_sync: loaded agent_id={} from local state", agent_id_);
+            req_->set_agent_id(agent_id_);
         } catch (const std::exception&) {
             ctx_->state_store.remove(kStateKeyAgentId);
             agent_id_ = 0;
@@ -4627,7 +4837,7 @@ void AgentSyncModule::sync_loop() {
             needs_re_enroll_.store(true, std::memory_order_relaxed);
         }
     } else {
-        SPDLOG_INFO("agent_sync: validating token with immediate heartbeat");
+        SPDLOG_INFO("agent_sync: validating saved agent_id={}", agent_id_);
         if (!heartbeat()) {
             if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) return;
         }
@@ -4635,11 +4845,18 @@ void AgentSyncModule::sync_loop() {
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         if (ctx_->shutdown.is_requested()) return;
-        interruptible_sleep(stop_requested_, ctx_->shutdown, std::chrono::seconds(heartbeat_interval_sec_));
+
+        // Pending re-enrolls retry sooner than the steady-state interval.
+        const auto wait_secs = needs_re_enroll_.load(std::memory_order_relaxed)
+            ? std::chrono::seconds(5)
+            : std::chrono::seconds(heartbeat_interval_sec_);
+        interruptible_sleep(stop_requested_, ctx_->shutdown, wait_secs);
+
         if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) break;
 
         if (needs_re_enroll_.exchange(false, std::memory_order_relaxed)) {
             agent_id_ = 0;
+            req_->set_agent_id(0);
             if (!enroll()) {
                 if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) return;
                 needs_re_enroll_.store(true, std::memory_order_relaxed);
@@ -4654,27 +4871,51 @@ void AgentSyncModule::sync_loop() {
 }
 
 bool AgentSyncModule::enroll() {
-    const std::string url = base_url_ + "/api/v1/agent/register";
-    json body = { {"hostname", detect_hostname()}, {"os", detect_os()}, {"architecture", detect_arch()}, {"agent_version", kAgentVersion} };
+    json body = {
+        {"hostname",      detect_hostname()},
+        {"os",            detect_os()},
+        {"architecture",  detect_arch()},
+        {"agent_version", kAgentVersion},
+    };
 
-    SPDLOG_INFO("agent_sync: POST {} (hostname={})", url, body["hostname"].get<std::string>());
-    const auto resp = http_->post_json(url, body.dump(), api_token_, 15);
+    SPDLOG_INFO("agent_sync: registering over MQTT (hostname={})",
+                body["hostname"].get<std::string>());
 
-    if (!resp.error.empty()) return false;
-    if (resp.status == 401 || resp.status == 403) {
-        ctx_->shutdown.request(ShutdownReason::AuthRevoked);
+    const auto resp = req_->request("axiomdlp/register", body,
+                                    /*qos=*/1, /*timeout_sec=*/15);
+
+    if (!resp) {
+        SPDLOG_WARN("agent_sync: register request failed or timed out");
         return false;
     }
-    if (!resp.is_2xx()) return false;
 
-    try {
-        const auto parsed = json::parse(resp.body);
-        agent_id_ = parsed.value("agent_id", 0);
-        if (agent_id_ <= 0) return false;
-        ctx_->state_store.set(kStateKeyAgentId, std::to_string(agent_id_));
-        SPDLOG_INFO("agent_sync: enrolled (agent_id={}, user_id={}, org_id={})", agent_id_, parsed.value("user_id", 0), parsed.value("organization_id", 0));
-        return true;
-    } catch (...) { return false; }
+    if (!resp->value("ok", false)) {
+        const std::string err = resp->value("error", "");
+        SPDLOG_WARN("agent_sync: register rejected: error='{}'", err);
+
+        if (err == "agent_revoked") {
+            ctx_->shutdown.request(ShutdownReason::AgentRevoked);
+        }
+        return false;
+    }
+
+    const int agent_id = resp->value("agent_id", 0);
+    if (agent_id <= 0) {
+        SPDLOG_WARN("agent_sync: register response missing agent_id");
+        return false;
+    }
+
+    agent_id_ = agent_id;
+    ctx_->state_store.set(kStateKeyAgentId, std::to_string(agent_id_));
+
+    // Tell the transport so it subscribes to the per-agent topics.
+    req_->set_agent_id(agent_id_);
+
+    SPDLOG_INFO("agent_sync: enrolled (agent_id={}, user_id={}, org_id={})",
+                agent_id_,
+                resp->value("user_id", 0),
+                resp->value("organization_id", 0));
+    return true;
 }
 
 bool AgentSyncModule::heartbeat() {
@@ -4683,24 +4924,42 @@ bool AgentSyncModule::heartbeat() {
         return false;
     }
 
-    const std::string url = base_url_ + "/api/v1/agent/heartbeat";
-    json body = { {"agent_id", agent_id_}, {"agent_version", kAgentVersion} };
-    const auto resp = http_->post_json(url, body.dump(), api_token_, 10);
+    json body = {
+        {"agent_id",      agent_id_},
+        {"agent_version", kAgentVersion},
+    };
 
-    if (!resp.error.empty()) return false;
-    if (resp.status == 200) {
+    const std::string topic =
+        "axiomdlp/agents/" + std::to_string(agent_id_) + "/heartbeat";
+
+    const auto resp = req_->request(topic, body, /*qos=*/1, /*timeout_sec=*/10);
+
+    if (!resp) {
+        SPDLOG_DEBUG("agent_sync: heartbeat request failed or timed out");
+        return false;
+    }
+
+    if (resp->value("ok", false)) {
         SPDLOG_DEBUG("agent_sync: heartbeat ok (agent_id={})", agent_id_);
         return true;
     }
-    if (resp.status == 401 || resp.status == 403) {
-        ctx_->shutdown.request(ShutdownReason::AuthRevoked);
+
+    const std::string err = resp->value("error", "");
+    if (err == "agent_revoked") {
+        SPDLOG_WARN("agent_sync: agent revoked by server");
+        ctx_->shutdown.request(ShutdownReason::AgentRevoked);
         return false;
     }
-    if (resp.status == 404) {
+    if (err == "not_found") {
+        SPDLOG_WARN("agent_sync: agent no longer known to server; will re-enroll");
         ctx_->state_store.remove(kStateKeyAgentId);
+        agent_id_ = 0;
+        req_->set_agent_id(0);
         needs_re_enroll_.store(true, std::memory_order_relaxed);
         return false;
     }
+
+    SPDLOG_WARN("agent_sync: heartbeat error: '{}'", err);
     return false;
 }
 
@@ -4714,16 +4973,13 @@ bool AgentSyncModule::heartbeat() {
 #pragma once
 
 #include "modules/module_base.h"
+#include "net/i_request_client.h"
+
 #include <atomic>
-#include <memory>
 #include <string>
 #include <thread>
-#include <optional>
-#include <nlohmann/json.hpp>
 
 namespace axiom::core {
-
-class HttpClient;
 
 class AgentSyncModule final : public ModuleBase {
 public:
@@ -4742,17 +4998,16 @@ private:
     void sync_loop();
     bool enroll();
     bool heartbeat();
+    void wait_for_transport_ready();
 
     static std::string detect_hostname();
     static std::string detect_os();
     static std::string detect_arch();
 
-    std::string base_url_;
-    std::string api_token_;
-    int         heartbeat_interval_sec_ = 30;
-    bool        enabled_ = true;
+    IRequestClient* req_ = nullptr;   // borrowed from ModuleContext; not owned
 
-    std::unique_ptr<HttpClient> http_;
+    int  heartbeat_interval_sec_ = 60;
+    bool enabled_ = true;
 
     std::thread       sync_thread_;
     std::atomic<bool> stop_requested_{false};
@@ -4769,8 +5024,42 @@ private:
 
 ```cpp
 // src/features/content_scanner/content_scanner_module.cpp
+//
+// Phase 9: PII scan batches now travel over MQTT.
+//
+// Wire shape (docs/mqtt_protocol.md §9.3):
+//   Request  → axiomdlp/agents/{id}/scan/batch  (QoS 1)
+//     {
+//       "v": 1,
+//       "correlation_id": "<ulid>",
+//       "agent_id": <int>,
+//       "chunks": [
+//         { "file_hash": "...", "path": "...",
+//           "chunk_index": N, "chunk_count": M,
+//           "content_b64": "<base64>" },
+//         ...
+//       ]
+//     }
+//   Response → axiomdlp/replies/{instance_uuid}
+//     {
+//       "v": 1, "correlation_id": "<ulid>",
+//       "ok": true,
+//       "results": [
+//         { "file_hash": "...", "chunk_index": N,
+//           "sensitive": bool, "entity_type": "...",
+//           "risk_score": int, "action": "block|alert|allow",
+//           "error": "..." }
+//       ]
+//     }
+//   Failure:
+//     { "v": 1, "ok": false, "error": "not_found" | "agent_revoked" |
+//                                       "invalid_request" | "internal" }
+//
+// Per-chunk errors are reported as `results[].error` with the batch `ok`
+// still true. Files with any chunk error stay 'pending' so they retry
+// next cycle; we do NOT commit a partial verdict.
+
 #include "features/content_scanner/content_scanner_module.h"
-#include "net/http_client.h"
 #include "storage/file_repository.h"
 #include "storage/state_repository.h"
 #include "util/base64.h"
@@ -4793,7 +5082,11 @@ using json = nlohmann::json;
 using namespace std::chrono_literals;
 
 namespace {
-void interruptible_sleep(std::atomic<bool>& stop_flag, std::chrono::seconds total) {
+
+constexpr const char* kStateKeyAgentId = "agent_id";
+
+void interruptible_sleep(std::atomic<bool>& stop_flag,
+                         std::chrono::seconds total) {
     constexpr auto tick = 100ms;
     auto elapsed = 0ms;
     const auto target = std::chrono::duration_cast<std::chrono::milliseconds>(total);
@@ -4854,6 +5147,7 @@ compute_chunk_ranges(std::size_t size, std::size_t chunk_size, std::size_t overl
     }
     return ranges;
 }
+
 } // namespace
 
 ContentScannerModule::ContentScannerModule()  = default;
@@ -4863,7 +5157,6 @@ bool ContentScannerModule::initialize(ModuleContext& context) {
     ModuleBase::initialize(context);
 
     const auto& scan_cfg = ctx_->config.modules.content_scanner;
-    const auto& srv_cfg  = ctx_->config.server;
 
     enabled_             = scan_cfg.enabled;
     batch_size_          = scan_cfg.batch_size;
@@ -4876,18 +5169,17 @@ bool ContentScannerModule::initialize(ModuleContext& context) {
     request_timeout_sec_ = scan_cfg.request_timeout_seconds;
     text_extensions_     = scan_cfg.text_extensions;
 
-    base_url_  = srv_cfg.base_url;
-    api_token_ = srv_cfg.api_token;
-
     if (!enabled_) return true;
 
-    if (base_url_.empty() || api_token_.empty()) {
-        SPDLOG_ERROR("content_scanner module: server.base_url and server.api_token must be set");
-        return false;
+    if (ctx_->request_client == nullptr) {
+        SPDLOG_ERROR("content_scanner: no request client (MQTT disabled at build time); "
+                     "module disabled");
+        enabled_ = false;
+        return true;
     }
+    req_ = ctx_->request_client;
 
-    http_ = std::make_unique<HttpClient>();
-    SPDLOG_INFO("content_scanner module: initialized (batch_size={}, interval={}s)", 
+    SPDLOG_INFO("content_scanner module: initialized (batch_size={}, interval={}s)",
                 batch_size_, scan_interval_sec_);
     return true;
 }
@@ -4907,7 +5199,6 @@ void ContentScannerModule::stop() {
     stop_requested_.store(true, std::memory_order_relaxed);
     if (sync_thread_.joinable()) sync_thread_.join();
 
-    http_.reset();
     running_.store(false, std::memory_order_relaxed);
 
     SPDLOG_INFO("content_scanner module: stopped (scanned={}, sensitive={}, skipped={})",
@@ -4926,19 +5217,31 @@ HealthStatus ContentScannerModule::health() const {
 }
 
 void ContentScannerModule::sync_loop() {
+    // Wait until agent_sync has persisted agent_id. Content scanner has
+    // no way to make useful requests without it.
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         if (ctx_->shutdown.is_requested()) return;
-        if (auto saved = ctx_->state_store.get("agent_id")) {
+        if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
             try {
-                int id = std::stoi(*saved);
-                if (id > 0) { agent_id_ = id; break; }
-            } catch (...) {}
+                const int id = std::stoi(*saved);
+                if (id > 0) {
+                    agent_id_ = id;
+                    SPDLOG_DEBUG("content_scanner: using agent_id={}", agent_id_);
+                    break;
+                }
+            } catch (const std::exception&) { /* ignore */ }
         }
         std::this_thread::sleep_for(1s);
     }
 
+    if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) return;
+
+    // Small grace period so agent_sync's initial register/heartbeat has
+    // settled before we hammer the scan/batch topic.
     interruptible_sleep(stop_requested_, std::chrono::seconds(5));
+
     while (!stop_requested_.load(std::memory_order_relaxed)) {
+        if (ctx_->shutdown.is_requested()) return;
         process_one_cycle();
         if (stop_requested_.load(std::memory_order_relaxed)) break;
         interruptible_sleep(stop_requested_, std::chrono::seconds(scan_interval_sec_));
@@ -4946,7 +5249,24 @@ void ContentScannerModule::sync_loop() {
 }
 
 void ContentScannerModule::process_one_cycle() {
-    auto pending = ctx_->file_store.fetch_pending_for_scan(static_cast<std::size_t>(batch_size_), max_retries_);
+    // Re-check agent_id: it can go stale if the server says not_found
+    // or if a prior cycle's re-enroll cleared it.
+    if (agent_id_ <= 0) {
+        if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
+            try { agent_id_ = std::stoi(*saved); } catch (const std::exception&) { /* ignore */ }
+        }
+    }
+    if (agent_id_ <= 0) {
+        SPDLOG_DEBUG("content_scanner: no agent_id yet — deferring cycle");
+        return;
+    }
+    if (!req_->is_connected()) {
+        SPDLOG_DEBUG("content_scanner: transport not connected — deferring cycle");
+        return;
+    }
+
+    auto pending = ctx_->file_store.fetch_pending_for_scan(
+        static_cast<std::size_t>(batch_size_), max_retries_);
     if (pending.empty()) return;
 
     SPDLOG_INFO("content_scanner: {} pending files", pending.size());
@@ -4972,17 +5292,33 @@ bool ContentScannerModule::prepare_file(
         std::vector<Chunk>& out_chunks,
         std::map<std::string, FileProgress>& progress) {
 
-    if (!ext_in_list(row.extension, text_extensions_)) { ctx_->file_store.mark_not_applicable(row.path); ++total_skipped_; return false; }
-    if (row.size > max_file_bytes_) { ctx_->file_store.mark_skipped_too_large(row.path); ++total_skipped_; return false; }
-    if (!file_exists(row.path)) { ctx_->file_store.mark_file_missing(row.path); ++total_skipped_; return false; }
+    if (!ext_in_list(row.extension, text_extensions_)) {
+        ctx_->file_store.mark_not_applicable(row.path);
+        ++total_skipped_;
+        return false;
+    }
+    if (row.size > max_file_bytes_) {
+        ctx_->file_store.mark_skipped_too_large(row.path);
+        ++total_skipped_;
+        return false;
+    }
+    if (!file_exists(row.path)) {
+        ctx_->file_store.mark_file_missing(row.path);
+        ++total_skipped_;
+        return false;
+    }
 
     auto read = read_file_bounded(row.path, max_file_bytes_);
-    if (!read.ok()) { ctx_->file_store.record_scan_error_by_path(row.path, read.error); return false; }
+    if (!read.ok()) {
+        ctx_->file_store.record_scan_error_by_path(row.path, read.error);
+        return false;
+    }
 
     std::string new_hash = util::sha256_hex(read.data.data(), read.data.size());
 
     if (auto cached = ctx_->file_store.find_scan_verdict_by_hash(new_hash)) {
-        ctx_->file_store.update_scan_result_by_path(row.path, new_hash, cached->sensitive, cached->sensitivity);
+        ctx_->file_store.update_scan_result_by_path(
+            row.path, new_hash, cached->sensitive, cached->sensitivity);
         ++total_scanned_;
         if (cached->sensitive) ++total_sensitive_;
         return false;
@@ -4996,9 +5332,9 @@ bool ContentScannerModule::prepare_file(
     }
 
     FileProgress fp;
-    fp.path             = row.path;
-    fp.chunks_expected  = static_cast<std::uint32_t>(ranges.size());
-    progress[new_hash]  = fp;
+    fp.path            = row.path;
+    fp.chunks_expected = static_cast<std::uint32_t>(ranges.size());
+    progress[new_hash] = fp;
 
     for (std::size_t i = 0; i < ranges.size(); ++i) {
         const auto [start, end] = ranges[i];
@@ -5020,6 +5356,19 @@ void ContentScannerModule::send_chunks_in_batches(
     std::size_t i = 0;
     while (i < chunks.size()) {
         if (stop_requested_.load(std::memory_order_relaxed)) return;
+        if (ctx_->shutdown.is_requested()) return;
+
+        // Re-check agent_id inside the loop — a prior batch may have
+        // received not_found and cleared it.
+        if (agent_id_ <= 0) {
+            if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
+                try { agent_id_ = std::stoi(*saved); } catch (const std::exception&) { /* ignore */ }
+            }
+        }
+        if (agent_id_ <= 0) {
+            SPDLOG_DEBUG("content_scanner: agent_id lost mid-cycle — aborting send loop");
+            return;
+        }
 
         std::size_t batch_bytes = 0;
         std::size_t j = i;
@@ -5029,9 +5378,9 @@ void ContentScannerModule::send_chunks_in_batches(
             batch_bytes += estimate;
             ++j;
         }
-
         if (j == i) break;
 
+        // Build the chunk array — content_b64, matching messages.go ScanChunk.
         json batch_chunks = json::array();
         for (std::size_t k = i; k < j; ++k) {
             batch_chunks.push_back({
@@ -5039,28 +5388,54 @@ void ContentScannerModule::send_chunks_in_batches(
                 {"path",        chunks[k].path},
                 {"chunk_index", chunks[k].chunk_index},
                 {"chunk_count", chunks[k].chunk_count},
-                {"content",     util::base64_encode(chunks[k].content.data(), chunks[k].content.size())}
+                {"content_b64", util::base64_encode(chunks[k].content.data(),
+                                                    chunks[k].content.size())}
             });
         }
 
         json payload;
-        payload["chunks"] = std::move(batch_chunks);
-        const std::string url = base_url_ + "/api/v1/agent/scan/batch";
+        payload["agent_id"] = agent_id_;
+        payload["chunks"]   = std::move(batch_chunks);
 
-        SPDLOG_INFO("content_scanner: POST {} ({} chunks, ~{} KB)", url, j - i, batch_bytes / 1024);
-        const auto resp = http_->post_json(url, payload.dump(), api_token_, request_timeout_sec_);
+        const std::string topic =
+            "axiomdlp/agents/" + std::to_string(agent_id_) + "/scan/batch";
 
-        if (!resp.error.empty()) return;
-        if (resp.status == 401 || resp.status == 403) {
-            SPDLOG_ERROR("content_scanner: auth rejected ({}) — stopping", resp.status);
-            running_.store(false, std::memory_order_relaxed);
-            stop_requested_.store(true, std::memory_order_relaxed);
+        SPDLOG_INFO("content_scanner: request '{}' ({} chunks, ~{} KB)",
+                    topic, j - i, batch_bytes / 1024);
+
+        const auto resp = req_->request(topic, payload,
+                                        /*qos=*/1, request_timeout_sec_);
+
+        if (!resp) {
+            SPDLOG_DEBUG("content_scanner: scan batch timed out or transport down");
+            // Do not advance i — leave chunks in the buffer so next
+            // cycle can retry them. Return now; caller commits nothing.
             return;
         }
-        if (!resp.is_2xx()) return;
-        
-        merge_batch_response(resp.body, progress);
 
+        if (!resp->value("ok", false)) {
+            const std::string err = resp->value("error", "");
+            SPDLOG_WARN("content_scanner: scan batch rejected: error='{}'", err);
+
+            if (err == "agent_revoked") {
+                ctx_->shutdown.request(ShutdownReason::AgentRevoked);
+                return;
+            }
+            if (err == "not_found") {
+                SPDLOG_WARN("content_scanner: server does not know agent_id={}; "
+                            "clearing state, waiting for re-enroll", agent_id_);
+                ctx_->state_store.remove(kStateKeyAgentId);
+                agent_id_ = 0;
+                return;
+            }
+            // invalid_request / internal — log already done; leave chunks
+            // buffered so next cycle retries. Do not advance i.
+            return;
+        }
+
+        merge_batch_response(*resp, progress);
+
+        // Wipe chunk content from memory (security + memory hygiene).
         for (std::size_t k = i; k < j; ++k) {
             std::fill(chunks[k].content.begin(), chunks[k].content.end(), 0);
             chunks[k].content.clear();
@@ -5070,42 +5445,57 @@ void ContentScannerModule::send_chunks_in_batches(
     }
 }
 
-void ContentScannerModule::merge_batch_response(const std::string& response_body, std::map<std::string, FileProgress>& progress) {
-    try {
-        const auto parsed = json::parse(response_body);
-        if (!parsed.contains("results") || !parsed["results"].is_array()) return;
+void ContentScannerModule::merge_batch_response(
+        const nlohmann::json& parsed,
+        std::map<std::string, FileProgress>& progress) {
 
-        for (const auto& r : parsed["results"]) {
-            const std::string file_hash = r.value("file_hash", "");
-            if (file_hash.empty()) continue;
-            auto it = progress.find(file_hash);
-            if (it == progress.end() || r.contains("error")) continue;
+    if (!parsed.contains("results") || !parsed["results"].is_array()) return;
 
-            it->second.chunks_returned += 1;
-            if (r.value("sensitive", false)) {
-                it->second.sensitive = true;
-                if (it->second.sensitivity.empty()) it->second.sensitivity = r.value("entity_type", "");
+    for (const auto& r : parsed["results"]) {
+        if (!r.is_object()) continue;
+        const std::string file_hash = r.value("file_hash", "");
+        if (file_hash.empty()) continue;
+
+        auto it = progress.find(file_hash);
+        if (it == progress.end()) continue;
+
+        // Per-chunk error means we could not score this chunk (PII service
+        // down, etc). Skip it — the file stays incomplete and retries.
+        if (r.contains("error") && !r["error"].get<std::string>().empty()) {
+            SPDLOG_DEBUG("content_scanner: chunk error ({}): {}",
+                         file_hash.substr(0, 12),
+                         r["error"].get<std::string>());
+            continue;
+        }
+
+        it->second.chunks_returned += 1;
+        if (r.value("sensitive", false)) {
+            it->second.sensitive = true;
+            if (it->second.sensitivity.empty()) {
+                it->second.sensitivity = r.value("entity_type", "");
             }
         }
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("content_scanner: failed to parse response: {}", e.what());
     }
 }
 
-void ContentScannerModule::commit_completed_files(std::map<std::string, FileProgress>& progress) {
+void ContentScannerModule::commit_completed_files(
+        std::map<std::string, FileProgress>& progress) {
+
     std::size_t complete = 0;
     std::size_t incomplete = 0;
 
     for (auto& [hash, fp] : progress) {
         if (fp.chunks_returned < fp.chunks_expected) { ++incomplete; continue; }
-        ctx_->file_store.update_scan_result_by_path(fp.path, hash, fp.sensitive, fp.sensitivity);
+        ctx_->file_store.update_scan_result_by_path(
+            fp.path, hash, fp.sensitive, fp.sensitivity);
         ++total_scanned_;
         if (fp.sensitive) ++total_sensitive_;
         ++complete;
     }
 
     if (complete > 0 || incomplete > 0) {
-        SPDLOG_INFO("content_scanner: cycle done (committed={}, incomplete={})", complete, incomplete);
+        SPDLOG_INFO("content_scanner: cycle done (committed={}, incomplete={})",
+                    complete, incomplete);
     }
 }
 
@@ -5116,21 +5506,28 @@ void ContentScannerModule::commit_completed_files(std::map<std::string, FileProg
 
 ```cpp
 // src/features/content_scanner/content_scanner_module.h
+//
+// Phase 9: content scanner now talks to the Core over MQTT via
+// IRequestClient::request("axiomdlp/agents/{id}/scan/batch", ...).
+// See docs/mqtt_protocol.md §9.3 for the wire schema.
+
 #pragma once
 
 #include "modules/module_base.h"
+#include "net/i_request_client.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace axiom::core {
 
-class  HttpClient;
 struct FileRow;
 
 class ContentScannerModule final : public ModuleBase {
@@ -5173,14 +5570,13 @@ private:
     void send_chunks_in_batches(std::vector<Chunk>& chunks,
                                 std::map<std::string, FileProgress>& progress);
 
-    void merge_batch_response(const std::string& response_body,
+    void merge_batch_response(const nlohmann::json& parsed,
                               std::map<std::string, FileProgress>& progress);
 
     void commit_completed_files(std::map<std::string, FileProgress>& progress);
 
     bool        enabled_             = true;
-    std::string base_url_;
-    std::string api_token_;
+    IRequestClient* req_             = nullptr;    // borrowed from ModuleContext
     int         agent_id_            = 0;
 
     int         batch_size_          = 50;
@@ -5194,11 +5590,9 @@ private:
 
     std::vector<std::string> text_extensions_;
 
-    std::unique_ptr<HttpClient> http_;
-
-    std::thread                 sync_thread_;
-    std::atomic<bool>           stop_requested_{false};
-    std::atomic<bool>           running_{false};
+    std::thread       sync_thread_;
+    std::atomic<bool> stop_requested_{false};
+    std::atomic<bool> running_{false};
 
     std::size_t total_scanned_   = 0;
     std::size_t total_sensitive_ = 0;
@@ -5674,381 +6068,6 @@ private:
     std::atomic<bool> setup_done_{false};
 
     bool running_ = false;
-};
-
-} // namespace axiom::core
-```
-
-### \`src/features/grpc_transport/agent.proto\`
-
-```
-syntax = "proto3";
-
-package axiomdlp.agent.v1;
-
-option go_package = "axiomdlp-core/internal/agentpb;agentpb";
-
-import "google/protobuf/timestamp.proto";
-
-service AgentService {
-  rpc Register(RegisterRequest) returns (RegisterResponse);
-  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
-  rpc ScanBatch(ScanBatchRequest) returns (ScanBatchResponse);
-  rpc Channel(stream ChannelRequest) returns (stream ChannelResponse);
-}
-
-message RegisterRequest {
-  string hostname = 1;
-  string os = 2;
-  string architecture = 3;
-  string agent_version = 4;
-}
-
-message RegisterResponse {
-  int32 agent_id = 1;
-  int32 user_id = 2;
-  int32 organization_id = 3;
-  AgentStatus status = 4;
-  google.protobuf.Timestamp server_time = 5;
-}
-
-enum AgentStatus {
-  AGENT_STATUS_UNSPECIFIED = 0;
-  AGENT_STATUS_ACTIVE = 1;
-  AGENT_STATUS_REVOKED = 2;
-}
-
-message HeartbeatRequest {
-  int32 agent_id = 1;
-  string agent_version = 2;
-}
-
-message HeartbeatResponse {
-  google.protobuf.Timestamp server_time = 1;
-}
-
-message ScanBatchRequest {
-  int32 agent_id = 1;
-  repeated ScanChunk chunks = 2;
-}
-
-message ScanChunk {
-  string file_hash = 1;
-  string path = 2;
-  int32 chunk_index = 3;
-  int32 chunk_count = 4;
-  bytes content = 5;
-}
-
-message ScanChunkResult {
-  string file_hash = 1;
-  int32 chunk_index = 2;
-  bool sensitive = 3;
-  string entity_type = 4;
-  int32 risk_score = 5;
-  string action = 6;
-  string error = 7;
-}
-
-message ScanBatchResponse {
-  repeated ScanChunkResult results = 1;
-}
-
-message ChannelRequest {
-  oneof payload {
-    ClientShutdown shutdown = 1;
-  }
-}
-
-message ClientShutdown {
-  ShutdownReason reason = 1;
-}
-
-enum ShutdownReason {
-  SHUTDOWN_REASON_UNSPECIFIED = 0;
-  SHUTDOWN_REASON_USER_REQUESTED = 1;
-  SHUTDOWN_REASON_AUTH_REVOKED = 2;
-  SHUTDOWN_REASON_AGENT_REVOKED = 3;
-  SHUTDOWN_REASON_CONFIG_ERROR = 4;
-  SHUTDOWN_REASON_FATAL_ERROR = 5;
-}
-
-message ChannelResponse {
-  oneof payload {
-    ServerPolicyUpdate policy_update = 1;
-    ServerCommand command = 2;
-    ServerRevoke revoke = 3;
-  }
-}
-
-message ServerPolicyUpdate {
-  uint64 version = 1;
-  bytes bundle = 2;
-  bytes signature = 3;
-}
-
-message ServerCommand {
-  string command_type = 1;
-  bytes payload = 2;
-}
-
-message ServerRevoke {
-  RevokeReason reason = 1;
-  string message = 2;
-}
-
-enum RevokeReason {
-  REVOKE_REASON_UNSPECIFIED = 0;
-  REVOKE_REASON_TOKEN_REVOKED = 1;
-  REVOKE_REASON_AGENT_REVOKED = 2;
-}
-```
-
-### \`src/features/grpc_transport/grpc_transport_module.cpp\`
-
-```cpp
-// src/features/grpc_transport/grpc_transport_module.cpp
-#include "features/grpc_transport/grpc_transport_module.h"
-#include "storage/state_repository.h"
-
-#include <grpcpp/grpcpp.h>
-#include <grpcpp/security/credentials.h>
-#include <spdlog/spdlog.h>
-#include <nlohmann/json.hpp>
-
-#include <fstream>
-#include <random>
-#include <sstream>
-#include <thread>
-
-namespace axiom::core {
-
-using namespace std::chrono_literals;
-using namespace axiomdlp::agent::v1;
-
-namespace {
-constexpr const char* kStateKeyAgentId = "agent_id";
-
-std::string to_grpc_target(std::string url, int grpc_port) {
-    if (url.rfind("https://", 0) == 0) url = url.substr(8);
-    else if (url.rfind("http://", 0) == 0) url = url.substr(7);
-    auto slash = url.find('/');
-    if (slash != std::string::npos) url = url.substr(0, slash);
-    auto colon = url.find(':');
-    if (colon != std::string::npos) url = url.substr(0, colon);
-    return url + ":" + std::to_string(grpc_port);
-}
-
-std::string read_ca_file(const std::string& path) {
-    std::ifstream file(path);
-    if (!file.is_open()) return "";
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return buffer.str();
-}
-} // namespace
-
-GrpcTransportModule::GrpcTransportModule()  = default;
-GrpcTransportModule::~GrpcTransportModule() = default;
-
-bool GrpcTransportModule::initialize(ModuleContext& context) {
-    ModuleBase::initialize(context);
-    const auto& srv = ctx_->config.server;
-    if (srv.base_url.empty() || srv.api_token.empty()) return false;
-
-    server_url_ = to_grpc_target(srv.base_url, srv.grpc_port);
-    api_token_  = srv.api_token;
-    SPDLOG_INFO("grpc_transport module: initialized (target={}, tls={})", server_url_, srv.grpc_tls ? "true" : "false");
-    return true;
-}
-
-bool GrpcTransportModule::start() {
-    stop_.store(false, std::memory_order_relaxed);
-    manager_thread_ = std::thread([this] { manager_loop(); });
-    running_.store(true, std::memory_order_relaxed);
-    return true;
-}
-
-void GrpcTransportModule::stop() {
-    if (!running_.exchange(false)) return;
-    stop_.store(true, std::memory_order_relaxed);
-    if (manager_thread_.joinable()) manager_thread_.join();
-    SPDLOG_INFO("grpc_transport module: stopped");
-}
-
-void GrpcTransportModule::shutdown() {}
-
-HealthStatus GrpcTransportModule::health() const {
-    if (ctx_ == nullptr) return HealthStatus::unknown("not initialized");
-    if (!running_.load(std::memory_order_relaxed)) return HealthStatus::failed("not running");
-    return HealthStatus::degraded("stub — RPC implementation pending");
-}
-
-void GrpcTransportModule::manager_loop() {
-    while (!stop_.load(std::memory_order_relaxed)) {
-        if (ctx_->shutdown.is_requested()) return;
-        if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
-            try {
-                int id = std::stoi(*saved);
-                if (id > 0) { agent_id_ = id; break; }
-            } catch (...) {}
-        }
-        std::this_thread::sleep_for(1s);
-    }
-
-    if (agent_id_ <= 0) return;
-
-    std::shared_ptr<grpc::ChannelCredentials> creds;
-    const auto& srv = ctx_->config.server;
-
-    if (srv.grpc_tls) {
-        grpc::SslCredentialsOptions ssl_opts;
-        if (!srv.grpc_ca_path.empty()) {
-            std::string ca_pem = read_ca_file(srv.grpc_ca_path);
-            if (!ca_pem.empty()) ssl_opts.pem_root_certs = ca_pem;
-        }
-        creds = grpc::SslCredentials(ssl_opts);
-    } else {
-        creds = grpc::InsecureChannelCredentials();
-    }
-
-    channel_ = grpc::CreateChannel(server_url_, creds);
-    stub_    = AgentService::NewStub(channel_);
-
-    int backoff_sec = ctx_->config.server.reconnect_backoff_seconds;
-    int max_backoff = ctx_->config.server.reconnect_backoff_max_seconds;
-    std::mt19937 rng{std::random_device{}()};
-
-    while (!stop_.load(std::memory_order_relaxed) && !ctx_->shutdown.is_requested()) {
-        grpc::Status status = run_channel_stream();
-
-        if (stop_.load() || ctx_->shutdown.is_requested()) break;
-
-        if (status.error_code() == grpc::StatusCode::UNAUTHENTICATED) {
-            ctx_->shutdown.request(ShutdownReason::AuthRevoked);
-            break;
-        }
-        if (status.error_code() == grpc::StatusCode::PERMISSION_DENIED) {
-            ctx_->shutdown.request(ShutdownReason::AgentRevoked);
-            break;
-        }
-
-        int jitter = std::max(1, backoff_sec / 5);
-        std::uniform_int_distribution<int> dist(-jitter, jitter);
-        int sleep_sec = std::max(1, backoff_sec + dist(rng));
-
-        SPDLOG_INFO("grpc_transport: stream disconnected ({}). Reconnecting in {}s...", status.error_message(), sleep_sec);
-        for (int i = 0; i < sleep_sec * 10; ++i) {
-            if (stop_.load() || ctx_->shutdown.is_requested()) return;
-            std::this_thread::sleep_for(100ms);
-        }
-        backoff_sec = std::min(backoff_sec * 2, max_backoff);
-    }
-}
-
-grpc::Status GrpcTransportModule::run_channel_stream() {
-    grpc::ClientContext context;
-    context.AddMetadata("authorization", "Bearer " + api_token_);
-    context.AddMetadata("x-agent-id", std::to_string(agent_id_));
-
-    SPDLOG_INFO("grpc_transport: opening Channel bidi stream...");
-    auto stream = stub_->Channel(&context);
-
-    while (!stop_.load() && !ctx_->shutdown.is_requested()) {
-        ChannelResponse resp;
-        if (!stream->Read(&resp)) break; // Stream ended
-        handle_server_message(resp);
-    }
-
-    if (stop_.load() || ctx_->shutdown.is_requested()) {
-        SPDLOG_INFO("grpc_transport: sending graceful goodbye...");
-        ChannelRequest req;
-        auto* shut = req.mutable_shutdown();
-        switch (ctx_->shutdown.reason()) {
-            case ShutdownReason::UserRequested: shut->set_reason(SHUTDOWN_REASON_USER_REQUESTED); break;
-            case ShutdownReason::AuthRevoked:   shut->set_reason(SHUTDOWN_REASON_AUTH_REVOKED); break;
-            case ShutdownReason::AgentRevoked:  shut->set_reason(SHUTDOWN_REASON_AGENT_REVOKED); break;
-            case ShutdownReason::ConfigError:   shut->set_reason(SHUTDOWN_REASON_CONFIG_ERROR); break;
-            case ShutdownReason::FatalError:    shut->set_reason(SHUTDOWN_REASON_FATAL_ERROR); break;
-            default:                            shut->set_reason(SHUTDOWN_REASON_UNSPECIFIED); break;
-        }
-        stream->Write(req);
-        stream->WritesDone();
-    }
-
-    return stream->Finish();
-}
-
-void GrpcTransportModule::handle_server_message(const ChannelResponse& resp) {
-    switch (resp.payload_case()) {
-        case ChannelResponse::kPolicyUpdate: {
-            const auto& pu = resp.policy_update();
-            SPDLOG_INFO("grpc_transport: received policy_update (version={})", pu.version());
-            break;
-        }
-        case ChannelResponse::kCommand: {
-            const auto& cmd = resp.command();
-            SPDLOG_INFO("grpc_transport: received command: {}", cmd.command_type());
-            break;
-        }
-        case ChannelResponse::kRevoke: {
-            const auto& rev = resp.revoke();
-            SPDLOG_WARN("grpc_transport: received REVOKE (msg={})", rev.message());
-            if (rev.reason() == REVOKE_REASON_TOKEN_REVOKED) ctx_->shutdown.request(ShutdownReason::AuthRevoked);
-            else ctx_->shutdown.request(ShutdownReason::AgentRevoked);
-            break;
-        }
-        default: break;
-    }
-}
-
-} // namespace axiom::core
-```
-
-### \`src/features/grpc_transport/grpc_transport_module.h\`
-
-```cpp
-// src/features/grpc_transport/grpc_transport_module.h
-#pragma once
-
-#include "modules/module_base.h"
-#include "agent.grpc.pb.h"
-
-#include <atomic>
-#include <memory>
-#include <string>
-#include <thread>
-
-namespace axiom::core {
-
-class GrpcTransportModule final : public ModuleBase {
-public:
-    GrpcTransportModule();
-    ~GrpcTransportModule() override;
-
-    std::string name() const override { return "grpc_transport"; }
-
-    bool initialize(ModuleContext& context) override;
-    bool start() override;
-    void stop() override;
-    void shutdown() override;
-    HealthStatus health() const override;
-
-private:
-    void manager_loop();
-    grpc::Status run_channel_stream();
-    void handle_server_message(const axiomdlp::agent::v1::ChannelResponse& resp);
-
-    std::string server_url_;
-    std::string api_token_;
-    int         agent_id_ = 0;
-
-    std::shared_ptr<grpc::Channel> channel_;
-    std::unique_ptr<axiomdlp::agent::v1::AgentService::Stub> stub_;
-
-    std::thread       manager_thread_;
-    std::atomic<bool> stop_{false};
-    std::atomic<bool> running_{false};
 };
 
 } // namespace axiom::core
@@ -6613,6 +6632,869 @@ private:
 } // namespace axiom::core
 ```
 
+### \`src/features/mqtt_transport/mqtt_transport_module.cpp\`
+
+```cpp
+// src/features/mqtt_transport/mqtt_transport_module.cpp
+//
+// Implements docs/mqtt_protocol.md on the agent side.
+//
+// Threading model:
+//   * Manager thread   — owns mosq_ lifecycle, retries with backoff,
+//                        publishes the shutdown frame on graceful exit.
+//   * libmosquitto     — the network loop runs on its own internal
+//                        thread (created by mosquitto_loop_start()).
+//                        All four callbacks fire from that thread.
+//   * Caller threads   — call request() / subscribe() / set_agent_id()
+//                        from anywhere; the module synchronises access
+//                        to mosq_ via mosq_mu_.
+
+#include "features/mqtt_transport/mqtt_transport_module.h"
+#include "events/event.h"
+#include "storage/state_repository.h"
+
+#include <mosquitto.h>
+#include <openssl/rand.h>
+#include <openssl/ssl.h>
+#include <spdlog/spdlog.h>
+
+#include <cerrno>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <memory>
+#include <random>
+#include <string>
+#include <utility>
+
+namespace axiom::core {
+
+using namespace std::chrono_literals;
+
+namespace {
+
+constexpr const char* kStateKeyAgentId        = "agent_id";
+constexpr const char* kStateKeyMqttInstanceId = "mqtt_instance_uuid";
+
+constexpr int kBaseBackoffSeconds   = 10;
+constexpr int kMaxBackoffSeconds    = 300;
+constexpr int kConnackAuthFailure   = 0x87;
+constexpr int kWillDelaySeconds     = 5;
+
+constexpr int kSessionExpirySeconds = 3600;
+constexpr int kReceiveMaximum       = 100;
+constexpr int kMaximumPacketSize    = 134217728;
+constexpr int kKeepaliveSeconds     = 60;
+
+std::string random_hex_32() {
+    unsigned char raw[16];
+    if (RAND_bytes(raw, sizeof(raw)) != 1) {
+        for (std::size_t i = 0; i < sizeof(raw); ++i) {
+            raw[i] = static_cast<unsigned char>(i * 31 + 7);
+        }
+    }
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out(32, '\0');
+    for (std::size_t i = 0; i < sizeof(raw); ++i) {
+        out[i * 2]     = kHex[(raw[i] >> 4) & 0xF];
+        out[i * 2 + 1] = kHex[raw[i] & 0xF];
+    }
+    return out;
+}
+
+int compute_backoff(int attempt, int base, int max_s) {
+    int64_t raw = base;
+    for (int i = 0; i < attempt && raw < max_s; ++i) raw *= 2;
+    if (raw > max_s) raw = max_s;
+    if (raw < 1)     raw = 1;
+
+    thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_real_distribution<double> dist(0.8, 1.2);
+    int jittered = static_cast<int>(static_cast<double>(raw) * dist(rng));
+    return jittered < 1 ? 1 : jittered;
+}
+
+} // namespace
+
+MqttTransportModule::MqttTransportModule()  = default;
+MqttTransportModule::~MqttTransportModule() { stop(); }
+
+bool MqttTransportModule::initialize(ModuleContext& context) {
+    ModuleBase::initialize(context);
+    mosquitto_lib_init();
+
+    const auto& srv = ctx_->config.server;
+    host_          = srv.base_url;
+    api_token_     = srv.api_token;
+    port_          = srv.mqtt_port;
+    tls_           = srv.mqtt_tls;
+    ca_path_       = srv.mqtt_ca_path;
+    keepalive_sec_ = srv.mqtt_keepalive_seconds > 0 ? srv.mqtt_keepalive_seconds : kKeepaliveSeconds;
+    backoff_base_  = srv.reconnect_backoff_seconds     > 0 ? srv.reconnect_backoff_seconds     : kBaseBackoffSeconds;
+    backoff_max_   = srv.reconnect_backoff_max_seconds > 0 ? srv.reconnect_backoff_max_seconds : kMaxBackoffSeconds;
+
+    if (auto p = host_.find("://"); p != std::string::npos) host_ = host_.substr(p + 3);
+    if (auto p = host_.find('/');   p != std::string::npos) host_ = host_.substr(0, p);
+    if (auto p = host_.find(':');   p != std::string::npos) host_ = host_.substr(0, p);
+
+    if (host_.empty() || api_token_.empty()) {
+        SPDLOG_ERROR("mqtt_transport: host or api_token empty — module disabled");
+        return false;
+    }
+
+    load_or_generate_instance_uuid();
+    reply_topic_ = "axiomdlp/replies/" + instance_uuid_;
+    agent_id_.store(load_agent_id_from_state(), std::memory_order_relaxed);
+
+    SPDLOG_INFO("mqtt_transport: initialized (host={}, port={}, tls={}, "
+                "keepalive={}s, instance={}, agent_id={})",
+                host_, port_, tls_ ? "true" : "false", keepalive_sec_,
+                instance_uuid_, agent_id_.load());
+    return true;
+}
+
+bool MqttTransportModule::start() {
+    if (!ctx_) return false;
+    stop_.store(false, std::memory_order_relaxed);
+    manager_thread_ = std::thread([this] { manager_loop(); });
+    running_.store(true, std::memory_order_relaxed);
+    SPDLOG_INFO("mqtt_transport: started");
+    return true;
+}
+
+void MqttTransportModule::stop() {
+    if (!running_.exchange(false)) return;
+    stop_.store(true, std::memory_order_relaxed);
+    connect_cv_.notify_all();
+    if (manager_thread_.joinable()) manager_thread_.join();
+    SPDLOG_INFO("mqtt_transport: stopped");
+}
+
+void MqttTransportModule::shutdown() {
+    mosquitto_lib_cleanup();
+    SPDLOG_INFO("mqtt_transport: shutting down");
+}
+
+HealthStatus MqttTransportModule::health() const {
+    if (!ctx_)              return HealthStatus::unknown("not initialized");
+    if (!running_.load())   return HealthStatus::failed("not running");
+    if (!connected_.load()) return HealthStatus::degraded("disconnected");
+    return HealthStatus::ok("connected");
+}
+
+bool MqttTransportModule::is_connected() const {
+    return connected_.load(std::memory_order_relaxed);
+}
+
+void MqttTransportModule::manager_loop() {
+    int attempt = 0;
+
+    while (!stop_.load() && !ctx_->shutdown.is_requested()) {
+        if (!connect_and_setup()) {
+            if (stop_.load() || ctx_->shutdown.is_requested()) return;
+            int wait = compute_backoff(attempt++, backoff_base_, backoff_max_);
+            SPDLOG_WARN("mqtt_transport: connect failed, retrying in {}s", wait);
+            if (interruptible_sleep(wait)) return;
+            continue;
+        }
+
+        attempt = 0;
+
+        {
+            std::unique_lock lock(connect_mu_);
+            connect_cv_.wait(lock, [this] {
+                return !connected_.load()
+                    || stop_.load()
+                    || ctx_->shutdown.is_requested();
+            });
+        }
+
+        const bool shutting_down = stop_.load() || ctx_->shutdown.is_requested();
+        if (shutting_down) publish_graceful_shutdown();
+        teardown_connection();
+        if (shutting_down) return;
+
+        int wait = compute_backoff(attempt++, backoff_base_, backoff_max_);
+        SPDLOG_INFO("mqtt_transport: reconnecting in {}s", wait);
+        if (interruptible_sleep(wait)) return;
+    }
+}
+
+bool MqttTransportModule::connect_and_setup() {
+    if (stop_.load() || ctx_->shutdown.is_requested()) return false;
+
+    connect_attempt_done_.store(false, std::memory_order_relaxed);
+
+    const std::string client_id = "axiomdlp-" + instance_uuid_;
+    mosq_ = mosquitto_new(client_id.c_str(), /*clean_start=*/false, this);
+    if (!mosq_) {
+        SPDLOG_ERROR("mqtt_transport: mosquitto_new failed");
+        return false;
+    }
+
+    if (mosquitto_int_option(mosq_, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5)
+            != MOSQ_ERR_SUCCESS) {
+        SPDLOG_ERROR("mqtt_transport: failed to enable MQTT v5");
+        teardown_connection();
+        return false;
+    }
+
+    // Password MUST be nullptr, not "". libmosquitto treats a non-NULL
+    // empty string as "password is set but empty," emitting the password
+    // flag with zero length. mochi-mqtt 2.7.9 rejects that as a protocol
+    // violation (CONNACK 0x82). Passing nullptr omits the password field.
+    if (mosquitto_username_pw_set(mosq_, api_token_.c_str(), /*password=*/nullptr)
+            != MOSQ_ERR_SUCCESS) {
+        SPDLOG_ERROR("mqtt_transport: username/pw set failed");
+        teardown_connection();
+        return false;
+    }
+
+    if (tls_) {
+        const char* ca = ca_path_.empty() ? nullptr : ca_path_.c_str();
+        if (mosquitto_tls_set(mosq_, ca, nullptr, nullptr, nullptr, nullptr)
+                != MOSQ_ERR_SUCCESS) {
+            SPDLOG_ERROR("mqtt_transport: tls_set failed");
+            teardown_connection();
+            return false;
+        }
+        mosquitto_tls_opts_set(mosq_, SSL_VERIFY_PEER, nullptr, nullptr);
+    }
+
+    mosquitto_connect_v5_callback_set   (mosq_, &MqttTransportModule::on_connect_cb);
+    mosquitto_disconnect_v5_callback_set(mosq_, &MqttTransportModule::on_disconnect_cb);
+    mosquitto_message_v5_callback_set   (mosq_, &MqttTransportModule::on_message_cb);
+    mosquitto_log_callback_set          (mosq_, &MqttTransportModule::on_log_cb);
+
+    // LWT — mosquitto_will_set_v5 TAKES OWNERSHIP of will_props on success.
+    {
+        mosquitto_property* will_props = nullptr;
+        mosquitto_property_add_int32(&will_props, MQTT_PROP_WILL_DELAY_INTERVAL,
+                                     kWillDelaySeconds);
+
+        const std::string lwt_topic   = "axiomdlp/sessions/" + instance_uuid_ + "/status";
+        const std::string lwt_payload = R"({"status":"offline"})";
+
+        const int rc = mosquitto_will_set_v5(mosq_,
+                                             lwt_topic.c_str(),
+                                             static_cast<int>(lwt_payload.size()),
+                                             lwt_payload.data(),
+                                             /*qos=*/1,
+                                             /*retain=*/false,
+                                             will_props);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            mosquitto_property_free_all(&will_props);
+            SPDLOG_ERROR("mqtt_transport: will_set failed: {}", mosquitto_strerror(rc));
+            teardown_connection();
+            return false;
+        }
+    }
+
+    mosquitto_property* connect_props = nullptr;
+    mosquitto_property_add_int32(&connect_props, MQTT_PROP_SESSION_EXPIRY_INTERVAL,
+                                 kSessionExpirySeconds);
+    mosquitto_property_add_int16(&connect_props, MQTT_PROP_RECEIVE_MAXIMUM,
+                                 kReceiveMaximum);
+    mosquitto_property_add_int32(&connect_props, MQTT_PROP_MAXIMUM_PACKET_SIZE,
+                                 kMaximumPacketSize);
+    mosquitto_property_add_int16(&connect_props, MQTT_PROP_TOPIC_ALIAS_MAXIMUM,
+                                 0);
+
+    errno = 0;
+    int rc = mosquitto_connect_bind_v5(mosq_,
+                                       host_.c_str(),
+                                       port_,
+                                       keepalive_sec_,
+                                       /*bind_address=*/nullptr,
+                                       connect_props);
+    const int saved_errno = errno;
+
+    mosquitto_property_free_all(&connect_props);
+
+    if (rc != MOSQ_ERR_SUCCESS) {
+        if (!ctx_->shutdown.is_requested()) {
+            errno = saved_errno;
+            SPDLOG_ERROR("mqtt_transport: connect_bind_v5 failed: {} "
+                         "(host={} port={} errno={})",
+                         mosquitto_strerror(rc), host_, port_, saved_errno);
+        }
+        teardown_connection();
+        return false;
+    }
+
+    rc = mosquitto_loop_start(mosq_);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        SPDLOG_ERROR("mqtt_transport: loop_start failed: {}", mosquitto_strerror(rc));
+        teardown_connection();
+        return false;
+    }
+
+    if (!connected_.load()) {
+        std::unique_lock lock(connect_mu_);
+        connect_cv_.wait_for(lock, 5s,
+                             [this] { return connect_attempt_done_.load(); });
+    }
+
+    if (!connected_.load()) {
+        SPDLOG_WARN("mqtt_transport: connect callback did not fire");
+        teardown_connection();
+        return false;
+    }
+
+    // Subscribe from the manager thread (not from handle_connect on the
+    // loop thread) — this is what prevents a deadlock against
+    // mosquitto_loop_stop in teardown_connection, which waits for the
+    // loop thread to exit before destroying the client.
+    subscribe_connected_topics();
+
+    return true;
+}
+
+void MqttTransportModule::teardown_connection() {
+    std::lock_guard<std::mutex> lock(mosq_mu_);
+    if (!mosq_) {
+        connected_.store(false, std::memory_order_relaxed);
+        return;
+    }
+    mosquitto_disconnect_v5(mosq_, 0, nullptr);
+    mosquitto_loop_stop(mosq_, /*force=*/false);
+    mosquitto_destroy(mosq_);
+    mosq_ = nullptr;
+    connected_.store(false, std::memory_order_relaxed);
+    connect_attempt_done_.store(false, std::memory_order_relaxed);
+}
+
+void MqttTransportModule::publish_graceful_shutdown() {
+    const int aid = agent_id_.load(std::memory_order_relaxed);
+    if (aid <= 0) return;
+
+    const nlohmann::json msg = {
+        {"v",        1},
+        {"agent_id", aid},
+        {"reason",   axiom::core::to_string(ctx_->shutdown.reason())},
+    };
+    const std::string body  = msg.dump();
+    const std::string topic = "axiomdlp/agents/" + std::to_string(aid) + "/shutdown";
+
+    std::lock_guard<std::mutex> lock(mosq_mu_);
+    if (!mosq_ || !connected_.load()) return;
+
+    int mid = 0;
+    const int rc = mosquitto_publish_v5(mosq_, &mid,
+                                        topic.c_str(),
+                                        static_cast<int>(body.size()), body.data(),
+                                        /*qos=*/1, /*retain=*/false,
+                                        /*props=*/nullptr);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        SPDLOG_WARN("mqtt_transport: shutdown publish failed: {}", mosquitto_strerror(rc));
+    } else {
+        SPDLOG_INFO("mqtt_transport: published shutdown message");
+    }
+}
+
+bool MqttTransportModule::interruptible_sleep(int seconds) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    constexpr auto tick = 100ms;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (stop_.load() || ctx_->shutdown.is_requested()) return true;
+        std::this_thread::sleep_for(tick);
+    }
+    return stop_.load() || ctx_->shutdown.is_requested();
+}
+
+// ── Callbacks (fire on the mosquitto loop thread) ─────────────────
+
+void MqttTransportModule::on_connect_cb(struct mosquitto* /*mosq*/,
+                                        void* obj, int rc, int flags,
+                                        const mosquitto_property* props) {
+    static_cast<MqttTransportModule*>(obj)->handle_connect(rc, flags, props);
+}
+
+void MqttTransportModule::on_disconnect_cb(struct mosquitto* /*mosq*/,
+                                           void* obj, int rc,
+                                           const mosquitto_property* /*props*/) {
+    static_cast<MqttTransportModule*>(obj)->handle_disconnect(rc);
+}
+
+void MqttTransportModule::on_message_cb(struct mosquitto* /*mosq*/,
+                                        void* obj,
+                                        const struct mosquitto_message* msg,
+                                        const mosquitto_property* props) {
+    static_cast<MqttTransportModule*>(obj)->handle_message(msg, props);
+}
+
+void MqttTransportModule::on_log_cb(struct mosquitto* /*mosq*/,
+                                    void* /*obj*/, int level, const char* str) {
+    if (str) SPDLOG_DEBUG("[mqtt/{}] {}", level, str);
+}
+
+void MqttTransportModule::handle_connect(int rc, int flags,
+                                         const mosquitto_property* /*props*/) {
+    (void)flags;
+
+    if (rc != 0) {
+        SPDLOG_ERROR("mqtt_transport: CONNACK rejected (reason=0x{:02x} {})",
+                     rc, mosquitto_connack_string(rc));
+        if (rc == kConnackAuthFailure) {
+            ctx_->shutdown.request(ShutdownReason::AuthRevoked);
+        }
+        connect_attempt_done_.store(true, std::memory_order_relaxed);
+        connect_cv_.notify_all();
+        return;
+    }
+
+    connected_.store(true, std::memory_order_relaxed);
+    connect_attempt_done_.store(true, std::memory_order_relaxed);
+    SPDLOG_INFO("mqtt_transport: connected to {}:{}", host_, port_);
+
+    {
+        auto e = std::make_shared<Event>(Event::create(event_types::kMqttState));
+        e->metadata["state"]  = "connected";
+        e->metadata["host"]   = host_;
+        e->metadata["source"] = "mqtt_transport";
+        ctx_->event_bus.publish(e);
+    }
+
+    // Subscribe happens in connect_and_setup() after the CV wait —
+    // do NOT subscribe from this callback (see that function's comment).
+    connect_cv_.notify_all();
+}
+
+void MqttTransportModule::handle_disconnect(int rc) {
+    const bool was_connected = connected_.exchange(false, std::memory_order_relaxed);
+
+    if (was_connected) {
+        SPDLOG_WARN("mqtt_transport: disconnected (reason=0x{:02x} {})",
+                    rc, mosquitto_connack_string(rc));
+    } else {
+        connect_attempt_done_.store(true, std::memory_order_relaxed);
+    }
+
+    {
+        auto e = std::make_shared<Event>(Event::create(event_types::kMqttState));
+        e->metadata["state"]  = "disconnected";
+        e->metadata["reason"] = mosquitto_connack_string(rc);
+        e->metadata["source"] = "mqtt_transport";
+        ctx_->event_bus.publish(e);
+    }
+
+    connect_cv_.notify_all();
+}
+
+void MqttTransportModule::handle_message(const struct mosquitto_message* msg,
+                                         const mosquitto_property* props) {
+    if (!msg || !msg->topic) return;
+
+    std::string correlation_id;
+    if (props) {
+        void*    data = nullptr;
+        uint16_t len  = 0;
+        if (mosquitto_property_read_binary(
+                props, MQTT_PROP_CORRELATION_DATA,
+                &data, &len, /*skip_first=*/false) != nullptr
+            && data != nullptr && len > 0) {
+            correlation_id.assign(static_cast<const char*>(data),
+                                  static_cast<std::size_t>(len));
+            std::free(data);
+        }
+    }
+
+    nlohmann::json body;
+    try {
+        if (msg->payloadlen > 0) {
+            const char* begin = static_cast<const char*>(msg->payload);
+            const char* end   = begin + msg->payloadlen;
+            body = nlohmann::json::parse(begin, end);
+        }
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("mqtt_transport: bad JSON on '{}': {}", msg->topic, e.what());
+        return;
+    }
+
+    if (correlation_id.empty()
+        && body.is_object()
+        && body.contains("correlation_id")
+        && body["correlation_id"].is_string()) {
+        correlation_id = body["correlation_id"].get<std::string>();
+    }
+
+    if (!correlation_id.empty()) {
+        std::shared_ptr<PendingRequest> pending;
+        {
+            std::lock_guard lock(pending_mu_);
+            auto it = pending_.find(correlation_id);
+            if (it != pending_.end()) pending = it->second;
+        }
+        if (pending) {
+            {
+                std::lock_guard lk(pending->mu);
+                pending->response = std::move(body);
+                pending->done     = true;
+            }
+            pending->cv.notify_all();
+            return;
+        }
+    }
+
+    if (msg->topic && std::string(msg->topic).find("/revoke") != std::string::npos) {
+        handle_server_revoke(body);
+        return;
+    }
+
+    std::vector<MessageHandler> handlers;
+    {
+        std::lock_guard lock(subs_mu_);
+        auto it = subs_.find(msg->topic);
+        if (it != subs_.end()) handlers = it->second;
+    }
+
+    if (handlers.empty()) {
+        SPDLOG_DEBUG("mqtt_transport: no handler for topic '{}'", msg->topic);
+        return;
+    }
+
+    for (const auto& h : handlers) {
+        try { h(body); }
+        catch (const std::exception& e) {
+            SPDLOG_ERROR("mqtt_transport: handler threw on '{}': {}",
+                         msg->topic, e.what());
+        }
+    }
+}
+
+void MqttTransportModule::handle_server_revoke(const nlohmann::json& body) {
+    const std::string reason =
+        body.is_object() && body.contains("reason") && body["reason"].is_string()
+            ? body["reason"].get<std::string>()
+            : "";
+    SPDLOG_WARN("mqtt_transport: server REVOKE (reason='{}')", reason);
+
+    if (reason == "token_revoked")      ctx_->shutdown.request(ShutdownReason::AuthRevoked);
+    else if (reason == "agent_revoked") ctx_->shutdown.request(ShutdownReason::AgentRevoked);
+    else                                ctx_->shutdown.request(ShutdownReason::AuthRevoked);
+}
+
+void MqttTransportModule::subscribe_connected_topics() {
+    std::lock_guard<std::mutex> lock(mosq_mu_);
+    if (!mosq_) return;
+
+    auto do_sub = [this](const std::string& topic, int qos) {
+        int mid = 0;
+        const int rc = mosquitto_subscribe(mosq_, &mid, topic.c_str(), qos);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            SPDLOG_WARN("mqtt_transport: subscribe '{}' failed: {}",
+                        topic, mosquitto_strerror(rc));
+        } else {
+            SPDLOG_INFO("mqtt_transport: subscribed '{}' (qos={})", topic, qos);
+        }
+    };
+
+    do_sub(reply_topic_, 1);
+
+    const int aid = agent_id_.load(std::memory_order_relaxed);
+    if (aid > 0) {
+        do_sub("axiomdlp/agents/" + std::to_string(aid) + "/command", 2);
+        do_sub("axiomdlp/agents/" + std::to_string(aid) + "/policy",  2);
+        do_sub("axiomdlp/agents/" + std::to_string(aid) + "/revoke",  2);
+    }
+}
+
+void MqttTransportModule::set_agent_id(int agent_id) {
+    if (agent_id < 0) return;   // negative invalid; 0 = clear (valid)
+
+    const int prev = agent_id_.exchange(agent_id, std::memory_order_relaxed);
+    if (prev == agent_id) return;
+
+    SPDLOG_INFO("mqtt_transport: agent_id set to {} (was {})", agent_id, prev);
+
+    if (connected_.load(std::memory_order_relaxed)) {
+        subscribe_connected_topics();
+    }
+}
+
+// ── IRequestClient ────────────────────────────────────────────────
+
+std::optional<nlohmann::json>
+MqttTransportModule::request(const std::string&    topic,
+                             const nlohmann::json& payload,
+                             int                   qos,
+                             int                   timeout_seconds) {
+    if (!connected_.load(std::memory_order_relaxed)) {
+        SPDLOG_DEBUG("mqtt_transport: request on disconnected client (topic={})", topic);
+        return std::nullopt;
+    }
+
+    const std::string cid = random_hex_32();
+    nlohmann::json body   = payload;
+    body["v"]              = 1;
+    body["correlation_id"] = cid;
+    const std::string body_str = body.dump();
+
+    auto pending = std::make_shared<PendingRequest>();
+    {
+        std::lock_guard lock(pending_mu_);
+        pending_[cid] = pending;
+    }
+
+    mosquitto_property* props = nullptr;
+    mosquitto_property_add_string(&props, MQTT_PROP_RESPONSE_TOPIC,
+                                  reply_topic_.c_str());
+    mosquitto_property_add_binary(&props, MQTT_PROP_CORRELATION_DATA,
+                                  cid.data(),
+                                  static_cast<uint16_t>(cid.size()));
+
+    int mid = 0;
+    int rc  = MOSQ_ERR_SUCCESS;
+    {
+        std::lock_guard<std::mutex> lock(mosq_mu_);
+        if (!mosq_) {
+            mosquitto_property_free_all(&props);
+            std::lock_guard plk(pending_mu_);
+            pending_.erase(cid);
+            return std::nullopt;
+        }
+        rc = mosquitto_publish_v5(mosq_, &mid,
+                                  topic.c_str(),
+                                  static_cast<int>(body_str.size()),
+                                  body_str.data(),
+                                  qos, /*retain=*/false, props);
+    }
+    mosquitto_property_free_all(&props);
+
+    if (rc != MOSQ_ERR_SUCCESS) {
+        {
+            std::lock_guard lock(pending_mu_);
+            pending_.erase(cid);
+        }
+        SPDLOG_WARN("mqtt_transport: publish '{}' failed: {}",
+                    topic, mosquitto_strerror(rc));
+        return std::nullopt;
+    }
+
+    std::unique_lock lock(pending->mu);
+    const bool done = pending->cv.wait_for(
+        lock, std::chrono::seconds(timeout_seconds),
+        [&] { return pending->done; });
+
+    {
+        std::lock_guard lk(pending_mu_);
+        pending_.erase(cid);
+    }
+
+    if (!done) {
+        SPDLOG_DEBUG("mqtt_transport: request '{}' timed out after {}s",
+                     topic, timeout_seconds);
+        return std::nullopt;
+    }
+    return pending->response;
+}
+
+void MqttTransportModule::subscribe(
+        const std::string& topic,
+        std::function<void(const nlohmann::json&)> handler) {
+    std::lock_guard lock(subs_mu_);
+    subs_[topic].push_back(std::move(handler));
+}
+
+bool MqttTransportModule::publish(const std::string&    topic,
+                                  const nlohmann::json& payload,
+                                  int                   qos,
+                                  bool                  retain) {
+    if (!connected_.load(std::memory_order_relaxed)) return false;
+
+    nlohmann::json body = payload;
+    if (!body.is_object()) return false;
+    if (!body.contains("v")) body["v"] = 1;
+    const std::string s = body.dump();
+
+    std::lock_guard<std::mutex> lock(mosq_mu_);
+    if (!mosq_) return false;
+
+    int mid = 0;
+    const int rc = mosquitto_publish_v5(mosq_, &mid,
+                                        topic.c_str(),
+                                        static_cast<int>(s.size()), s.data(),
+                                        qos, retain, /*props=*/nullptr);
+    return rc == MOSQ_ERR_SUCCESS;
+}
+
+// ── State helpers ─────────────────────────────────────────────────
+
+void MqttTransportModule::load_or_generate_instance_uuid() {
+    if (auto existing = ctx_->state_store.get(kStateKeyMqttInstanceId)) {
+        if (existing->size() == 32) {
+            instance_uuid_ = *existing;
+            return;
+        }
+        SPDLOG_WARN("mqtt_transport: stored mqtt_instance_uuid has unexpected "
+                    "length {} — regenerating", existing->size());
+    }
+    instance_uuid_ = random_hex_32();
+    ctx_->state_store.set(kStateKeyMqttInstanceId, instance_uuid_);
+    SPDLOG_INFO("mqtt_transport: generated new instance_uuid={}", instance_uuid_);
+}
+
+int MqttTransportModule::load_agent_id_from_state() const {
+    if (auto v = ctx_->state_store.get(kStateKeyAgentId)) {
+        try {
+            const int id = std::stoi(*v);
+            if (id > 0) return id;
+        } catch (const std::exception&) { /* ignore */ }
+    }
+    return 0;
+}
+
+} // namespace axiom::core
+```
+
+### \`src/features/mqtt_transport/mqtt_transport_module.h\`
+
+```cpp
+// src/features/mqtt_transport/mqtt_transport_module.h
+//
+// MqttTransportModule is the sole server-facing transport for the agent.
+// It owns one libmosquitto client, one manager thread, and the correlated
+// request/response machinery described in docs/mqtt_protocol.md.
+//
+// Forward declarations of libmosquitto types MUST match libmosquitto's own
+// header exactly.
+
+#pragma once
+
+#include "modules/module_base.h"
+#include "net/i_request_client.h"
+
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+// ----------------------------------------------------------------
+// Forward declarations — must match libmosquitto's own headers EXACTLY.
+// ----------------------------------------------------------------
+struct mosquitto;
+struct mosquitto_message;
+struct mqtt5__property;
+typedef struct mqtt5__property mosquitto_property;
+
+namespace axiom::core {
+
+class MqttTransportModule final : public ModuleBase,
+                                  public IRequestClient {
+public:
+    using MessageHandler = std::function<void(const nlohmann::json&)>;
+
+    MqttTransportModule();
+    ~MqttTransportModule() override;
+
+    std::string name() const override { return "mqtt_transport"; }
+
+    // ── Module lifecycle ───────────────────────────────────────────
+    bool         initialize(ModuleContext& context) override;
+    bool         start() override;
+    void         stop() override;
+    void         shutdown() override;
+    HealthStatus health() const override;
+
+    // ── IRequestClient ─────────────────────────────────────────────
+    std::optional<nlohmann::json> request(
+        const std::string&    topic,
+        const nlohmann::json& payload,
+        int                   qos,
+        int                   timeout_seconds) override;
+
+    void subscribe(const std::string& topic,
+                   std::function<void(const nlohmann::json&)> handler) override;
+
+    bool is_connected() const override;
+
+    void set_agent_id(int agent_id) override;
+
+    // ── MQTT-specific extension ────────────────────────────────────
+    IRequestClient* as_request_client() { return this; }
+
+    bool publish(const std::string&    topic,
+                 const nlohmann::json& payload,
+                 int                   qos,
+                 bool                  retain);
+
+private:
+    struct PendingRequest {
+        std::mutex              mu;
+        std::condition_variable cv;
+        nlohmann::json          response;
+        bool                    done = false;
+    };
+
+    void manager_loop();
+    bool connect_and_setup();
+    void teardown_connection();
+    void subscribe_connected_topics();
+    bool interruptible_sleep(int seconds);
+    void publish_graceful_shutdown();
+
+    static void on_connect_cb(struct mosquitto* mosq, void* obj,
+                              int rc, int flags,
+                              const mosquitto_property* props);
+    static void on_disconnect_cb(struct mosquitto* mosq, void* obj,
+                                 int rc, const mosquitto_property* props);
+    static void on_message_cb(struct mosquitto* mosq, void* obj,
+                              const struct mosquitto_message* msg,
+                              const mosquitto_property* props);
+    static void on_log_cb(struct mosquitto* mosq, void* obj,
+                          int level, const char* str);
+
+    void handle_connect(int rc, int flags, const mosquitto_property* props);
+    void handle_disconnect(int rc);
+    void handle_message(const struct mosquitto_message* msg,
+                        const mosquitto_property* props);
+    void handle_server_revoke(const nlohmann::json& body);
+
+    void load_or_generate_instance_uuid();
+    int  load_agent_id_from_state() const;
+
+    std::string host_;
+    int         port_          = 8883;
+    bool        tls_           = true;
+    std::string ca_path_;
+    int         keepalive_sec_ = 60;
+    int         backoff_base_  = 10;
+    int         backoff_max_   = 300;
+    std::string api_token_;
+
+    std::string      instance_uuid_;
+    std::string      reply_topic_;
+    std::atomic<int> agent_id_{0};
+
+    struct mosquitto* mosq_ = nullptr;
+    mutable std::mutex mosq_mu_;    // guards mosq_ against cross-thread use
+
+    std::atomic<bool>       stop_{false};
+    std::atomic<bool>       running_{false};
+    std::atomic<bool>       connected_{false};
+    std::atomic<bool>       connect_attempt_done_{false};
+    std::thread             manager_thread_;
+    mutable std::mutex      connect_mu_;
+    std::condition_variable connect_cv_;
+
+    mutable std::mutex                                subs_mu_;
+    std::map<std::string, std::vector<MessageHandler>> subs_;
+
+    mutable std::mutex                                     pending_mu_;
+    std::map<std::string, std::shared_ptr<PendingRequest>> pending_;
+};
+
+} // namespace axiom::core
+```
+
 ### \`src/foundation/application.cpp\`
 
 ```cpp
@@ -6627,7 +7509,9 @@ private:
 #include "features/event_logger/event_logger_module.h"
 #include "features/filesystem_watcher/filesystem_watcher_module.h"
 #include "features/inventory/inventory_module.h"
-#include "features/grpc_transport/grpc_transport_module.h"
+#ifdef AXIOM_HAVE_MQTT
+#  include "features/mqtt_transport/mqtt_transport_module.h"
+#endif
 #include "storage/migrations.h"
 #include "storage/state_repository.h"
 
@@ -6705,15 +7589,39 @@ bool Application::init() {
     }
 
     event_bus_ = std::make_unique<EventBus>();
-    module_context_ = std::make_unique<ModuleContext>(config_, *event_bus_, *file_store_, *state_store_, *database_, *shutdown_controller_);
+
+#ifdef AXIOM_HAVE_MQTT
+    // MQTT transport module is constructed first so its IRequestClient
+    // interface is available via ModuleContext before feature modules
+    // are instantiated.
+    auto mqtt_module = std::make_unique<MqttTransportModule>();
+    IRequestClient* mqtt_client = mqtt_module->as_request_client();
+
+    module_context_ = std::make_unique<ModuleContext>(
+        config_, *event_bus_, *file_store_, *state_store_,
+        *database_, *shutdown_controller_, mqtt_client);
     module_manager_ = std::make_unique<ModuleManager>();
 
     module_manager_->register_module(std::make_unique<FilesystemWatcherModule>());
     module_manager_->register_module(std::make_unique<InventoryModule>());
     module_manager_->register_module(std::make_unique<EventLoggerModule>());
-    module_manager_->register_module(std::make_unique<GrpcTransportModule>());
+    module_manager_->register_module(std::move(mqtt_module));
     module_manager_->register_module(std::make_unique<AgentSyncModule>());
     module_manager_->register_module(std::make_unique<ContentScannerModule>());
+#else
+    SPDLOG_WARN("MQTT transport disabled at build time (AXIOM_HAVE_MQTT=OFF); "
+                "server-push and MQTT request paths are unavailable");
+    module_context_ = std::make_unique<ModuleContext>(
+        config_, *event_bus_, *file_store_, *state_store_,
+        *database_, *shutdown_controller_, nullptr);
+    module_manager_ = std::make_unique<ModuleManager>();
+
+    module_manager_->register_module(std::make_unique<FilesystemWatcherModule>());
+    module_manager_->register_module(std::make_unique<InventoryModule>());
+    module_manager_->register_module(std::make_unique<EventLoggerModule>());
+    module_manager_->register_module(std::make_unique<AgentSyncModule>());
+    module_manager_->register_module(std::make_unique<ContentScannerModule>());
+#endif
 
     if (!module_manager_->initialize_all(*module_context_)) {
         SPDLOG_ERROR("Some modules failed to initialize; continuing anyway");
@@ -6971,30 +7879,43 @@ void parse_server(const json& root, Config& cfg) {
         read_int   (s, "heartbeat_interval_seconds",  cfg.server.heartbeat_interval_seconds,  cfg.load_warnings, section);
         read_int   (s, "reconnect_backoff_seconds",   cfg.server.reconnect_backoff_seconds,   cfg.load_warnings, section);
         read_int   (s, "reconnect_backoff_max_seconds", cfg.server.reconnect_backoff_max_seconds, cfg.load_warnings, section);
-        read_int   (s, "grpc_port",                   cfg.server.grpc_port,                   cfg.load_warnings, section);
-        read_bool  (s, "grpc_tls",                    cfg.server.grpc_tls,                    cfg.load_warnings, section);
-        read_string(s, "grpc_ca_path",                cfg.server.grpc_ca_path,                cfg.load_warnings, section);
+
+        // ── MQTT ───────────────────────────────────────────────────
+        read_int   (s, "mqtt_port",              cfg.server.mqtt_port,              cfg.load_warnings, section);
+        read_bool  (s, "mqtt_tls",               cfg.server.mqtt_tls,               cfg.load_warnings, section);
+        read_string(s, "mqtt_ca_path",           cfg.server.mqtt_ca_path,           cfg.load_warnings, section);
+        read_int   (s, "mqtt_keepalive_seconds", cfg.server.mqtt_keepalive_seconds, cfg.load_warnings, section);
     }
-    if (cfg.server.grpc_port < 1 || cfg.server.grpc_port > 65535) {
-        cfg.load_warnings.push_back(section + ".grpc_port must be between 1 and 65535; using 50051");
-        cfg.server.grpc_port = 50051;
+
+    if (cfg.server.mqtt_port < 1 || cfg.server.mqtt_port > 65535) {
+        cfg.load_warnings.push_back(section + ".mqtt_port must be between 1 and 65535; using 8883");
+        cfg.server.mqtt_port = 8883;
     }
+    if (cfg.server.mqtt_keepalive_seconds < 10) {
+        cfg.load_warnings.push_back(section + ".mqtt_keepalive_seconds must be >= 10; using 60");
+        cfg.server.mqtt_keepalive_seconds = 60;
+    }
+    if (!cfg.server.mqtt_tls && !cfg.server.mqtt_ca_path.empty()) {
+        cfg.load_warnings.push_back(section + ".mqtt_ca_path is set but mqtt_tls is false; "
+                                    "the CA path will be ignored");
+    }
+
     cfg.server.base_url = strip_trailing_slashes(cfg.server.base_url);
     if (cfg.server.base_url.empty()) {
         cfg.load_warnings.push_back("server.base_url is empty; using default");
         cfg.server.base_url = "http://127.0.0.1:3000";
     }
     if (cfg.server.heartbeat_interval_seconds < 5) {
-        cfg.load_warnings.push_back("server.heartbeat_interval_seconds must be >= 5; using 30");
-        cfg.server.heartbeat_interval_seconds = 30;
+        cfg.load_warnings.push_back("server.heartbeat_interval_seconds must be >= 5; using 60");
+        cfg.server.heartbeat_interval_seconds = 60;
     }
     if (cfg.server.reconnect_backoff_seconds < 1) {
-        cfg.load_warnings.push_back("server.reconnect_backoff_seconds must be >= 1; using 5");
-        cfg.server.reconnect_backoff_seconds = 5;
+        cfg.load_warnings.push_back("server.reconnect_backoff_seconds must be >= 1; using 10");
+        cfg.server.reconnect_backoff_seconds = 10;
     }
     if (cfg.server.reconnect_backoff_max_seconds < cfg.server.reconnect_backoff_seconds) {
-        cfg.load_warnings.push_back("server.reconnect_backoff_max_seconds must be >= reconnect_backoff_seconds; using 60");
-        cfg.server.reconnect_backoff_max_seconds = 60;
+        cfg.load_warnings.push_back("server.reconnect_backoff_max_seconds must be >= reconnect_backoff_seconds; using 300");
+        cfg.server.reconnect_backoff_max_seconds = 300;
     }
 }
 
@@ -7131,14 +8052,15 @@ struct StorageConfig {
 struct ServerConfig {
     std::string base_url = "http://127.0.0.1:3000";
     std::string api_token;
-    int heartbeat_interval_seconds = 30;
-    int reconnect_backoff_seconds     = 5;
-    int reconnect_backoff_max_seconds = 60;
+    int heartbeat_interval_seconds = 60;
+    int reconnect_backoff_seconds     = 10;
+    int reconnect_backoff_max_seconds = 300;
 
-    // gRPC specific configuration
-    int  grpc_port = 50051;
-    bool grpc_tls  = true;
-    std::string grpc_ca_path;
+    // MQTT (agent transport — Phase 7+)
+    int         mqtt_port               = 8883;
+    bool        mqtt_tls                = true;
+    std::string mqtt_ca_path;            // empty = use system trust store
+    int         mqtt_keepalive_seconds  = 60;
 };
 
 struct FilesystemWatcherModuleConfig {
@@ -7587,16 +8509,16 @@ protected:
 ```cpp
 // src/modules/module_context.h
 //
-// ModuleContext is the shared dependency container passed to every
-// module at initialize() time. It holds references to the subsystems
-// modules need: config, event bus, storage, and the shutdown
-// controller.
+// ModuleContext is the shared dependency container passed to every module
+// at initialize() time. Holds references to config, event bus, storage,
+// shutdown controller, and the request client that reaches the Core.
 
 #pragma once
 
 #include "foundation/config.h"
 #include "foundation/shutdown.h"
 #include "events/event_bus.h"
+#include "net/i_request_client.h"
 
 namespace axiom::core {
 
@@ -7612,18 +8534,26 @@ struct ModuleContext {
     Database&           database;
     ShutdownController& shutdown;
 
+    // Nullable until Application wires the transport in. Modules that
+    // talk to the Core (agent_sync, content_scanner) must null-check
+    // before use. The #else branch of Application::init() — when MQTT
+    // is not built — passes nullptr here.
+    IRequestClient*     request_client = nullptr;
+
     ModuleContext(const Config&         c,
                   EventBus&             bus,
                   FileStore&            store,
                   StateStore&           state,
                   Database&             db,
-                  ShutdownController&   sd)
+                  ShutdownController&   sd,
+                  IRequestClient*       rc = nullptr)
         : config(c),
           event_bus(bus),
           file_store(store),
           state_store(state),
           database(db),
-          shutdown(sd) {}
+          shutdown(sd),
+          request_client(rc) {}
 };
 
 } // namespace axiom::core
@@ -7849,357 +8779,62 @@ private:
 } // namespace axiom::core
 ```
 
-### \`src/net/http_client.cpp\`
+### \`src/net/i_request_client.h\`
 
 ```cpp
-// src/net/http_client.cpp
-
-#include "net/http_client.h"
-
-#include <httplib.h>
-#include <spdlog/spdlog.h>
-
-namespace axiom::core {
-
-HttpClient::HttpClient()  = default;
-HttpClient::~HttpClient() = default;
-
-HttpClient::Response HttpClient::post_json(const std::string& url,
-                                           const std::string& json_body,
-                                           const std::string& bearer_token,
-                                           int                timeout_secs) {
-    Response resp;
-
-    // --- Parse URL scheme://host[:port]/path ---
-    const auto scheme_end = url.find("://");
-    if (scheme_end == std::string::npos) {
-        resp.error = "invalid URL (missing scheme)";
-        return resp;
-    }
-
-    const std::string scheme = url.substr(0, scheme_end);
-    if (scheme != "http" && scheme != "https") {
-        resp.error = "unsupported scheme: " + scheme;
-        return resp;
-    }
-
-    const std::size_t host_start = scheme_end + 3;
-    const std::size_t path_start = url.find('/', host_start);
-
-    std::string host_port;
-    std::string path;
-    if (path_start == std::string::npos) {
-        host_port = url.substr(host_start);
-        path      = "/";
-    } else {
-        host_port = url.substr(host_start, path_start - host_start);
-        path      = url.substr(path_start);
-    }
-
-    std::string host;
-    int         port = (scheme == "https") ? 443 : 80;
-
-    const auto colon = host_port.find(':');
-    if (colon != std::string::npos) {
-        host = host_port.substr(0, colon);
-        try {
-            port = std::stoi(host_port.substr(colon + 1));
-        } catch (...) {
-            resp.error = "invalid port in URL";
-            return resp;
-        }
-    } else {
-        host = host_port;
-    }
-
-    if (host.empty()) {
-        resp.error = "invalid URL (empty host)";
-        return resp;
-    }
-
-    // --- HTTPS ---
-    if (scheme == "https") {
-        httplib::SSLClient cli(host, port);
-        cli.enable_server_certificate_verification(true);
-        cli.set_connection_timeout(timeout_secs);
-        cli.set_read_timeout(timeout_secs);
-        cli.set_write_timeout(timeout_secs);
-        cli.set_follow_location(true);
-
-        if (!bearer_token.empty()) {
-            cli.set_bearer_token_auth(bearer_token);
-        }
-
-        auto res = cli.Post(path.c_str(), json_body, "application/json");
-        if (!res) {
-            resp.error = "request failed: " + httplib::to_string(res.error());
-            return resp;
-        }
-        resp.status = res->status;
-        resp.body   = res->body;
-    }
-    // --- HTTP ---
-    else {
-        httplib::Client cli(host, port);
-        cli.set_connection_timeout(timeout_secs);
-        cli.set_read_timeout(timeout_secs);
-        cli.set_write_timeout(timeout_secs);
-        cli.set_follow_location(true);
-
-        if (!bearer_token.empty()) {
-            cli.set_bearer_token_auth(bearer_token);
-        }
-
-        auto res = cli.Post(path.c_str(), json_body, "application/json");
-        if (!res) {
-            resp.error = "request failed: " + httplib::to_string(res.error());
-            return resp;
-        }
-        resp.status = res->status;
-        resp.body   = res->body;
-    }
-
-    return resp;
-}
-
-} // namespace axiom::core
-```
-
-### \`src/net/http_client.h\`
-
-```cpp
-// src/net/http_client.h
+// src/net/i_request_client.h
 //
-// HTTP client using cpp-httplib for enrollment, heartbeat, and scan batches.
-// Uses OpenSSL for TLS (via CPPHTTPLIB_OPENSSL_SUPPORT).
-// TLS is always verified.
+// IRequestClient is the transport-agnostic request/response interface used
+// by feature modules (agent_sync, content_scanner) to reach the Core.
+//
+// The concrete implementation today is MqttTransportModule. Adding a new
+// transport (or swapping to a mock in tests) does not require touching the
+// feature modules.
 
 #pragma once
 
+#include <functional>
+#include <optional>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 namespace axiom::core {
 
-class HttpClient {
+class IRequestClient {
 public:
-    HttpClient();
-    ~HttpClient();
+    virtual ~IRequestClient() = default;
 
-    struct Response {
-        int         status = 0;
-        std::string body;
-        std::string error;
+    // Send `payload` to `topic` and block until the response arrives.
+    // Returns std::nullopt on timeout, publish failure, or when the
+    // transport is not connected.
+    //
+    // The implementation is responsible for adding "v" and
+    // "correlation_id" to the payload and for correlating the response.
+    virtual std::optional<nlohmann::json> request(
+        const std::string&    topic,
+        const nlohmann::json& payload,
+        int                   qos,
+        int                   timeout_seconds) = 0;
 
-        bool ok()     const { return error.empty() && status > 0; }
-        bool is_2xx() const { return status >= 200 && status < 300; }
-    };
+    // Register a handler for server-initiated frames on a specific topic.
+    // Multiple handlers per topic are allowed.
+    virtual void subscribe(
+        const std::string&                        topic,
+        std::function<void(const nlohmann::json&)> handler) = 0;
 
-    // Synchronous POST with JSON body. Optional Bearer token.
-    Response post_json(const std::string& url,
-                       const std::string& json_body,
-                       const std::string& bearer_token = "",
-                       int                timeout_secs = 10);
-};
+    // Whether the transport is connected and can send requests. The
+    // feature modules use this to avoid hammering request() during the
+    // first few seconds of startup while the transport is still dialing
+    // the broker.
+    virtual bool is_connected() const = 0;
 
-} // namespace axiom::core
-```
-
-### \`src/net/outbound_queue.cpp\`
-
-```cpp
-// src/modules/transport/outbound_queue.cpp
-
-#include "net/outbound_queue.h"
-
-#include <spdlog/spdlog.h>
-
-namespace axiom::core {
-
-OutboundQueue::OutboundQueue(std::size_t max_messages, std::size_t max_bytes)
-    : max_messages_(max_messages), max_bytes_(max_bytes) {}
-
-OutboundQueue::~OutboundQueue() {
-    stop();
-}
-
-bool OutboundQueue::push(Priority p, std::string message) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    if (stopped_) return false;
-
-    const std::size_t msg_size = message.size();
-
-    // Make room: drop oldest low-priority items until we fit.
-    while (!queues_[static_cast<int>(Priority::Low)].empty() &&
-           (bytes_ + msg_size > max_bytes_ ||
-            count_messages_locked() >= max_messages_)) {
-        bytes_ -= queues_[static_cast<int>(Priority::Low)].front().payload.size();
-        queues_[static_cast<int>(Priority::Low)].pop_front();
-    }
-
-    // If we still don't fit, try dropping the next priority up.
-    while (!queues_[static_cast<int>(Priority::Normal)].empty() &&
-           (bytes_ + msg_size > max_bytes_ ||
-            count_messages_locked() >= max_messages_)) {
-        bytes_ -= queues_[static_cast<int>(Priority::Normal)].front().payload.size();
-        queues_[static_cast<int>(Priority::Normal)].pop_front();
-    }
-
-    // If we still don't fit, refuse the new message.
-    if (bytes_ + msg_size > max_bytes_ ||
-        count_messages_locked() >= max_messages_) {
-        return false;
-    }
-
-    Message m{p, std::move(message)};
-    bytes_ += m.payload.size();
-    queues_[static_cast<int>(p)].push_back(std::move(m));
-
-    cv_.notify_one();
-    return true;
-}
-
-bool OutboundQueue::pop(std::string& out) {
-    std::unique_lock<std::mutex> lock(mutex_);
-
-    cv_.wait(lock, [this] {
-        return stopped_ || !is_empty_locked();
-    });
-
-    if (stopped_ && is_empty_locked()) {
-        return false;
-    }
-
-    for (int i = 0; i < static_cast<int>(Priority::Count); ++i) {
-        if (!queues_[i].empty()) {
-            Message& m = queues_[i].front();
-            out = std::move(m.payload);
-            bytes_ -= out.size();
-            queues_[i].pop_front();
-            return true;
-        }
-    }
-    return false;
-}
-
-bool OutboundQueue::try_pop(std::string& out) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    if (is_empty_locked()) return false;
-
-    for (int i = 0; i < static_cast<int>(Priority::Count); ++i) {
-        if (!queues_[i].empty()) {
-            Message& m = queues_[i].front();
-            out = std::move(m.payload);
-            bytes_ -= out.size();
-            queues_[i].pop_front();
-            return true;
-        }
-    }
-    return false;
-}
-
-void OutboundQueue::stop() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    stopped_ = true;
-    cv_.notify_all();
-}
-
-std::size_t OutboundQueue::size() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return count_messages_locked();
-}
-
-bool OutboundQueue::is_empty_locked() const {
-    for (int i = 0; i < static_cast<int>(Priority::Count); ++i) {
-        if (!queues_[i].empty()) return false;
-    }
-    return true;
-}
-
-std::size_t OutboundQueue::count_messages_locked() const {
-    std::size_t total = 0;
-    for (int i = 0; i < static_cast<int>(Priority::Count); ++i) {
-        total += queues_[i].size();
-    }
-    return total;
-}
-
-} // namespace axiom::core
-```
-
-### \`src/net/outbound_queue.h\`
-
-```cpp
-// src/modules/transport/outbound_queue.h
-//
-// OutboundQueue is a bounded, priority-ordered FIFO. Higher priorities
-// are dequeued first. Messages at the same priority preserve FIFO order.
-//
-// The queue is bounded by both message count and total bytes. When
-// either limit is exceeded, the oldest message at the lowest priority
-// is dropped. This is deliberate: a slow network must not grow the
-// queue without limit.
-
-#pragma once
-
-#include <condition_variable>
-#include <cstddef>
-#include <deque>
-#include <mutex>
-#include <string>
-
-namespace axiom::core {
-
-class OutboundQueue {
-public:
-    enum class Priority {
-        Critical = 0,
-        High     = 1,
-        Normal   = 2,
-        Low      = 3,
-        Count    = 4
-    };
-
-    OutboundQueue(std::size_t max_messages, std::size_t max_bytes);
-    ~OutboundQueue();
-
-    OutboundQueue(const OutboundQueue&) = delete;
-    OutboundQueue& operator=(const OutboundQueue&) = delete;
-
-    // Enqueue a message. Returns false if the queue is full and the
-    // message was dropped.
-    bool push(Priority p, std::string message);
-
-    // Pop the highest-priority message. Blocks until one is available
-    // or stop() is called. Returns false if woken by stop().
-    bool pop(std::string& out);
-
-    // Non-blocking pop. Returns false immediately if the queue is
-    // empty.
-    bool try_pop(std::string& out);
-
-    // Wake any blocked pop() callers and mark the queue as stopped.
-    void stop();
-
-    std::size_t size() const;
-
-private:
-    struct Message {
-        Priority    priority;
-        std::string payload;
-    };
-
-    bool is_empty_locked() const;
-    std::size_t count_messages_locked() const;
-
-    mutable std::mutex      mutex_;
-    std::condition_variable cv_;
-    std::deque<Message>     queues_[static_cast<int>(Priority::Count)];
-    std::size_t             bytes_ = 0;
-    std::size_t             max_messages_;
-    std::size_t             max_bytes_;
-    bool                    stopped_ = false;
+    // The enrollment flow learns the agent_id from the server's register
+    // response. The transport uses it to subscribe to the agent-scoped
+    // topics (command, policy, revoke). Passing 0 clears the identity
+    // (used when the server reports not_found on a heartbeat and the
+    // agent needs to re-register).
+    virtual void set_agent_id(int agent_id) = 0;
 };
 
 } // namespace axiom::core
@@ -10763,6 +11398,8 @@ private:
 
 #include <openssl/evp.h>
 
+#include <cstring>
+
 namespace axiom::util {
 
 std::string base64_encode(const unsigned char* data, std::size_t len) {
@@ -10780,6 +11417,48 @@ std::string base64_encode(const unsigned char* data, std::size_t len) {
     return out;
 }
 
+std::optional<std::vector<unsigned char>> base64_decode(const std::string& encoded) {
+    if (encoded.empty()) return std::vector<unsigned char>{};
+
+    // Reject anything containing whitespace or non-Base64 characters.
+    // EVP_DecodeBlock silently ignores junk in some builds; the strict
+    // pre-check catches corrupted wire data.
+    for (char c : encoded) {
+        if (!((c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '+' || c == '/' || c == '=')) {
+            return std::nullopt;
+        }
+    }
+
+    // EVP_DecodeBlock returns the number of bytes written, which may
+    // include 1 or 2 trailing zero bytes corresponding to '=' padding.
+    // We strip them by counting the trailing '=' characters.
+    std::size_t padding = 0;
+    if (!encoded.empty() && encoded.back() == '=') {
+        ++padding;
+        if (encoded.size() >= 2 && encoded[encoded.size() - 2] == '=') {
+            ++padding;
+        }
+    }
+
+    const std::size_t max_out = (encoded.size() / 4) * 3 + 3;
+    std::vector<unsigned char> out(max_out, 0);
+
+    const int written = EVP_DecodeBlock(
+        out.data(),
+        reinterpret_cast<const unsigned char*>(encoded.data()),
+        static_cast<int>(encoded.size()));
+    if (written < 0) return std::nullopt;
+
+    std::size_t real_size = static_cast<std::size_t>(written);
+    if (padding <= real_size) real_size -= padding;
+    out.resize(real_size);
+
+    return out;
+}
+
 } // namespace axiom::util
 ```
 
@@ -10788,17 +11467,20 @@ std::string base64_encode(const unsigned char* data, std::size_t len) {
 ```cpp
 // src/util/base64.h
 //
-// Base64 encoding per RFC 4648. Uses OpenSSL's EVP_EncodeBlock so we
+// Base64 encoding/decoding per RFC 4648. Uses OpenSSL's EVP API so we
 // don't have to hand-roll it.
 //
-// Used by the content scanner to encode file bytes into JSON-safe
-// strings. Some text files (.sqlite, .parquet, .db) contain bytes
-// that aren't valid UTF-8, and JSON strings must be valid UTF-8.
+// Encoding is used by the content scanner to encode file bytes into
+// JSON-safe strings. Decoding is used by the MQTT transport to unpack
+// base64 fields received from the server (bundle_b64, signature_b64,
+// payload_b64).
 
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace axiom::util {
 
@@ -10811,6 +11493,16 @@ inline std::string base64_encode(const char* data, std::size_t len) {
 inline std::string base64_encode(const std::string& s) {
     return base64_encode(reinterpret_cast<const unsigned char*>(s.data()), s.size());
 }
+
+// Decode a Base64 string. Accepts both standard (with '=' padding)
+// and unpadded input; rejects anything containing whitespace or
+// characters outside the Base64 alphabet. Returns std::nullopt on
+// malformed input.
+//
+// MQTT 5 property values (Correlation-Data, etc.) arrive as raw bytes
+// but the JSON payloads carry Base64-encoded blobs. Both use this
+// function via the JSON path.
+std::optional<std::vector<unsigned char>> base64_decode(const std::string& encoded);
 
 } // namespace axiom::util
 ```
@@ -11048,6 +11740,137 @@ bool path_matches_pattern(const std::string& pattern,
 } // namespace axiom::util
 ```
 
+### \`src/util/ulid.cpp\`
+
+```cpp
+// src/util/ulid.cpp
+
+#include "util/ulid.h"
+
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <random>
+#include <string>
+
+namespace axiom::util {
+
+namespace {
+
+// Crockford's Base32 alphabet. Excludes I, L, O, U to reduce
+// transcription errors. Uppercase only.
+constexpr char kAlphabet[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+// Cryptographically-seeded RNG, constructed once and reused. The
+// std::random_device seed comes from the OS CSPRNG on every call to
+// operator() and is thread-safe on every implementation we target.
+std::mt19937_64& rng() {
+    static thread_local std::mt19937_64 instance{std::random_device{}()};
+    return instance;
+}
+
+// Produce 80 bits of randomness (10 bytes) from the RNG.
+void fill_random(std::uint8_t out[10]) {
+    std::uint64_t hi = rng()();
+    std::uint64_t lo = rng()();
+    for (int i = 0; i < 8; ++i) {
+        out[i]     = static_cast<std::uint8_t>(hi >> (56 - 8 * i));
+        out[8 + i] = static_cast<std::uint8_t>(lo >> (56 - 8 * i));
+        if (i == 1) break;  // only need 10 bytes total; loop handles it
+    }
+    // First 8 bytes from hi, next 2 bytes from top of lo.
+    for (int i = 0; i < 8; ++i) {
+        out[i] = static_cast<std::uint8_t>(hi >> (56 - 8 * i));
+    }
+    out[8] = static_cast<std::uint8_t>((lo >> 56) & 0xFF);
+    out[9] = static_cast<std::uint8_t>((lo >> 48) & 0xFF);
+}
+
+// Encode 16 bytes (128 bits) as 26 Crockford-Base32 characters,
+// with 2 zero bits at the leading edge of the encoded form.
+std::string encode(const std::uint8_t data[16]) {
+    std::string out(26, '0');
+
+    for (int char_idx = 0; char_idx < 26; ++char_idx) {
+        // The 130-bit encoded stream consists of 2 leading zero bits
+        // followed by the 128 bits of `data`. For each output
+        // character, collect its 5 bits.
+        std::uint8_t value = 0;
+        for (int bit_offset = 0; bit_offset < 5; ++bit_offset) {
+            const int bit_pos = char_idx * 5 + bit_offset;
+            std::uint8_t bit = 0;
+            if (bit_pos >= 2) {
+                const int data_bit = bit_pos - 2;
+                const int byte_idx = data_bit / 8;
+                const int off      = data_bit % 8;
+                bit = static_cast<std::uint8_t>(
+                    (data[byte_idx] >> (7 - off)) & 1);
+            }
+            value = static_cast<std::uint8_t>((value << 1) | bit);
+        }
+        out[char_idx] = kAlphabet[value];
+    }
+    return out;
+}
+
+} // namespace
+
+std::string generate_ulid() {
+    std::uint8_t buf[16];
+
+    // 48-bit timestamp, big-endian.
+    const std::uint64_t ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+
+    buf[0] = static_cast<std::uint8_t>((ms >> 40) & 0xFF);
+    buf[1] = static_cast<std::uint8_t>((ms >> 32) & 0xFF);
+    buf[2] = static_cast<std::uint8_t>((ms >> 24) & 0xFF);
+    buf[3] = static_cast<std::uint8_t>((ms >> 16) & 0xFF);
+    buf[4] = static_cast<std::uint8_t>((ms >>  8) & 0xFF);
+    buf[5] = static_cast<std::uint8_t>((ms      ) & 0xFF);
+
+    // 80-bit randomness.
+    fill_random(buf + 6);
+
+    return encode(buf);
+}
+
+} // namespace axiom::util
+```
+
+### \`src/util/ulid.h\`
+
+```cpp
+// src/util/ulid.h
+//
+// ULID (Universally Unique Lexicographically Sortable Identifier).
+//
+// 128 bits = 48-bit millisecond timestamp (big-endian) + 80-bit
+// random. Encoded as 26 uppercase ASCII characters in Crockford's
+// Base32 (excludes I, L, O, U). Two padding bits are placed at the
+// most-significant end of the encoded form, so the first character
+// is always in the range '0'..'7'.
+//
+// Lexicographic order of encoded strings matches chronological order
+// of generation time. This is why the server uses ULID for jti and
+// request IDs.
+//
+// Thread-safe: each call is fully independent.
+
+#pragma once
+
+#include <string>
+
+namespace axiom::util {
+
+// Generate a fresh ULID. Uses std::random_device + std::mt19937_64
+// seeded from the OS entropy source for the 80-bit random portion.
+std::string generate_ulid();
+
+} // namespace axiom::util
+```
+
 ---
 
 ## Packaging
@@ -11065,13 +11888,63 @@ bool path_matches_pattern(const std::string& pattern,
 #
 # Windows builds are done natively on Windows via
 #   scripts/win/build-windows-msvc.ps1   (MSVC + vcpkg)
-# See docs/windows-msvc-build.md.
 #
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEPS_DIR="${ROOT}/.deps"
 
+# ----------------------------------------------------------------
+# Toolchain / dependency pre-checks
+# ----------------------------------------------------------------
+echo "==============================================="
+echo "Checking build prerequisites"
+echo "==============================================="
+
+for tool in git cmake ninja pkg-config make; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "ERROR: '$tool' is not on PATH." >&2
+        echo "       Install it with:  sudo apt install $tool" >&2
+        exit 1
+    fi
+done
+
+# libmosquitto is the agent transport (Phase 7+). Required to build
+# the MQTT transport module. Without it, the build fails and the
+# agent has no live channel to the Core.
+if ! pkg-config --exists libmosquitto; then
+    cat >&2 <<'EOF'
+ERROR: libmosquitto is not installed (pkg-config cannot find it).
+
+Install it with:
+    sudo apt install libmosquitto-dev
+
+For the i686 target, also run:
+    sudo dpkg --add-architecture i386
+    sudo apt update
+    sudo apt install libmosquitto-dev:i386
+
+Verify:
+    pkg-config --modversion libmosquitto
+
+If you want to build WITHOUT MQTT (Phase 7 module disabled), pass:
+    AXIOM_USE_MQTT_OFF=1 ./scripts/linux/build-all.sh
+EOF
+    if [ "${AXIOM_USE_MQTT_OFF:-0}" = "1" ]; then
+        echo "Continuing with AXIOM_USE_MQTT=OFF (no MQTT transport)."
+    else
+        exit 1
+    fi
+fi
+
+if pkg-config --exists libmosquitto; then
+    echo "libmosquitto: $(pkg-config --modversion libmosquitto)"
+fi
+echo
+
+# ----------------------------------------------------------------
+# nlohmann/json source cache
+# ----------------------------------------------------------------
 if [ ! -d "${DEPS_DIR}/nlohmann_json-src" ]; then
     echo "==============================================="
     echo "Populating nlohmann_json source cache (one-time)..."
@@ -11083,6 +11956,9 @@ if [ ! -d "${DEPS_DIR}/nlohmann_json-src" ]; then
     echo
 fi
 
+# ----------------------------------------------------------------
+# OpenSSL
+# ----------------------------------------------------------------
 openssl_target_ready() {
     local dir="$1"
     { [ -f "${dir}/lib/libssl.a"   ] && [ -f "${dir}/lib/libcrypto.a"   ]; } || \
@@ -11101,6 +11977,9 @@ else
     echo
 fi
 
+# ----------------------------------------------------------------
+# Configure + build
+# ----------------------------------------------------------------
 BUILD_TYPE="${1:-release}"
 
 TARGETS=(
@@ -11108,12 +11987,19 @@ TARGETS=(
     linux-i686
 )
 
+# Forward AXIOM_USE_MQTT_OFF into the CMake configure step as
+# -DAXIOM_USE_MQTT=OFF if the user requested it.
+CMAKE_EXTRA_ARGS=()
+if [ "${AXIOM_USE_MQTT_OFF:-0}" = "1" ]; then
+    CMAKE_EXTRA_ARGS=(-DAXIOM_USE_MQTT=OFF)
+fi
+
 for target in "${TARGETS[@]}"; do
     preset="${target}-${BUILD_TYPE}"
     echo "==============================================="
     echo "Building: ${preset}"
     echo "==============================================="
-    cmake --preset "${preset}"
+    cmake --preset "${preset}" "${CMAKE_EXTRA_ARGS[@]}"
     cmake --build --preset "${preset}"
 done
 
@@ -11128,258 +12014,6 @@ done
 
 echo
 echo "For Windows: clone on a Windows box and run scripts\\win\\build-windows-msvc.ps1"
-```
-
-### \`scripts/linux/build-grpc.sh\`
-
-```bash
-#!/usr/bin/env bash
-# scripts/build-grpc.sh
-#
-# Builds gRPC statically for Linux targets only.
-#
-# Windows (MinGW) is intentionally omitted:
-#   gRPC has no official MinGW support. The MSYS2 patches exist but
-#   are version-locked and break on newer releases. Windows gRPC is
-#   supplied by vcpkg on the MSVC build path.
-#
-# Outputs (reused if already present — no forced rebuild):
-#   .deps/grpc-linux-x86_64/
-#   .deps/grpc-linux-i686/
-#
-# Prerequisites:
-#   - OpenSSL built for both Linux targets (run build-openssl.sh)
-#   - For i686: libsystemd-dev:i386 (build machine only)
-#
-# First run takes 30-60 min (Linux x86_64 builds everything from
-# scratch). Later runs are instant — target_ready() skips completed
-# trees.
-#
-# Cross-architecture note:
-#   When building i686 on a 64-bit host, any dependency resolved via
-#   find_package(OpenSSL) or find_package(Brotli) will silently pick
-#   the host's 64-bit library unless the search is explicitly pinned.
-#   The two settings that matter:
-#
-#     -DgRPC_BROTLI_PROVIDER=module   bundle brotli from third_party
-#     -DOPENSSL_SSL_LIBRARY / -DOPENSSL_CRYPTO_LIBRARY
-#                                     pin OpenSSL to .deps (correct arch)
-#
-#   Without these, gRPCTargets.cmake ends up containing absolute
-#   /usr/lib/x86_64-linux-gnu/... paths, and the 32-bit link fails
-#   with "error adding symbols: file in wrong format".
-
-set -euo pipefail
-
-GRPC_VERSION="v1.62.0"
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-DEPS="$ROOT/.deps"
-SRC="$DEPS/grpc-src"
-BUILD_DIR="$DEPS/grpc-build"
-
-export CMAKE_POLICY_VERSION_MINIMUM=3.5
-
-mkdir -p "$DEPS"
-
-# ----------------------------------------------------------------
-# Download source + submodules (once)
-# ----------------------------------------------------------------
-if [ ! -d "$SRC" ]; then
-    echo "Downloading gRPC $GRPC_VERSION with submodules..."
-    git clone --depth 1 --branch "$GRPC_VERSION" \
-        --recurse-submodules --shallow-submodules \
-        https://github.com/grpc/grpc.git "$SRC"
-else
-    echo "gRPC source already cached at $SRC"
-fi
-
-# ----------------------------------------------------------------
-# Readiness check — used to skip already-built trees
-# ----------------------------------------------------------------
-target_ready() {
-    local dir="$1"
-    [ -f "${dir}/lib/libgrpc++.a" ] && \
-    [ -f "${dir}/lib/libgrpc.a"   ] && \
-    [ -f "${dir}/lib/libprotobuf.a" ]
-}
-
-# ----------------------------------------------------------------
-# Host tools (protoc, grpc_cpp_plugin)
-#
-# Needed for code generation on every target. The i686 build skips
-# its own codegen (see below), so these host tools are the only
-# source of protoc/plugin for 32-bit builds.
-# ----------------------------------------------------------------
-HOST_TOOLS="$DEPS/grpc-host-tools"
-
-if [ ! -f "$HOST_TOOLS/bin/protoc" ]; then
-    echo "Building host tools (protoc, grpc_cpp_plugin)..."
-    mkdir -p "$HOST_TOOLS" "$BUILD_DIR/host"
-    pushd "$BUILD_DIR/host" >/dev/null
-    cmake "$SRC" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="$HOST_TOOLS" \
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-        -DgRPC_BUILD_TESTS=OFF \
-        -DgRPC_BUILD_GRPC_CPP_PLUGIN=ON \
-        -DgRPC_BUILD_CSHARP_EXT=OFF \
-        -DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF \
-        -DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF \
-        -DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF \
-        -DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF \
-        -DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF \
-        -DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF \
-        -DgRPC_INSTALL=ON \
-        -DgRPC_SSL_PROVIDER=package \
-        -DOPENSSL_ROOT_DIR="$DEPS/openssl-linux-x86_64"
-    make -j"$(nproc)" protoc grpc_cpp_plugin
-    make install
-    popd >/dev/null
-else
-    echo "Host tools already built at $HOST_TOOLS"
-fi
-
-# ----------------------------------------------------------------
-# Build one target.
-# Args: <target-name> <cmake-toolchain-or-""> <openssl-dir> [extra flags...]
-# ----------------------------------------------------------------
-build_one() {
-    local name="$1"
-    local toolchain="$2"
-    local openssl_dir="$3"
-    shift 3
-    local extra_args=("$@")
-
-    local out="$DEPS/grpc-$name"
-
-    if target_ready "$out"; then
-        echo "gRPC for $name already built at $out; skipping."
-        return
-    fi
-
-    # Determine where OpenSSL installed its static libs (lib/ or lib64/).
-    # OpenSSL 3 puts libs in lib64/ on 64-bit and lib/ on 32-bit.
-    local openssl_libdir=""
-    if [ -f "$openssl_dir/lib/libssl.a" ]; then
-        openssl_libdir="$openssl_dir/lib"
-    elif [ -f "$openssl_dir/lib64/libssl.a" ]; then
-        openssl_libdir="$openssl_dir/lib64"
-    else
-        echo "Error: OpenSSL static libs not found under $openssl_dir" >&2
-        return 1
-    fi
-
-    echo "Building gRPC for $name"
-    echo "  OpenSSL root:  $openssl_dir"
-    echo "  OpenSSL libs:  $openssl_libdir"
-
-    local build_subdir="$BUILD_DIR/$name"
-    mkdir -p "$build_subdir"
-    pushd "$build_subdir" >/dev/null
-
-    local cmake_args=(
-        "$SRC"
-        -DCMAKE_BUILD_TYPE=Release
-        -DCMAKE_INSTALL_PREFIX="$out"
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-        -DgRPC_BUILD_TESTS=OFF
-        -DgRPC_INSTALL=ON
-        -DBUILD_SHARED_LIBS=OFF
-        -DgRPC_SSL_PROVIDER=package
-        -DOPENSSL_ROOT_DIR="$openssl_dir"
-        -DOPENSSL_INCLUDE_DIR="$openssl_dir/include"
-        -DOPENSSL_SSL_LIBRARY="$openssl_libdir/libssl.a"
-        -DOPENSSL_CRYPTO_LIBRARY="$openssl_libdir/libcrypto.a"
-        -DgRPC_ZLIB_PROVIDER=module
-        -DgRPC_CARES_PROVIDER=module
-        -DgRPC_RE2_PROVIDER=module
-        -DgRPC_ABSL_PROVIDER=module
-        -DgRPC_PROTOBUF_PROVIDER=module
-        -DgRPC_PROTOBUF_PACKAGE_TYPE=MODULE
-        -DgRPC_BUILD_GRPC_CPP_PLUGIN=ON
-        -DgRPC_BUILD_CSHARP_EXT=OFF
-        -DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF
-        -DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF
-        -DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF
-        -DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF
-        -DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF
-        -DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF
-        -DCMAKE_CXX_STANDARD=20
-        -DCMAKE_CXX_STANDARD_REQUIRED=ON
-    )
-
-    if [ -n "$toolchain" ]; then
-        cmake_args+=( "-DCMAKE_TOOLCHAIN_FILE=$toolchain" )
-    fi
-
-    cmake_args+=( "${extra_args[@]}" )
-
-    cmake "${cmake_args[@]}"
-    make -j"$(nproc)"
-    make install
-    popd >/dev/null
-
-    echo "gRPC for $name installed at $out"
-}
-
-# ----------------------------------------------------------------
-# Linux x86_64 (native)
-#
-# System brotli and system OpenSSL are x86_64, matching the target,
-# so no provider pinning is required beyond OPENSSL_ROOT_DIR.
-# ----------------------------------------------------------------
-build_one "linux-x86_64" \
-    "" \
-    "$DEPS/openssl-linux-x86_64"
-
-# ----------------------------------------------------------------
-# Linux i686 (32-bit)
-#
-# Notes:
-#   - gRPC_BUILD_CODEGEN=OFF: the codegen plugin fails to compile
-#     on 32-bit. Host tools (built above) handle codegen instead.
-#   - gRPC_SYSTEMD_PROVIDER=none: without this, CMake bakes the
-#     host's 64-bit /usr/lib/x86_64-linux-gnu/libsystemd.so into
-#     gRPCTargets.cmake, and 32-bit consumers fail to link with
-#     "file in wrong format".
-#   - gRPC_BROTLI_PROVIDER=module: gRPC's default brotli provider
-#     is "package", which does find_package(Brotli). On a 64-bit
-#     host without libbrotli-dev:i386 installed, that resolves to
-#     /usr/lib/x86_64-linux-gnu/libbrotli*.so and links 64-bit
-#     code into a 32-bit binary. "module" bundles brotli from
-#     gRPC's own third_party/brotli submodule instead.
-#   - OPENSSL_SSL_LIBRARY / OPENSSL_CRYPTO_LIBRARY: OPENSSL_ROOT_DIR
-#     alone is not always enough on multiarch Debian hosts, where
-#     FindOpenSSL can still prefer the host's 64-bit libssl.so.
-#     Pinning the exact library paths removes the ambiguity.
-# ----------------------------------------------------------------
-build_one "linux-i686" \
-    "$ROOT/cmake/toolchains/linux-i686.cmake" \
-    "$DEPS/openssl-linux-i686" \
-    -DgRPC_BUILD_CODEGEN=OFF \
-    -DgRPC_SYSTEMD_PROVIDER=none \
-    -DgRPC_BROTLI_PROVIDER=module \
-    -DgRPC_ZSTD_PROVIDER=module
-
-# ----------------------------------------------------------------
-# Summary
-# ----------------------------------------------------------------
-echo
-echo "All gRPC builds complete."
-echo
-echo "Status:"
-for target in linux-x86_64 linux-i686; do
-    d="$DEPS/grpc-$target"
-    if target_ready "$d"; then
-        echo "  [OK] $d"
-    else
-        echo "  [FAIL] $d (missing libraries)"
-    fi
-done
-
-echo
-echo "Windows gRPC is supplied by vcpkg on the MSVC build path."
-echo "See scripts/win/build-windows-msvc.ps1."
 ```
 
 ### \`scripts/linux/build-openssl.sh\`
@@ -11525,8 +12159,10 @@ PYEOF
 
 .DESCRIPTION
     Auto-initializes the Visual Studio environment (vcvarsall.bat) so this
-    script works from ANY PowerShell window. Also protects VCPKG_ROOT from
-    being overwritten by vcvarsall.bat (which sets it to the VS-bundled vcpkg).
+    script works from ANY PowerShell window. Preserves VCPKG_ROOT and PATH
+    across vcvarsall.bat, which rewrites both:
+      - VCPKG_ROOT -> VS-bundled vcpkg (wrong one)
+      - PATH       -> VS toolchain only (drops chocolatey, ninja, etc.)
 
 .PARAMETER Configuration
     Debug or Release (default: Release).
@@ -11554,8 +12190,18 @@ param(
 $ErrorActionPreference = "Stop"
 
 # ----------------------------------------------------------------
-# Save VCPKG_ROOT BEFORE VS env init (vcvarsall.bat overwrites it
-# with the VS-bundled vcpkg, which requires builtin-baseline).
+# Save VCPKG_ROOT AND PATH BEFORE VS env init.
+#
+# vcvarsall.bat rewrites both of these. VCPKG_ROOT gets replaced with
+# the VS-bundled vcpkg; PATH gets replaced with the VS toolchain only.
+# The PATH rewrite is what caused the CI failure:
+#
+#     error: Could not fetch ninja.
+#     CMake Error: CMAKE_MAKE_PROGRAM is not set.
+#
+# because after vcvarsall.bat, chocolatey's ninja.exe was no longer on
+# PATH, so vcpkg's detect_compiler port and CMake's Ninja generator
+# both failed to find it.
 # ----------------------------------------------------------------
 $savedVcpkgRoot = $env:VCPKG_ROOT
 if (-not $savedVcpkgRoot) {
@@ -11563,6 +12209,12 @@ if (-not $savedVcpkgRoot) {
 }
 if (-not $savedVcpkgRoot) {
     $savedVcpkgRoot = "$env:USERPROFILE\vcpkg"
+}
+
+$savedPath = $env:PATH
+if (-not $savedPath) {
+    $savedPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                 [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
 
 # ----------------------------------------------------------------
@@ -11626,8 +12278,21 @@ if ($savedVcpkgRoot) {
     }
 }
 
+# ----------------------------------------------------------------
+# Restore PATH so chocolatey-installed tools (ninja in particular)
+# remain visible to CMake and to vcpkg. VS toolchain paths stay first
+# so cl.exe wins over any other compiler that might be on the original
+# PATH; the original PATH is appended after.
+# ----------------------------------------------------------------
+if ($savedPath) {
+    $env:PATH = $env:PATH + ";" + $savedPath
+    Write-Host "  [OK] Restored PATH (VS env first, original appended)" -ForegroundColor Green
+}
+
+# ----------------------------------------------------------------
 # Refuse to use the VS-bundled vcpkg - it requires builtin-baseline
 # in vcpkg.json which the standalone vcpkg does not need.
+# ----------------------------------------------------------------
 if ($env:VCPKG_ROOT -match "Microsoft Visual Studio.*VC[\\/]vcpkg") {
     Write-Host "[ERROR] VCPKG_ROOT points at the VS-bundled vcpkg:" -ForegroundColor Red
     Write-Host "        $env:VCPKG_ROOT" -ForegroundColor Red
@@ -11639,6 +12304,20 @@ if ($env:VCPKG_ROOT -match "Microsoft Visual Studio.*VC[\\/]vcpkg") {
 # Force MSVC compilers (overrides any GCC on PATH)
 $env:CC = "cl.exe"
 $env:CXX = "cl.exe"
+
+# ----------------------------------------------------------------
+# Belt-and-braces: pin CMAKE_MAKE_PROGRAM to ninja.exe if we can find
+# it on the restored PATH. CMake normally finds it via PATH, but doing
+# this explicitly ensures the Ninja generator works even if a future
+# environment change hides ninja again.
+# ----------------------------------------------------------------
+$ninjaCmd = Get-Command ninja.exe -ErrorAction SilentlyContinue
+if ($ninjaCmd) {
+    $env:CMAKE_MAKE_PROGRAM = $ninjaCmd.Source
+    Write-Host "  [OK] CMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM" -ForegroundColor Green
+} else {
+    Write-Host "  [WARN] ninja.exe not found on PATH; CMake will search and vcpkg may download its own copy" -ForegroundColor Yellow
+}
 
 # ----------------------------------------------------------------
 # Locate project root
@@ -11739,7 +12418,9 @@ else {
     - Verifies Visual Studio 2022 (or Build Tools) with the C++ workload.
     - Downloads the vcpkg repository as a ZIP (no git clone).
     - Downloads the prebuilt vcpkg.exe (no compilation).
-    - Sets VCPKG_ROOT persistently for the current user.
+    - Verifies vcpkg.exe runs and the recipe folder is complete.
+    - Persists VCPKG_ROOT for the current workflow (GITHUB_ENV), the
+      current user (registry), and the current process.
 
 .NOTES
     This file is intentionally ASCII-only for maximum encoding compatibility.
@@ -11753,7 +12434,7 @@ Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (fast mode) ===" -Foregr
 # ----------------------------------------------------------------
 # 1. Verify Visual Studio
 # ----------------------------------------------------------------
-Write-Host "`n[1/3] Looking for Visual Studio..." -ForegroundColor Yellow
+Write-Host "`n[1/4] Looking for Visual Studio..." -ForegroundColor Yellow
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) {
@@ -11784,13 +12465,13 @@ if (-not $vsInstall) {
 Write-Host "  [OK] Found: $vsInstall" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 2. vcpkg: ZIP recipes + prebuilt vcpkg.exe
+# 2. vcpkg recipes (ZIP) + prebuilt vcpkg.exe
 # ----------------------------------------------------------------
 $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "$env:USERPROFILE\vcpkg" }
 $vcpkgZip = "$env:USERPROFILE\vcpkg.zip"
 $toolchain = "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
 
-Write-Host "`n[2/3] Setting up vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
+Write-Host "`n[2/4] Setting up vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
 
 # --- 2a. Recipe folder (ports/, scripts/, triplets/)
 if (-not (Test-Path $toolchain)) {
@@ -11837,42 +12518,101 @@ else {
     Write-Host "  [OK] vcpkg.exe already present." -ForegroundColor Green
 }
 
-# --- 2c. Verify both pieces
+# ----------------------------------------------------------------
+# 3. Verify vcpkg.exe runs and recipe folder is complete
+# ----------------------------------------------------------------
+Write-Host "`n[3/4] Verifying vcpkg installation..." -ForegroundColor Yellow
+
 if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-    Write-Host "[ERROR] vcpkg.exe download failed; check $vcpkgRoot" -ForegroundColor Red
+    Write-Host "[ERROR] vcpkg.exe missing at $vcpkgRoot" -ForegroundColor Red
     exit 1
 }
 if (-not (Test-Path $toolchain)) {
     Write-Host "[ERROR] vcpkg toolchain file missing at $toolchain" -ForegroundColor Red
     exit 1
 }
+if (-not (Test-Path "$vcpkgRoot\ports")) {
+    Write-Host "[ERROR] vcpkg ports directory missing at $vcpkgRoot\ports" -ForegroundColor Red
+    Write-Host "        The recipe ZIP may have extracted incorrectly." -ForegroundColor Red
+    exit 1
+}
+if (-not (Test-Path "$vcpkgRoot\triplets")) {
+    Write-Host "[ERROR] vcpkg triplets directory missing at $vcpkgRoot\triplets" -ForegroundColor Red
+    exit 1
+}
+
+# vcpkg.exe must actually run - catches wrong-architecture exe downloads
+try {
+    $vcpkgVersionOutput = & "$vcpkgRoot\vcpkg.exe" version 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] vcpkg.exe version returned exit code $LASTEXITCODE" -ForegroundColor Red
+        Write-Host "        Output: $vcpkgVersionOutput" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  [OK] vcpkg.exe runs: $vcpkgVersionOutput" -ForegroundColor Green
+}
+catch {
+    Write-Host "[ERROR] vcpkg.exe failed to execute: $_" -ForegroundColor Red
+    exit 1
+}
+
 Write-Host "  [OK] vcpkg ready: $vcpkgRoot" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 3. Persist VCPKG_ROOT (both User scope and current process)
+# 4. Persist VCPKG_ROOT
+#
+# Three independent mechanisms, so this works both under GitHub
+# Actions and on a developer workstation:
+#
+#   a) $GITHUB_ENV (CI only)  — the ONLY way to propagate an env var
+#      from one workflow step to the next. Each step is a fresh
+#      PowerShell process, so `$env:VCPKG_ROOT = ...` inside this
+#      step is invisible to the next step unless we also write to
+#      $GITHUB_ENV.
+#
+#   b) User-scope registry    — what `setx`/SetEnvironmentVariable
+#      "User" writes. Picked up by new login shells. Used locally and
+#      as a fallback if $GITHUB_ENV is somehow unavailable.
+#
+#   c) Current process        — makes the "Close this shell, open a
+#      new one" message on a developer workstation true, and lets the
+#      same PowerShell session run the build immediately.
 # ----------------------------------------------------------------
-Write-Host "`n[3/3] Setting VCPKG_ROOT=$vcpkgRoot for current user..." -ForegroundColor Yellow
+Write-Host "`n[4/4] Setting VCPKG_ROOT=$vcpkgRoot..." -ForegroundColor Yellow
 
-# Method 1: .NET API (silent if it works)
+# (a) GitHub Actions cross-step propagation
+if ($env:GITHUB_ENV) {
+    Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
+    Write-Host "  [OK] Wrote VCPKG_ROOT to GITHUB_ENV (propagates to next steps)" -ForegroundColor Green
+}
+else {
+    Write-Host "  [--] GITHUB_ENV not set (not running under GitHub Actions); skipping" -ForegroundColor DarkGray
+}
+
+# (b) User-scope registry (for developer workstations and CI fallback)
 try {
     [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "User")
+    Write-Host "  [OK] Set VCPKG_ROOT in User-scope registry" -ForegroundColor Green
 }
 catch {
-    Write-Host "  setenv API failed; falling back to setx..." -ForegroundColor Yellow
+    Write-Host "  [WARN] SetEnvironmentVariable(User) failed; falling back to setx: $_" -ForegroundColor Yellow
+    $currentVal = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
+    if ($currentVal -ne $vcpkgRoot) {
+        & setx VCPKG_ROOT "$vcpkgRoot" | Out-Null
+    }
 }
 
-# Method 2: setx fallback (writes to registry, works on all Windows versions)
-$currentVal = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
-if ($currentVal -ne $vcpkgRoot) {
-    & setx VCPKG_ROOT "$vcpkgRoot" | Out-Null
-}
-
-# Also set in current process so immediate builds work
+# (c) Current process
 $env:VCPKG_ROOT = $vcpkgRoot
+Write-Host "  [OK] Set VCPKG_ROOT in current process" -ForegroundColor Green
 
 Write-Host "`n=== Setup complete ===" -ForegroundColor Cyan
-Write-Host "Close this shell, open a new one, then run:" -ForegroundColor Cyan
+Write-Host "  VCPKG_ROOT=$env:VCPKG_ROOT" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "If running locally: close this shell, open a new one, then run:" -ForegroundColor Cyan
 Write-Host "  .\scripts\win\build-windows-msvc.ps1" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "If running under GitHub Actions: proceed to the next step." -ForegroundColor Cyan
 ```
 
 ---
@@ -13500,6 +14240,6 @@ the user** — do not assume their contents.
 
 ## Summary
 
-- Files included: **77**
+- Files included: **73**
 - Files skipped:  **24**
-- Bundle size:    452K
+- Bundle size:    488K
