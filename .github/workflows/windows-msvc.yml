@@ -49,12 +49,12 @@ jobs:
           path: |
             C:\Users\runneradmin\vcpkg\downloads
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
-          key: ${{ runner.os }}-vcpkg-2024.01.12-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
+          key: ${{ runner.os }}-vcpkg-2025.10.17-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
           restore-keys: |
-            ${{ runner.os }}-vcpkg-2024.01.12-
+            ${{ runner.os }}-vcpkg-2025.10.17-
             ${{ runner.os }}-vcpkg-
 
-      - name: Setup MSVC and vcpkg (pinned 2024.01.12)
+      - name: Setup MSVC and vcpkg (pinned 2025.10.17)
         run: .\scripts\win\setup-windows-msvc.ps1
         shell: powershell
 
@@ -73,20 +73,13 @@ jobs:
         shell: powershell
 
       # ----------------------------------------------------------------
-      # VCPKG_KEEP_ENV_VARS=PATH is the critical fix:
-      #
-      # vcpkg creates a sanitised environment for every nested CMake
-      # process it spawns (including detect_compiler). That environment
-      # strips PATH by default. This means find_program(NINJA) inside
-      # detect_compiler cannot see the Ninja 1.10.2 that is on the
-      # runner's PATH, so vcpkg downloads its own copy and then runs
-      # `ninja -v` (verbose build) to verify it — which fails in an
-      # empty directory with exit code 1.
-      #
-      # VCPKG_KEEP_ENV_VARS=PATH tells vcpkg to propagate PATH into
-      # the sanitised environment. With that, find_program(NINJA)
-      # succeeds, VCPKG_FORCE_SYSTEM_BINARIES=1 makes vcpkg use the
-      # system Ninja, and the `ninja -v` bug never fires.
+      # VCPKG_KEEP_ENV_VARS=PATH  -> propagate PATH into vcpkg's sanitised
+      #                              build env so find_program(NINJA)
+      #                              finds Ninja 1.10.2.
+      # VCPKG_FORCE_SYSTEM_BINARIES=1 -> use the system Ninja, never
+      #                                  download or verify its own.
+      # Together these defeat the `ninja -v` regression even on vcpkg
+      # releases that use z_use_vcpkg_fetch.
       # ----------------------------------------------------------------
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
