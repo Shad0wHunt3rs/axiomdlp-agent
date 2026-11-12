@@ -25,9 +25,44 @@ jobs:
         run: echo "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
         shell: powershell
 
-      - name: Verify Ninja is reachable
+      # ----------------------------------------------------------------
+      # Remove Strawberry's ninja from PATH.
+      #
+      # The windows-latest runner image ships a ninja at
+      # C:\Strawberry\c\bin\ninja.exe. It sits on PATH by default, and
+      # its version does not match what vcpkg expects. If vcpkg sees
+      # it first, vcpkg's find_program(NINJA) returns the wrong one,
+      # the version check fails, and vcpkg falls into its (buggy)
+      # download-and-verify path which runs "ninja -v" (verbose build,
+      # fails with exit 1 in an empty directory) instead of
+      # "ninja --version".
+      #
+      # Removing Strawberry's entry means the only ninja vcpkg can
+      # find is the one chocolatey installed, at the correct version.
+      # ----------------------------------------------------------------
+      - name: Remove Strawberry ninja from PATH
         run: |
+          $originalPath = $env:PATH
+          $filtered = ($originalPath -split ';' | Where-Object { $_ -notlike '*Strawberry*' }) -join ';'
+          if ($filtered -ne $originalPath) {
+              Write-Host "Removed Strawberry entries from PATH"
+          } else {
+              Write-Host "No Strawberry entries found (already clean)"
+          }
+          $env:PATH = $filtered
+          # Persist for subsequent steps
+          "PATH=$filtered" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "--- where.exe ninja after cleanup ---"
           where.exe ninja
+          if ($LASTEXITCODE -ne 0) {
+              throw "ninja not found on PATH after Strawberry cleanup"
+          }
+          $count = (where.exe ninja | Measure-Object).Count
+          if ($count -ne 1) {
+              throw "Expected exactly 1 ninja on PATH, found $count. Refusing to continue with ambiguous ninja resolution."
+          }
+          Write-Host "--- ninja --version ---"
           ninja --version
         shell: powershell
 
@@ -62,10 +97,6 @@ jobs:
           Write-Host "--- VCPKG_ROOT ---"
           $effectiveVcpkgRoot = $env:VCPKG_ROOT
           if (-not $effectiveVcpkgRoot) {
-              # Fallback: read from User-scope registry. This should not be
-              # necessary after the setup script started writing to GITHUB_ENV,
-              # but it protects against future regressions in the propagation
-              # path (e.g. a runner image change that stops honoring GITHUB_ENV).
               $effectiveVcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
               if ($effectiveVcpkgRoot) {
                   Write-Host "  (fallback: read from User-scope registry)"
@@ -86,12 +117,21 @@ jobs:
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
+          # Force vcpkg to use the system ninja instead of downloading its
+          # own. Without this, vcpkg on this baseline falls into a buggy
+          # download-and-verify path that invokes "ninja -v" (verbose
+          # build, exit 1 in an empty directory) instead of
+          # "ninja --version", and the build dies during compiler
+          # detection. With the flag set and system ninja on PATH (the
+          # steps above guarantee both), vcpkg uses the working ninja.
+          VCPKG_FORCE_SYSTEM_BINARIES: 1
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
+          VCPKG_FORCE_SYSTEM_BINARIES: 1
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
