@@ -49,12 +49,12 @@ jobs:
           path: |
             C:\Users\runneradmin\vcpkg\downloads
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
-          key: ${{ runner.os }}-vcpkg-2024.11.16-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
+          key: ${{ runner.os }}-vcpkg-2025.10.17-${{ hashFiles('**/vcpkg.json') }}-${{ hashFiles('**/triplets/*.cmake') }}
           restore-keys: |
-            ${{ runner.os }}-vcpkg-2024.11.16-
+            ${{ runner.os }}-vcpkg-2025.10.17-
             ${{ runner.os }}-vcpkg-
 
-      - name: Setup MSVC and vcpkg (pinned 2024.11.16)
+      - name: Setup MSVC and vcpkg (pinned 2025.10.17)
         run: .\scripts\win\setup-windows-msvc.ps1
         shell: powershell
 
@@ -75,17 +75,16 @@ jobs:
       # ----------------------------------------------------------------
       # VCPKG_KEEP_ENV_VARS=PATH
       #   vcpkg sanitises PATH when spawning nested CMake. Propagate
-      #   PATH so find_program(NINJA) sees the Ninja 1.10.2 installed
-      #   above.
+      #   PATH so find_program(NINJA) sees the Ninja 1.10.2 above.
       #
       # VCPKG_FORCE_SYSTEM_BINARIES=1
       #   Use the system Ninja; never download or verify vcpkg's own.
-      #   This defeats the `ninja -v` regression.
+      #   Defeats the `ninja -v` regression.
       #
-      # VCPKG_PLATFORM_TOOLSET_VERSION=14.44.35207
-      #   Belt-and-braces. vcpkg 2024.11.16 already detects this
-      #   toolset, but pinning the exact installed version removes any
-      #   ambiguity if the runner image changes.
+      # VCPKG_VISUAL_STUDIO_PATH
+      #   Tell vcpkg exactly which VS installation to use, bypassing
+      #   its auto-detection. Avoids any ambiguity about which
+      #   vcvarsall.bat gets invoked.
       # ----------------------------------------------------------------
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
@@ -94,7 +93,7 @@ jobs:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
           VCPKG_FORCE_SYSTEM_BINARIES: 1
           VCPKG_KEEP_ENV_VARS: PATH
-          VCPKG_PLATFORM_TOOLSET_VERSION: 14.44.35207
+          VCPKG_VISUAL_STUDIO_PATH: "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise"
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
@@ -103,7 +102,7 @@ jobs:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
           VCPKG_FORCE_SYSTEM_BINARIES: 1
           VCPKG_KEEP_ENV_VARS: PATH
-          VCPKG_PLATFORM_TOOLSET_VERSION: 14.44.35207
+          VCPKG_VISUAL_STUDIO_PATH: "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

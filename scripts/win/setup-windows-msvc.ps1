@@ -4,11 +4,10 @@
 
 .DESCRIPTION
     - Verifies Visual Studio (2022) with the C++ workload.
-    - Downloads a PINNED vcpkg registry (2024.11.16) as a ZIP. This is
-      the last 2024 release and the newest one that still calls
-      find_program(NINJA) first (pre-z_use_vcpkg_fetch). It also fully
-      supports VS 2022 with the MSVC 14.44 toolset used by the
-      windows-2022 runner image.
+    - Downloads a PINNED vcpkg registry (2025.10.17) as a ZIP. This
+      release knows about MSVC 14.44 (shipped on windows-2022 since
+      ~April 2024) and auto-detects the installed toolset correctly
+      during the HOST triplet compiler-detection step.
     - Downloads a matching prebuilt vcpkg.exe. Tries several release
       tags in order, then falls back to bootstrap-vcpkg.bat.
     - Retries every download up to 5 times with exponential backoff.
@@ -21,17 +20,15 @@
     - Persists VCPKG_ROOT for the current workflow (GITHUB_ENV), the
       current user (registry), and the current process.
 
-    WHY PIN 2024.11.16:
-      * vcpkg 2024.01.12 does NOT know about MSVC 14.44 (shipped on
-        windows-2022 since ~April 2024) and passes an older toolset
-        version to vcvarsall.bat, which exits 255.
-      * vcpkg 2025.01.13+ routes tool acquisition through
-        z_use_vcpkg_fetch, which triggers the `ninja -v` bug.
-      * 2024.11.16 sits between the two: knows 14.44, still calls
-        find_program(NINJA) first.
-    The Ninja `-v` regression is also neutralised by
-    VCPKG_KEEP_ENV_VARS=PATH and VCPKG_FORCE_SYSTEM_BINARIES=1
-    (see the workflow build steps).
+    WHY PIN 2025.10.17:
+      * vcpkg 2024.01.12 and 2024.11.16 do NOT know about MSVC 14.44
+        (shipped on windows-2022 since ~April 2024) and pass an older
+        toolset version to vcvarsall.bat, which exits 255.
+      * 2025.10.17 has the correct MSVC 14.44 detection logic.
+      * The Ninja `-v` regression that affects newer vcpkg releases is
+        neutralised by VCPKG_KEEP_ENV_VARS=PATH and
+        VCPKG_FORCE_SYSTEM_BINARIES=1 (see the workflow build steps),
+        so 2025.10.17 is safe to use.
 
 .NOTES
     This file is intentionally ASCII-only for maximum encoding compatibility.
@@ -47,8 +44,8 @@ $ErrorActionPreference = "Stop"
 # - $VCPKG_TOOL_TAGS: release tags on microsoft/vcpkg-tool. Tried in
 #                     order. `latest` is a safe final fallback.
 # ----------------------------------------------------------------
-$VCPKG_TAG       = "2024.11.16"
-$VCPKG_TOOL_TAGS = @("2024-11-16", "2024-10-18", "latest")
+$VCPKG_TAG       = "2025.10.17"
+$VCPKG_TOOL_TAGS = @("2025-10-10", "2025-09-12", "latest")
 
 Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (pinned vcpkg $VCPKG_TAG) ===" -ForegroundColor Cyan
 
