@@ -4,11 +4,17 @@
 
 .DESCRIPTION
     - Verifies Visual Studio (2022 or newer) with the C++ workload.
-    - Downloads a PINNED vcpkg release (2024.01.12) as a ZIP.
-    - Downloads the matching prebuilt vcpkg.exe from the same release.
-    - Retries every download up to 5 times with exponential backoff,
-      because windows-latest runners occasionally drop connections to
-      github.com mid-download ("The connection was closed unexpectedly").
+    - Downloads a PINNED vcpkg registry (2024.01.12) as a ZIP.
+    - Downloads a matching prebuilt vcpkg.exe. The matching vcpkg-tool
+      release tag is 2024-01-11 (vcpkg-tool tags are one day earlier
+      than registry tags for this release line).
+    - Retries every download up to 5 times with exponential backoff.
+    - Validates magic bytes on every download:
+         * ZIP (vcpkg registry)  must start with 0x50 0x4B ("PK")
+         * EXE (vcpkg-tool)      must start with 0x4D 0x5A ("MZ")
+      A 404 on github.com returns an HTML page with status 200 through
+      the redirect, so size checks alone are not sufficient. The magic
+      byte check catches that case and triggers a retry.
     - Verifies vcpkg.exe runs and the recipe folder is complete.
     - Persists VCPKG_ROOT for the current workflow (GITHUB_ENV), the
       current user (registry), and the current process.
@@ -31,11 +37,46 @@ $ErrorActionPreference = "Stop"
 # ----------------------------------------------------------------
 # PINNED VCPKG VERSION -- do not bump without re-verifying the Ninja
 # acquisition path.
+#
+# - $VCPKG_TAG      : registry release (used for the ZIP and for the
+#                     cache key in the workflow).
+# - $VCPKG_TOOL_TAGS: release tags on microsoft/vcpkg-tool. Tried in
+#                     order. 2024-01-11 matches registry 2024.01.12.
+#                     2023-12-04 is a safe older fallback.
 # ----------------------------------------------------------------
-$VCPKG_TAG      = "2024.01.12"
-$VCPKG_TOOL_TAG = "2024-01-12"
+$VCPKG_TAG       = "2024.01.12"
+$VCPKG_TOOL_TAGS = @("2024-01-11", "2023-12-04")
 
 Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (pinned vcpkg $VCPKG_TAG) ===" -ForegroundColor Cyan
+
+# ----------------------------------------------------------------
+# Magic byte validator -- reads only the first N bytes, cheap even
+# for large files. Returns $true if the file starts with the expected
+# bytes.
+# ----------------------------------------------------------------
+function Test-MagicBytes {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$true)][int[]]$Expected
+    )
+
+    if (-not (Test-Path $FilePath)) { return $false }
+
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($FilePath)
+        $actual = New-Object byte[] $Expected.Count
+        $read = $stream.Read($actual, 0, $Expected.Count)
+        if ($read -lt $Expected.Count) { return $false }
+        for ($i = 0; $i -lt $Expected.Count; $i++) {
+            if ($actual[$i] -ne $Expected[$i]) { return $false }
+        }
+        return $true
+    }
+    finally {
+        if ($stream) { $stream.Close() }
+    }
+}
 
 # ----------------------------------------------------------------
 # Retry helper -- windows-latest runners occasionally drop github.com
@@ -45,6 +86,7 @@ function Download-WithRetry {
     param(
         [Parameter(Mandatory=$true)][string]$Url,
         [Parameter(Mandatory=$true)][string]$OutFile,
+        [int[]]$ExpectedMagicBytes = @(),
         [int]$MaxAttempts = 5,
         [int]$BaseDelaySeconds = 3
     )
@@ -66,6 +108,15 @@ function Download-WithRetry {
                 throw "Downloaded file is missing or empty: $OutFile"
             }
 
+            # Magic byte check catches HTML error pages that GitHub
+            # sometimes returns with status 200 via a redirect.
+            if ($ExpectedMagicBytes.Count -gt 0) {
+                if (-not (Test-MagicBytes -FilePath $OutFile -Expected $ExpectedMagicBytes)) {
+                    $size = (Get-Item $OutFile).Length
+                    throw "Downloaded file does not start with expected magic bytes (size=$size). Likely an HTML error page."
+                }
+            }
+
             Write-Host "  [OK] Downloaded $((Get-Item $OutFile).Length) bytes" -ForegroundColor Green
             return
         }
@@ -82,8 +133,6 @@ function Download-WithRetry {
                 Start-Sleep -Seconds $delay
             }
             else {
-                Write-Host "[ERROR] All $MaxAttempts download attempts failed for $Url" -ForegroundColor Red
-                Write-Host "        If this persists, try running the workflow again -- it is usually transient." -ForegroundColor Red
                 throw
             }
         }
@@ -151,9 +200,11 @@ if (Test-Path $toolchain) {
 if ($needsInstall) {
     Write-Host "`n[2/4] Setting up pinned vcpkg $VCPKG_TAG at $vcpkgRoot..." -ForegroundColor Yellow
 
-    # Recipe ZIP
+    # ------------------------------------------------------------
+    # Recipe ZIP  (magic bytes: "PK" = 0x50 0x4B)
+    # ------------------------------------------------------------
     $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/tags/$VCPKG_TAG"
-    Download-WithRetry -Url $zipUrl -OutFile $vcpkgZip
+    Download-WithRetry -Url $zipUrl -OutFile $vcpkgZip -ExpectedMagicBytes @(0x50, 0x4B)
 
     Write-Host "  Extracting..." -ForegroundColor Yellow
     Expand-Archive -Path $vcpkgZip -DestinationPath "$env:USERPROFILE" -Force
@@ -173,9 +224,40 @@ if ($needsInstall) {
 
     $VCPKG_TAG | Out-File -FilePath "$vcpkgRoot\.vcpkg-tag" -Encoding ascii -NoNewline
 
-    # Prebuilt vcpkg.exe
-    $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$VCPKG_TOOL_TAG/vcpkg.exe"
-    Download-WithRetry -Url $exeUrl -OutFile "$vcpkgRoot\vcpkg.exe"
+    # ------------------------------------------------------------
+    # vcpkg.exe  (magic bytes: "MZ" = 0x4D 0x5A)
+    #
+    # The vcpkg-tool release tag for registry 2024.01.12 is
+    # 2024-01-11 (one day earlier -- vcpkg-tool tags use the UTC
+    # date the tool was built, the registry uses the date the
+    # registry snapshot was tagged). 2023-12-04 is a safe fallback
+    # from the same release generation.
+    # ------------------------------------------------------------
+    $toolDownloaded = $false
+    $usedTag = $null
+    foreach ($tag in $VCPKG_TOOL_TAGS) {
+        $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$tag/vcpkg.exe"
+        try {
+            Download-WithRetry -Url $exeUrl -OutFile "$vcpkgRoot\vcpkg.exe" -ExpectedMagicBytes @(0x4D, 0x5A)
+            $toolDownloaded = $true
+            $usedTag = $tag
+            break
+        }
+        catch {
+            Write-Host "  [WARN] vcpkg-tool tag '$tag' failed; trying next fallback..." -ForegroundColor Yellow
+            if (Test-Path "$vcpkgRoot\vcpkg.exe") {
+                Remove-Item "$vcpkgRoot\vcpkg.exe" -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    if (-not $toolDownloaded) {
+        Write-Host "[ERROR] All vcpkg-tool tag fallbacks failed: $($VCPKG_TOOL_TAGS -join ', ')" -ForegroundColor Red
+        Write-Host "        Check https://github.com/microsoft/vcpkg-tool/releases for available tags." -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "  [OK] vcpkg.exe downloaded from tag $usedTag" -ForegroundColor Green
 }
 
 # ----------------------------------------------------------------
