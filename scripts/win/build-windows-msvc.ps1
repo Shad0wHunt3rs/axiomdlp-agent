@@ -13,11 +13,16 @@
     ensures the OUTER CMake build always uses a known-good Ninja
     regardless of what vcvarsall.bat leaves on PATH.
 
-    NOTE: This script does NOT control how vcpkg finds Ninja. vcpkg
-    uses its own downloaded Ninja in .deps (see the workflow's
-    actions/cache step). Do not set VCPKG_FORCE_SYSTEM_BINARIES in
-    the workflow -- it breaks vcpkg's Ninja acquisition on current
-    vcpkg releases.
+    CRITICAL: The windows-2022 runner has a very long PATH (Chocolatey,
+    Strawberry, MongoDB, Android SDK, etc.). Windows cmd.exe has an
+    8191-character command-line limit. vcvarsall.bat internally builds
+    a command that includes the entire PATH. When PATH is too long,
+    vcvarsall.bat exits with code 255, which surfaces as:
+        error: while trying to get a Visual Studio environment,
+               vcvarsall.bat returned 255
+    This script trims PATH to only the entries needed for the build
+    BEFORE calling vcvarsall.bat, and keeps only the VS toolchain paths
+    AFTER it returns.
 
 .PARAMETER Configuration
     Debug or Release (default: Release).
@@ -46,10 +51,6 @@ $ErrorActionPreference = "Stop"
 
 # ----------------------------------------------------------------
 # Save VCPKG_ROOT AND PATH BEFORE VS env init.
-#
-# vcvarsall.bat rewrites both of these. VCPKG_ROOT gets replaced with
-# the VS-bundled vcpkg; PATH gets replaced with the VS toolchain only,
-# which drops Chocolatey's ninja from PATH.
 # ----------------------------------------------------------------
 $savedVcpkgRoot = $env:VCPKG_ROOT
 if (-not $savedVcpkgRoot) {
@@ -64,6 +65,36 @@ if (-not $savedPath) {
     $savedPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
                  [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
+
+# ----------------------------------------------------------------
+# TRIM PATH BEFORE vcvarsall.bat.
+#
+# The windows-2022 runner has a PATH that routinely exceeds 7000
+# characters. vcvarsall.bat builds a command line that includes the
+# full PATH, and cmd.exe rejects command lines over 8191 chars with
+# exit code 255. We keep only what vcvarsall.bat itself needs:
+#   - System32 / Windows / Wbem (cmd.exe, where.exe, system DLLs)
+#   - The directory containing ninja.exe (so find_program works)
+#   - PowerShell's own directory (in case a sub-script needs it)
+# Everything else (Chocolatey, Strawberry, MongoDB, Android, etc.)
+# is restored AFTER vcvarsall.bat returns, for CMake/vcpkg use.
+# ----------------------------------------------------------------
+$ninjaCmd = Get-Command ninja.exe -ErrorAction SilentlyContinue
+$ninjaDir = if ($ninjaCmd) { Split-Path $ninjaCmd.Source -Parent } else { $null }
+
+$minimalPathEntries = @(
+    "C:\Windows\system32",
+    "C:\Windows",
+    "C:\Windows\System32\Wbem",
+    "C:\Windows\System32\WindowsPowerShell\v1.0"
+)
+if ($ninjaDir -and (Test-Path $ninjaDir)) {
+    $minimalPathEntries = @($ninjaDir) + $minimalPathEntries
+}
+
+$env:PATH = ($minimalPathEntries -join ";")
+Write-Host "  [OK] PATH trimmed to $($env:PATH.Length) chars before vcvarsall.bat"
+Write-Host "       (ninja dir: $ninjaDir)"
 
 # ----------------------------------------------------------------
 # Auto-initialize Visual Studio environment (MSVC toolchain)
@@ -96,7 +127,16 @@ if (-not $env:VSINSTALLDIR -or $currentArch -ne $desiredArch) {
 
     $vsArch = if ($Arch -eq "x86") { "x86" } else { "amd64" }
 
+    # Run vcvarsall.bat with the trimmed PATH. If it still fails, the
+    # error will be visible here instead of buried inside vcpkg.
     $envOutput = cmd /c "`"$vcvarsall`" $vsArch >nul 2>&1 && set"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] vcvarsall.bat returned exit code $LASTEXITCODE" -ForegroundColor Red
+        Write-Host "        PATH was trimmed to $($env:PATH.Length) chars but vcvarsall.bat still failed."
+        Write-Host "        This usually means the VS installation itself is incomplete or corrupted." -ForegroundColor Red
+        exit 1
+    }
+
     foreach ($line in $envOutput) {
         if ($line -match "^(.*?)=(.*)$") {
             [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
@@ -127,43 +167,36 @@ if ($savedVcpkgRoot) {
 }
 
 # ----------------------------------------------------------------
-# Restore PATH so chocolatey-installed tools (ninja in particular)
-# remain visible to the OUTER CMake build.
+# Restore PATH so CMake and vcpkg can find the tools they need.
+#
+# We do NOT restore the full original PATH. That is what caused the
+# vcvarsall.bat failure in the first place. We restore:
+#   - The VS toolchain paths (already in $env:PATH after vcvarsall)
+#   - The Ninja directory (prepended)
+#   - System directories (already there)
+# The original PATH is intentionally NOT re-appended.
 # ----------------------------------------------------------------
-if ($savedPath) {
-    $env:PATH = $env:PATH + ";" + $savedPath
-    Write-Host "  [OK] Restored PATH (VS env first, original appended)" -ForegroundColor Green
+if ($ninjaDir) {
+    $env:PATH = "$ninjaDir;$env:PATH"
+    Write-Host "  [OK] Ninja dir prepended to PATH: $ninjaDir" -ForegroundColor Green
 }
 
 # ----------------------------------------------------------------
-# Refuse to use the VS-bundled vcpkg - it requires builtin-baseline
-# in vcpkg.json which the standalone vcpkg does not need.
+# Refuse to use the VS-bundled vcpkg.
 # ----------------------------------------------------------------
 if ($env:VCPKG_ROOT -match "Microsoft Visual Studio.*VC[\\/]vcpkg") {
     Write-Host "[ERROR] VCPKG_ROOT points at the VS-bundled vcpkg:" -ForegroundColor Red
     Write-Host "        $env:VCPKG_ROOT" -ForegroundColor Red
-    Write-Host "        This is different from your standalone vcpkg." -ForegroundColor Red
-    Write-Host "        Set VCPKG_ROOT to the standalone path (e.g. C:\Users\User\vcpkg)" -ForegroundColor Red
     exit 1
 }
 
-# Force MSVC compilers (overrides any GCC on PATH)
+# Force MSVC compilers
 $env:CC = "cl.exe"
 $env:CXX = "cl.exe"
 
 # ----------------------------------------------------------------
-# Resolve Ninja for the OUTER CMake build.
-#
-# CMake needs a CMAKE_MAKE_PROGRAM value for its Ninja generator.
-# vcvarsall.bat wipes Chocolatey's path off, so we re-resolve Ninja
-# here and pin it into a cache variable via -D on the configure line.
-#
-# This does NOT influence vcpkg's internal Ninja acquisition. vcpkg
-# downloads its own Ninja into ~/.vcpkg/downloads/tools/ (cached by
-# the actions/cache step in the workflow) and uses it for its own
-# nested CMake invocations. Both Ninjas coexist.
+# Resolve Ninja and pin it into CMAKE_MAKE_PROGRAM.
 # ----------------------------------------------------------------
-$ninjaCmd = Get-Command ninja.exe -ErrorAction SilentlyContinue
 if (-not $ninjaCmd) {
     Write-Host @"
 [ERROR] ninja.exe not found on PATH.
@@ -176,11 +209,8 @@ Then re-open the shell (or re-run the workflow) so PATH picks it up.
     exit 1
 }
 
-$ninjaDir = Split-Path $ninjaCmd.Source -Parent
-$env:PATH = "$ninjaDir;$env:PATH"
 $env:CMAKE_MAKE_PROGRAM = $ninjaCmd.Source
 Write-Host "  [OK] Ninja: $env:CMAKE_MAKE_PROGRAM" -ForegroundColor Green
-Write-Host "  [OK] Ninja dir prepended to PATH: $ninjaDir" -ForegroundColor Green
 
 # Sanity check: the file must actually exist.
 if (-not (Test-Path $env:CMAKE_MAKE_PROGRAM)) {
@@ -198,6 +228,7 @@ Write-Host "`n=== AxiomDLP Agent - Windows MSVC build ===" -ForegroundColor Cyan
 Write-Host "  Project root: $projectRoot"
 Write-Host "  Config:       $Configuration"
 Write-Host "  Arch:         $Arch"
+Write-Host "  PATH length:  $($env:PATH.Length) chars"
 
 # ----------------------------------------------------------------
 # Verify VCPKG_ROOT
