@@ -5,24 +5,22 @@
 .DESCRIPTION
     - Verifies Visual Studio (2022 or newer) with the C++ workload.
     - Downloads a PINNED vcpkg release (2024.01.12) as a ZIP.
-    - Downloads the matching prebuilt vcpkg.exe from the same date.
+    - Downloads the matching prebuilt vcpkg.exe from the same release.
+    - Retries every download up to 5 times with exponential backoff,
+      because windows-latest runners occasionally drop connections to
+      github.com mid-download ("The connection was closed unexpectedly").
     - Verifies vcpkg.exe runs and the recipe folder is complete.
     - Persists VCPKG_ROOT for the current workflow (GITHUB_ENV), the
       current user (registry), and the current process.
 
-    WHY PIN: recent vcpkg snapshots (late 2025 onward) route all tool
-    acquisition through `z_use_vcpkg_fetch`, which on Windows downloads
+    WHY PIN 2024.01.12: vcpkg snapshots from mid-2025 onward route tool
+    acquisition through z_use_vcpkg_fetch, which on Windows downloads
     Ninja and then verifies it by running `ninja -v` (verbose build)
-    instead of `ninja --version` (print version). In the empty
-    `vcpkg-parallel-configure` directory this exits 1, and vcpkg
-    treats it as a broken Ninja download and aborts the build with:
-
-        Command failed: ...\ninja.exe -v
-        Error code: 1
-
-    vcpkg tag 2024.01.12 predates this regression. It checks
-    find_program(NINJA) first, so with VCPKG_FORCE_SYSTEM_BINARIES=1
-    and the Chocolatey Ninja on PATH, compiler detection succeeds.
+    instead of `ninja --version`. In an empty directory that exits 1,
+    and vcpkg aborts with "Command failed: ninja.exe -v".
+    2024.01.12 predates this regression and calls find_program(NINJA)
+    first, so with VCPKG_FORCE_SYSTEM_BINARIES=1 the system (Chocolatey)
+    Ninja is used and the bug never fires.
 
 .NOTES
     This file is intentionally ASCII-only for maximum encoding compatibility.
@@ -31,12 +29,66 @@
 $ErrorActionPreference = "Stop"
 
 # ----------------------------------------------------------------
-# PINNED VCPKG VERSION
+# PINNED VCPKG VERSION -- do not bump without re-verifying the Ninja
+# acquisition path.
 # ----------------------------------------------------------------
 $VCPKG_TAG      = "2024.01.12"
 $VCPKG_TOOL_TAG = "2024-01-12"
 
 Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (pinned vcpkg $VCPKG_TAG) ===" -ForegroundColor Cyan
+
+# ----------------------------------------------------------------
+# Retry helper -- windows-latest runners occasionally drop github.com
+# connections mid-transfer. Retry up to 5 times with exponential backoff.
+# ----------------------------------------------------------------
+function Download-WithRetry {
+    param(
+        [Parameter(Mandatory=$true)][string]$Url,
+        [Parameter(Mandatory=$true)][string]$OutFile,
+        [int]$MaxAttempts = 5,
+        [int]$BaseDelaySeconds = 3
+    )
+
+    # Force TLS 1.2 -- older PowerShell defaults to TLS 1.0 which
+    # github.com rejects on some runner images.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Write-Host "  Downloading $Url (attempt $attempt/$MaxAttempts)..." -ForegroundColor Yellow
+
+            # -UseBasicParsing avoids the IE engine dependency, which
+            # is what throws "The connection was closed unexpectedly"
+            # on headless runners.
+            Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 300
+
+            if (-not (Test-Path $OutFile) -or (Get-Item $OutFile).Length -eq 0) {
+                throw "Downloaded file is missing or empty: $OutFile"
+            }
+
+            Write-Host "  [OK] Downloaded $((Get-Item $OutFile).Length) bytes" -ForegroundColor Green
+            return
+        }
+        catch {
+            Write-Host "  [WARN] Attempt $attempt failed: $_" -ForegroundColor Yellow
+
+            if (Test-Path $OutFile) {
+                Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+            }
+
+            if ($attempt -lt $MaxAttempts) {
+                $delay = $BaseDelaySeconds * [math]::Pow(2, $attempt - 1)
+                Write-Host "  Retrying in $delay seconds..." -ForegroundColor Yellow
+                Start-Sleep -Seconds $delay
+            }
+            else {
+                Write-Host "[ERROR] All $MaxAttempts download attempts failed for $Url" -ForegroundColor Red
+                Write-Host "        If this persists, try running the workflow again -- it is usually transient." -ForegroundColor Red
+                throw
+            }
+        }
+    }
+}
 
 # ----------------------------------------------------------------
 # 1. Verify Visual Studio
@@ -51,7 +103,7 @@ if (-not (Test-Path $vswhere)) {
 Install one of:
   - Visual Studio 2022 Community (free)
   - Visual Studio 2022 Build Tools (free, headless)
-  - Any newer Visual Studio (2026+ also works with this pipeline)
+  - Any newer Visual Studio (2026+ also works)
 
 Make sure to select the workload:
   'Desktop development with C++'
@@ -79,7 +131,7 @@ $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "$env:USERPROFILE\v
 $vcpkgZip  = "$env:USERPROFILE\vcpkg.zip"
 $toolchain = "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
 
-# Detect an existing tree that does NOT match the pinned tag and rebuild.
+# If the tree exists but is not our pinned tag, replace it.
 $needsInstall = $true
 if (Test-Path $toolchain) {
     $existingTag = $null
@@ -92,16 +144,16 @@ if (Test-Path $toolchain) {
         $needsInstall = $false
     }
     else {
-        Write-Host "`n[2/4] Existing vcpkg at $vcpkgRoot is not pinned to $VCPKG_TAG; replacing..." -ForegroundColor Yellow
+        Write-Host "`n[2/4] Existing vcpkg at $vcpkgRoot (tag='$existingTag') is not pinned to $VCPKG_TAG; replacing..." -ForegroundColor Yellow
     }
 }
 
 if ($needsInstall) {
     Write-Host "`n[2/4] Setting up pinned vcpkg $VCPKG_TAG at $vcpkgRoot..." -ForegroundColor Yellow
 
-    Write-Host "  Downloading vcpkg recipes ZIP (tag $VCPKG_TAG)..." -ForegroundColor Yellow
+    # Recipe ZIP
     $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/tags/$VCPKG_TAG"
-    Invoke-WebRequest -Uri $zipUrl -OutFile $vcpkgZip -UseBasicParsing
+    Download-WithRetry -Url $zipUrl -OutFile $vcpkgZip
 
     Write-Host "  Extracting..." -ForegroundColor Yellow
     Expand-Archive -Path $vcpkgZip -DestinationPath "$env:USERPROFILE" -Force
@@ -119,12 +171,11 @@ if ($needsInstall) {
     Rename-Item $extracted.FullName $vcpkgRoot
     Remove-Item $vcpkgZip -Force -ErrorAction SilentlyContinue
 
-    # Marker so subsequent runs don't re-download.
     $VCPKG_TAG | Out-File -FilePath "$vcpkgRoot\.vcpkg-tag" -Encoding ascii -NoNewline
 
-    Write-Host "  Downloading prebuilt vcpkg.exe (tag $VCPKG_TOOL_TAG, no compilation)..." -ForegroundColor Yellow
+    # Prebuilt vcpkg.exe
     $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$VCPKG_TOOL_TAG/vcpkg.exe"
-    Invoke-WebRequest -Uri $exeUrl -OutFile "$vcpkgRoot\vcpkg.exe" -UseBasicParsing
+    Download-WithRetry -Url $exeUrl -OutFile "$vcpkgRoot\vcpkg.exe"
 }
 
 # ----------------------------------------------------------------
@@ -133,20 +184,16 @@ if ($needsInstall) {
 Write-Host "`n[3/4] Verifying vcpkg installation..." -ForegroundColor Yellow
 
 if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-    Write-Host "[ERROR] vcpkg.exe missing at $vcpkgRoot" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg.exe missing at $vcpkgRoot" -ForegroundColor Red; exit 1
 }
 if (-not (Test-Path $toolchain)) {
-    Write-Host "[ERROR] vcpkg toolchain file missing at $toolchain" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg toolchain file missing at $toolchain" -ForegroundColor Red; exit 1
 }
 if (-not (Test-Path "$vcpkgRoot\ports")) {
-    Write-Host "[ERROR] vcpkg ports directory missing at $vcpkgRoot\ports" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg ports directory missing at $vcpkgRoot\ports" -ForegroundColor Red; exit 1
 }
 if (-not (Test-Path "$vcpkgRoot\triplets")) {
-    Write-Host "[ERROR] vcpkg triplets directory missing at $vcpkgRoot\triplets" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg triplets directory missing at $vcpkgRoot\triplets" -ForegroundColor Red; exit 1
 }
 
 try {
@@ -159,14 +206,13 @@ try {
     Write-Host "  [OK] vcpkg.exe runs: $vcpkgVersionOutput" -ForegroundColor Green
 }
 catch {
-    Write-Host "[ERROR] vcpkg.exe failed to execute: $_" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg.exe failed to execute: $_" -ForegroundColor Red; exit 1
 }
 
 Write-Host "  [OK] vcpkg ready: $vcpkgRoot (pinned $VCPKG_TAG)" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 4. Persist VCPKG_ROOT  (three mechanisms: GITHUB_ENV, registry, process)
+# 4. Persist VCPKG_ROOT
 # ----------------------------------------------------------------
 Write-Host "`n[4/4] Setting VCPKG_ROOT=$vcpkgRoot..." -ForegroundColor Yellow
 
