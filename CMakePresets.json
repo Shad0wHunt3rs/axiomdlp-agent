@@ -14,7 +14,7 @@
     },
     {
       "name": "linux-x86_64-debug",
-      "displayName": "Linux x86_64 \u2014 Debug",
+      "displayName": "Linux x86_64 — Debug",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
       "cacheVariables": {
@@ -23,7 +23,7 @@
     },
     {
       "name": "linux-x86_64-release",
-      "displayName": "Linux x86_64 \u2014 Release",
+      "displayName": "Linux x86_64 — Release",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
       "cacheVariables": {
@@ -32,7 +32,7 @@
     },
     {
       "name": "linux-i686-debug",
-      "displayName": "Linux i686 (32-bit) \u2014 Debug",
+      "displayName": "Linux i686 (32-bit) — Debug",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
       "cacheVariables": {
@@ -41,7 +41,7 @@
     },
     {
       "name": "linux-i686-release",
-      "displayName": "Linux i686 (32-bit) \u2014 Release",
+      "displayName": "Linux i686 (32-bit) — Release",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
       "cacheVariables": {
@@ -50,8 +50,10 @@
     },
     {
       "name": "windows-x64-msvc-debug",
-      "displayName": "Windows x64 \u2014 Debug (MSVC + vcpkg)",
+      "displayName": "Windows x64 — Debug (MSVC + vcpkg)",
       "inherits": "base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
       "binaryDir": "${sourceDir}/build/windows-x64-msvc-debug",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
@@ -68,8 +70,10 @@
     },
     {
       "name": "windows-x64-msvc-release",
-      "displayName": "Windows x64 \u2014 Release (MSVC + vcpkg)",
+      "displayName": "Windows x64 — Release (MSVC + vcpkg)",
       "inherits": "base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
       "binaryDir": "${sourceDir}/build/windows-x64-msvc-release",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
@@ -86,8 +90,10 @@
     },
     {
       "name": "windows-x86-msvc-debug",
-      "displayName": "Windows x86 \u2014 Debug (MSVC + vcpkg)",
+      "displayName": "Windows x86 — Debug (MSVC + vcpkg)",
       "inherits": "base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x86",
       "binaryDir": "${sourceDir}/build/windows-x86-msvc-debug",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
@@ -104,8 +110,10 @@
     },
     {
       "name": "windows-x86-msvc-release",
-      "displayName": "Windows x86 \u2014 Release (MSVC + vcpkg)",
+      "displayName": "Windows x86 — Release (MSVC + vcpkg)",
       "inherits": "base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x86",
       "binaryDir": "${sourceDir}/build/windows-x86-msvc-release",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
