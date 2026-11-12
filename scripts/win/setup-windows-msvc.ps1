@@ -7,7 +7,8 @@
     - Downloads the vcpkg repository as a ZIP (no git clone).
     - Downloads the prebuilt vcpkg.exe (no compilation).
     - Verifies vcpkg.exe runs and the recipe folder is complete.
-    - Sets VCPKG_ROOT persistently for the current user.
+    - Persists VCPKG_ROOT for the current workflow (GITHUB_ENV), the
+      current user (registry), and the current process.
 
 .NOTES
     This file is intentionally ASCII-only for maximum encoding compatibility.
@@ -107,11 +108,6 @@ else {
 
 # ----------------------------------------------------------------
 # 3. Verify vcpkg.exe runs and recipe folder is complete
-#
-# This is new. A partial or corrupted download previously produced
-# a confusing error at build time ("mosquitto not found via vcpkg").
-# Checking here converts that into a clear "setup failed" at setup
-# time, which is much easier to diagnose.
 # ----------------------------------------------------------------
 Write-Host "`n[3/4] Verifying vcpkg installation..." -ForegroundColor Yellow
 
@@ -134,8 +130,6 @@ if (-not (Test-Path "$vcpkgRoot\triplets")) {
 }
 
 # vcpkg.exe must actually run - catches wrong-architecture exe downloads
-# (e.g. a 32-bit exe on a 64-bit runner would still be a valid PE file
-#  but might fail with a specific loader error).
 try {
     $vcpkgVersionOutput = & "$vcpkgRoot\vcpkg.exe" version 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -153,27 +147,57 @@ catch {
 Write-Host "  [OK] vcpkg ready: $vcpkgRoot" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 4. Persist VCPKG_ROOT (both User scope and current process)
+# 4. Persist VCPKG_ROOT
+#
+# Three independent mechanisms, so this works both under GitHub
+# Actions and on a developer workstation:
+#
+#   a) $GITHUB_ENV (CI only)  — the ONLY way to propagate an env var
+#      from one workflow step to the next. Each step is a fresh
+#      PowerShell process, so `$env:VCPKG_ROOT = ...` inside this
+#      step is invisible to the next step unless we also write to
+#      $GITHUB_ENV.
+#
+#   b) User-scope registry    — what `setx`/SetEnvironmentVariable
+#      "User" writes. Picked up by new login shells. Used locally and
+#      as a fallback if $GITHUB_ENV is somehow unavailable.
+#
+#   c) Current process        — makes the "Close this shell, open a
+#      new one" message on a developer workstation true, and lets the
+#      same PowerShell session run the build immediately.
 # ----------------------------------------------------------------
-Write-Host "`n[4/4] Setting VCPKG_ROOT=$vcpkgRoot for current user..." -ForegroundColor Yellow
+Write-Host "`n[4/4] Setting VCPKG_ROOT=$vcpkgRoot..." -ForegroundColor Yellow
 
-# Method 1: .NET API (silent if it works)
+# (a) GitHub Actions cross-step propagation
+if ($env:GITHUB_ENV) {
+    Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
+    Write-Host "  [OK] Wrote VCPKG_ROOT to GITHUB_ENV (propagates to next steps)" -ForegroundColor Green
+}
+else {
+    Write-Host "  [--] GITHUB_ENV not set (not running under GitHub Actions); skipping" -ForegroundColor DarkGray
+}
+
+# (b) User-scope registry (for developer workstations and CI fallback)
 try {
     [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "User")
+    Write-Host "  [OK] Set VCPKG_ROOT in User-scope registry" -ForegroundColor Green
 }
 catch {
-    Write-Host "  setenv API failed; falling back to setx..." -ForegroundColor Yellow
+    Write-Host "  [WARN] SetEnvironmentVariable(User) failed; falling back to setx: $_" -ForegroundColor Yellow
+    $currentVal = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
+    if ($currentVal -ne $vcpkgRoot) {
+        & setx VCPKG_ROOT "$vcpkgRoot" | Out-Null
+    }
 }
 
-# Method 2: setx fallback (writes to registry, works on all Windows versions)
-$currentVal = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
-if ($currentVal -ne $vcpkgRoot) {
-    & setx VCPKG_ROOT "$vcpkgRoot" | Out-Null
-}
-
-# Also set in current process so immediate builds work
+# (c) Current process
 $env:VCPKG_ROOT = $vcpkgRoot
+Write-Host "  [OK] Set VCPKG_ROOT in current process" -ForegroundColor Green
 
 Write-Host "`n=== Setup complete ===" -ForegroundColor Cyan
-Write-Host "Close this shell, open a new one, then run:" -ForegroundColor Cyan
+Write-Host "  VCPKG_ROOT=$env:VCPKG_ROOT" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "If running locally: close this shell, open a new one, then run:" -ForegroundColor Cyan
 Write-Host "  .\scripts\win\build-windows-msvc.ps1" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "If running under GitHub Actions: proceed to the next step." -ForegroundColor Cyan

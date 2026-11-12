@@ -45,21 +45,10 @@ jobs:
         run: .\scripts\win\setup-windows-msvc.ps1
         shell: powershell
 
-      # ------------------------------------------------------------------
-      # Post-setup sanity checks
-      #
-      # GITHUB_PATH and the .NET SetEnvironmentVariable("User") API both
-      # persist to the *next* process, not to this one. Before the fix,
-      # the very next step ran build-windows-msvc.ps1, which invoked
-      # vcvarsall.bat — and that rewrote %PATH%, hiding the system ninja
-      # from vcpkg and CMake. These explicit checks fail fast and loudly
-      # if either tool is missing on PATH after env setup, so the error
-      # appears here instead of deep inside vcpkg's configure log.
-      # ------------------------------------------------------------------
       - name: Verify Ninja + VCPKG_ROOT after setup
         run: |
-          Write-Host "--- PATH ---"
-          $env:PATH -split ';' | ForEach-Object { Write-Host $_ }
+          Write-Host "--- PATH (first 5 entries) ---"
+          $env:PATH -split ';' | Select-Object -First 5 | ForEach-Object { Write-Host $_ }
 
           Write-Host "--- where ninja ---"
           where.exe ninja
@@ -71,12 +60,24 @@ jobs:
           ninja --version
 
           Write-Host "--- VCPKG_ROOT ---"
-          Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
-          if (-not $env:VCPKG_ROOT) {
-              throw "VCPKG_ROOT is not set after setup."
+          $effectiveVcpkgRoot = $env:VCPKG_ROOT
+          if (-not $effectiveVcpkgRoot) {
+              # Fallback: read from User-scope registry. This should not be
+              # necessary after the setup script started writing to GITHUB_ENV,
+              # but it protects against future regressions in the propagation
+              # path (e.g. a runner image change that stops honoring GITHUB_ENV).
+              $effectiveVcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
+              if ($effectiveVcpkgRoot) {
+                  Write-Host "  (fallback: read from User-scope registry)"
+                  $env:VCPKG_ROOT = $effectiveVcpkgRoot
+              }
           }
-          if (-not (Test-Path "$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake")) {
-              throw "vcpkg toolchain file missing at $env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+          Write-Host "VCPKG_ROOT=$effectiveVcpkgRoot"
+          if (-not $effectiveVcpkgRoot) {
+              throw "VCPKG_ROOT is not set after setup (checked process env + User-scope registry)."
+          }
+          if (-not (Test-Path "$effectiveVcpkgRoot\scripts\buildsystems\vcpkg.cmake")) {
+              throw "vcpkg toolchain file missing at $effectiveVcpkgRoot\scripts\buildsystems\vcpkg.cmake"
           }
         shell: powershell
 
@@ -85,13 +86,6 @@ jobs:
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
-          # NOTE: VCPKG_FORCE_SYSTEM_BINARIES was removed. Setting it to 1
-          # made vcpkg refuse to download its own ninja when find_program
-          # failed — and find_program failed because vcvarsall.bat inside
-          # build-windows-msvc.ps1 rewrote PATH, hiding the chocolatey ninja.
-          # The script now preserves PATH across vcvarsall.bat, so system
-          # ninja is visible to vcpkg; and even if it weren't, vcpkg is
-          # allowed to fetch its own copy now.
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
