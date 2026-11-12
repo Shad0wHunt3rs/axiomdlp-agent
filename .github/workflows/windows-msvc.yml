@@ -30,15 +30,8 @@ jobs:
       #
       # The windows-latest runner image ships a ninja at
       # C:\Strawberry\c\bin\ninja.exe. It sits on PATH by default, and
-      # its version does not match what vcpkg expects. If vcpkg sees
-      # it first, vcpkg's find_program(NINJA) returns the wrong one,
-      # the version check fails, and vcpkg falls into its (buggy)
-      # download-and-verify path which runs "ninja -v" (verbose build,
-      # fails with exit 1 in an empty directory) instead of
-      # "ninja --version".
-      #
-      # Removing Strawberry's entry means the only ninja vcpkg can
-      # find is the one chocolatey installed, at the correct version.
+      # its version does not match what CMake expects. Keeping only
+      # the Chocolatey-installed ninja on PATH eliminates ambiguity.
       # ----------------------------------------------------------------
       - name: Remove Strawberry ninja from PATH
         run: |
@@ -50,7 +43,6 @@ jobs:
               Write-Host "No Strawberry entries found (already clean)"
           }
           $env:PATH = $filtered
-          # Persist for subsequent steps
           "PATH=$filtered" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
           Write-Host "--- where.exe ninja after cleanup ---"
@@ -112,26 +104,39 @@ jobs:
           }
         shell: powershell
 
+      # ----------------------------------------------------------------
+      # Build x64 and x86.
+      #
+      # IMPORTANT: Do NOT set VCPKG_FORCE_SYSTEM_BINARIES here.
+      #
+      # The original workflow set VCPKG_FORCE_SYSTEM_BINARIES=1 to
+      # work around an older vcpkg bug where its download-and-verify
+      # path invoked "ninja -v" instead of "ninja --version". That
+      # bug is fixed in the current vcpkg (2026-10-29 build). With
+      # the current vcpkg, VCPKG_FORCE_SYSTEM_BINARIES=1 actually
+      # BREAKS the build: vcpkg calls z_use_vcpkg_fetch for Ninja,
+      # which is blocked by the flag, producing:
+      #
+      #     error: Could not fetch ninja. A downloadable copy of
+      #     this tool is available and can be used by unsetting
+      #     %VCPKG_FORCE_SYSTEM_BINARIES%.
+      #
+      # Removing the flag lets vcpkg download and cache its own
+      # Ninja (~10 MB, cached by the actions/cache step above).
+      # The system Ninja (Chocolatey) is still used by the *outer*
+      # CMake build step; the two do not conflict.
+      # ----------------------------------------------------------------
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
-          # Force vcpkg to use the system ninja instead of downloading its
-          # own. Without this, vcpkg on this baseline falls into a buggy
-          # download-and-verify path that invokes "ninja -v" (verbose
-          # build, exit 1 in an empty directory) instead of
-          # "ninja --version", and the build dies during compiler
-          # detection. With the flag set and system ninja on PATH (the
-          # steps above guarantee both), vcpkg uses the working ninja.
-          VCPKG_FORCE_SYSTEM_BINARIES: 1
 
       - name: Build x86 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x86
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
-          VCPKG_FORCE_SYSTEM_BINARIES: 1
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

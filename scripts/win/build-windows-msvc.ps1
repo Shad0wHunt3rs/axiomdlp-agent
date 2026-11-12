@@ -9,12 +9,15 @@
       - VCPKG_ROOT -> VS-bundled vcpkg (wrong one)
       - PATH       -> VS toolchain only (drops chocolatey, ninja, etc.)
 
-    Also exports CMAKE_MAKE_PROGRAM to the resolved Ninja path and passes
-    it to CMake as a cache variable. This is required when
-    VCPKG_FORCE_SYSTEM_BINARIES=1 is set (CI does this) -- vcpkg's nested
-    CMake invocations for its detect_compiler port do not inherit the
-    parent process env, so the only reliable way to make Ninja visible
-    inside vcpkg is via -DCMAKE_MAKE_PROGRAM=... on the configure line.
+    Resolves Ninja on PATH and pins it into CMAKE_MAKE_PROGRAM. This
+    ensures the OUTER CMake build always uses a known-good Ninja
+    regardless of what vcvarsall.bat leaves on PATH.
+
+    NOTE: This script does NOT control how vcpkg finds Ninja. vcpkg
+    uses its own downloaded Ninja in .deps (see the workflow's
+    actions/cache step). Do not set VCPKG_FORCE_SYSTEM_BINARIES in
+    the workflow -- it breaks vcpkg's Ninja acquisition on current
+    vcpkg releases.
 
 .PARAMETER Configuration
     Debug or Release (default: Release).
@@ -45,15 +48,8 @@ $ErrorActionPreference = "Stop"
 # Save VCPKG_ROOT AND PATH BEFORE VS env init.
 #
 # vcvarsall.bat rewrites both of these. VCPKG_ROOT gets replaced with
-# the VS-bundled vcpkg; PATH gets replaced with the VS toolchain only.
-# The PATH rewrite is what caused the CI failure:
-#
-#     error: Could not fetch ninja.
-#     CMake Error: CMAKE_MAKE_PROGRAM is not set.
-#
-# because after vcvarsall.bat, chocolatey's ninja.exe was no longer on
-# PATH, so vcpkg's detect_compiler port and CMake's Ninja generator
-# both failed to find it.
+# the VS-bundled vcpkg; PATH gets replaced with the VS toolchain only,
+# which drops Chocolatey's ninja from PATH.
 # ----------------------------------------------------------------
 $savedVcpkgRoot = $env:VCPKG_ROOT
 if (-not $savedVcpkgRoot) {
@@ -132,7 +128,7 @@ if ($savedVcpkgRoot) {
 
 # ----------------------------------------------------------------
 # Restore PATH so chocolatey-installed tools (ninja in particular)
-# remain visible to CMake and to vcpkg.
+# remain visible to the OUTER CMake build.
 # ----------------------------------------------------------------
 if ($savedPath) {
     $env:PATH = $env:PATH + ";" + $savedPath
@@ -156,36 +152,21 @@ $env:CC = "cl.exe"
 $env:CXX = "cl.exe"
 
 # ----------------------------------------------------------------
-# Resolve Ninja and make it unmissable.
+# Resolve Ninja for the OUTER CMake build.
 #
-# This is the fix for the CI failure:
+# CMake needs a CMAKE_MAKE_PROGRAM value for its Ninja generator.
+# vcvarsall.bat wipes Chocolatey's path off, so we re-resolve Ninja
+# here and pin it into a cache variable via -D on the configure line.
 #
-#     error: while detecting compiler information:
-#     error: Could not fetch ninja. A downloadable copy of this tool
-#     is available and can be used by unsetting
-#     %VCPKG_FORCE_SYSTEM_BINARIES%.
-#
-# CI sets VCPKG_FORCE_SYSTEM_BINARIES=1, which forbids vcpkg from
-# downloading its own Ninja. vcpkg's detect_compiler port then runs
-# a NESTED cmake that does NOT inherit the parent process env, so a
-# bare `$env:CMAKE_MAKE_PROGRAM = ...` is insufficient. We must both:
-#
-#   1. Put the Ninja directory FIRST on PATH (so any nested
-#      find_program(NINJA) sees it before anything else), and
-#   2. Pass -DCMAKE_MAKE_PROGRAM=<path> on the configure line (so
-#      the value is baked into the CMake cache that every nested
-#      cmake inherits from its parent CMakeLists.txt).
-#
-# We also fail fast if Ninja is absent, so the operator gets a clear
-# error instead of vcpkg's opaque one.
+# This does NOT influence vcpkg's internal Ninja acquisition. vcpkg
+# downloads its own Ninja into ~/.vcpkg/downloads/tools/ (cached by
+# the actions/cache step in the workflow) and uses it for its own
+# nested CMake invocations. Both Ninjas coexist.
 # ----------------------------------------------------------------
 $ninjaCmd = Get-Command ninja.exe -ErrorAction SilentlyContinue
 if (-not $ninjaCmd) {
     Write-Host @"
 [ERROR] ninja.exe not found on PATH.
-
-CI relies on VCPKG_FORCE_SYSTEM_BINARIES=1, which forbids vcpkg from
-downloading its own Ninja. A system Ninja MUST be present.
 
 Install it with:
     choco install ninja -y
@@ -262,13 +243,6 @@ if (Test-Path $cacheFile) {
 
 # ----------------------------------------------------------------
 # Configure.
-#
-# The preset's cacheVariables block already carries
-#   "CMAKE_MAKE_PROGRAM": "$env{CMAKE_MAKE_PROGRAM}"
-# so we only need to make sure the env var is set (it is, above).
-# We ALSO pass -DCMAKE_MAKE_PROGRAM explicitly as a belt-and-braces
-# measure: if a future preset edit forgets the cacheVariables entry,
-# the build still works.
 # ----------------------------------------------------------------
 Write-Host "`n--- Configure (preset: $presetName) ---" -ForegroundColor Yellow
 Write-Host "  CMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM"
