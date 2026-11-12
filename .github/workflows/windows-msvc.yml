@@ -18,14 +18,35 @@ jobs:
           Write-Host "[OK] Custom triplets found."
         shell: powershell
 
-      - name: Install Ninja
-        run: choco install ninja -y
+      # ----------------------------------------------------------------
+      # Install NINJA 1.10.2 -- the exact version vcpkg 2024.01.12 wants.
+      #
+      # vcpkg's detect_compiler port requires Ninja 1.10.2. If it does not
+      # find that exact version on PATH, it downloads its own, then runs
+      # `ninja -v` (verbose build) to "verify" it -- which fails in an
+      # empty directory with exit code 1. Giving vcpkg the correct version
+      # on PATH means it never downloads or verifies its own Ninja, and
+      # the bug cannot occur.
+      #
+      # The action prepends its install directory to PATH, so `where ninja`
+      # will resolve to 1.10.2, not to any other version.
+      # ----------------------------------------------------------------
+      - name: Install Ninja 1.10.2 (matches vcpkg's required version)
+        uses: seanmiddleditch/gha-setup-ninja@v5
+        with:
+          version: 1.10.2
 
-      - name: Add Chocolatey bin to PATH
-        run: echo "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
+      - name: Verify Ninja version
+        run: |
+          where.exe ninja
+          $v = (ninja --version).Trim()
+          Write-Host "ninja --version = $v"
+          if ($v -ne "1.10.2") {
+              throw "Expected ninja 1.10.2 on PATH, found '$v'. vcpkg will download its own and hit the -v bug."
+          }
         shell: powershell
 
-      - name: Remove Strawberry ninja from PATH
+      - name: Remove Strawberry ninja from PATH (if any)
         run: |
           $originalPath = $env:PATH
           $filtered = ($originalPath -split ';' | Where-Object { $_ -notlike '*Strawberry*' }) -join ';'
@@ -33,14 +54,6 @@ jobs:
           else { Write-Host "No Strawberry entries found (already clean)" }
           $env:PATH = $filtered
           "PATH=$filtered" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "--- where.exe ninja after cleanup ---"
-          where.exe ninja
-          if ($LASTEXITCODE -ne 0) { throw "ninja not found on PATH after Strawberry cleanup" }
-          $count = (where.exe ninja | Measure-Object).Count
-          if ($count -ne 1) { throw "Expected exactly 1 ninja on PATH, found $count." }
-          Write-Host "--- ninja --version ---"
-          ninja --version
         shell: powershell
 
       - name: Cache vcpkg downloads and binary archives
@@ -58,16 +71,8 @@ jobs:
         run: .\scripts\win\setup-windows-msvc.ps1
         shell: powershell
 
-      - name: Verify Ninja + VCPKG_ROOT after setup
+      - name: Verify VCPKG_ROOT after setup
         run: |
-          Write-Host "--- PATH (first 5 entries) ---"
-          $env:PATH -split ';' | Select-Object -First 5 | ForEach-Object { Write-Host $_ }
-          Write-Host "--- where ninja ---"
-          where.exe ninja
-          if ($LASTEXITCODE -ne 0) { throw "ninja not found on PATH after setup." }
-          Write-Host "--- ninja --version ---"
-          ninja --version
-
           $effectiveVcpkgRoot = $env:VCPKG_ROOT
           if (-not $effectiveVcpkgRoot) {
               $effectiveVcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
@@ -81,16 +86,14 @@ jobs:
         shell: powershell
 
       # ----------------------------------------------------------------
-      # VCPKG_FORCE_SYSTEM_BINARIES=1 works correctly with the pinned
-      # vcpkg 2024.01.12:
-      #   - find_program(NINJA) is called first
-      #   - Chocolatey Ninja is found on PATH
-      #   - vcpkg never downloads its own Ninja
-      #   - the `ninja -v` version-check bug cannot occur
+      # VCPKG_FORCE_SYSTEM_BINARIES=1 is still useful here: it tells
+      # vcpkg "do not download Ninja". Combined with Ninja 1.10.2 on
+      # PATH, vcpkg finds the correct version, does not download its
+      # own, and never runs `ninja -v`.
       #
-      # Do NOT use this flag with vcpkg snapshots from late 2025 onward
-      # -- those route through z_use_vcpkg_fetch and refuse to use the
-      # system Ninja, which is why we pinned below 2024.02.
+      # Do NOT bump vcpkg above 2025.01.13 -- newer snapshots ignore
+      # VCPKG_FORCE_SYSTEM_BINARIES and route through z_use_vcpkg_fetch,
+      # which re-introduces the -v bug.
       # ----------------------------------------------------------------
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
