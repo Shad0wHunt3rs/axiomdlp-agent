@@ -264,9 +264,17 @@ endif()
 # Platform-specific sources
 # ----------------------------------------------------------------
 if(WIN32)
-    set(AXIOM_PLATFORM_SOURCES src/platform/windows/paths.cpp src/platform/windows/service.cpp)
+    set(AXIOM_PLATFORM_SOURCES 
+        src/platform/windows/paths.cpp 
+        src/platform/windows/service.cpp
+        src/platform/windows/efsw_file_watcher.cpp
+    )
 elseif(UNIX AND NOT APPLE)
-    set(AXIOM_PLATFORM_SOURCES src/platform/linux/paths.cpp src/platform/linux/service.cpp)
+    set(AXIOM_PLATFORM_SOURCES 
+        src/platform/linux/paths.cpp 
+        src/platform/linux/service.cpp
+        src/platform/linux/efsw_file_watcher.cpp
+    )
 endif()
 
 # ----------------------------------------------------------------
@@ -284,7 +292,6 @@ add_executable(axiomdlp-agent
     src/util/file_hash.cpp
     src/util/base64.cpp
     src/util/ulid.cpp
-    src/platform/common/efsw_file_watcher.cpp
     src/features/agent_sync/agent_sync_module.cpp
     src/features/content_scanner/content_scanner_module.cpp
     src/features/event_logger/event_logger_module.cpp
