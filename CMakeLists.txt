@@ -169,9 +169,14 @@ endif()
 # ----------------------------------------------------------------
 if(AXIOM_USE_MQTT)
     if(AXIOM_USE_VCPKG_DEPS)
+        # vcpkg exports the target as unofficial::mosquitto::mosquitto
+        find_package(unofficial-mosquitto CONFIG QUIET)
         find_package(mosquitto CONFIG QUIET)
 
-        if(mosquitto_FOUND)
+        if(TARGET unofficial::mosquitto::mosquitto)
+            add_library(AXIOM_MOSQUITTO ALIAS unofficial::mosquitto::mosquitto)
+            set(mosquitto_FOUND TRUE)
+        elseif(mosquitto_FOUND)
             if(TARGET mosquitto::mosquitto)
                 add_library(AXIOM_MOSQUITTO ALIAS mosquitto::mosquitto)
             elseif(TARGET mosquitto::libmosquitto)
@@ -319,8 +324,6 @@ target_compile_definitions(axiomdlp-agent PRIVATE
 
 if(AXIOM_USE_MQTT)
     target_compile_definitions(axiomdlp-agent PRIVATE AXIOM_HAVE_MQTT=1)
-    # FIX: Tell the mosquitto headers we are linking the static library,
-    # not the DLL. This removes the __imp_ prefixes from the symbol names.
     target_compile_definitions(axiomdlp-agent PRIVATE LIBMOSQUITTO_STATIC)
 endif()
 
