@@ -17,6 +17,7 @@
 #include "storage/state_repository.h"
 
 #include <mosquitto.h>
+#include <mqtt_protocol.h>  // <-- Added for MQTT v5 property macros on Windows
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <spdlog/spdlog.h>
