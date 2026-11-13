@@ -76,80 +76,76 @@ Write-Host "       (cmake dir: $cmakeDir)"
 
 # ----------------------------------------------------------------
 # Auto-initialize Visual Studio environment (MSVC toolchain)
+# Always run this to guarantee cl.exe is injected into the PATH,
+# even if the previous terminal session had VSINSTALLDIR set.
 # ----------------------------------------------------------------
 $desiredArch = if ($Arch -eq "x86") { "x86" } else { "x64" }
-$currentArch = $env:VSCMD_ARG_TGT_ARCH
-if (-not $env:VSINSTALLDIR -or $currentArch -ne $desiredArch) {
-    Write-Host "Initializing Visual Studio environment..." -ForegroundColor Yellow
+Write-Host "Initializing Visual Studio environment..." -ForegroundColor Yellow
 
-    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path $vswhere)) {
-        Write-Host "[ERROR] Visual Studio Installer not found at $vswhere" -ForegroundColor Red
-        exit 1
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (-not (Test-Path $vswhere)) {
+    Write-Host "[ERROR] Visual Studio Installer not found at $vswhere" -ForegroundColor Red
+    exit 1
+}
+
+$vsPath = & $vswhere -latest -products * `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+    -property installationPath
+
+if (-not $vsPath) {
+    Write-Host "[ERROR] Visual Studio C++ workload not found." -ForegroundColor Red
+    exit 1
+}
+
+$vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+if (-not (Test-Path $vcvarsall)) {
+    Write-Host "[ERROR] vcvarsall.bat not found at $vcvarsall" -ForegroundColor Red
+    exit 1
+}
+
+$vsArch = if ($Arch -eq "x86") { "x86" } else { "amd64" }
+
+$envOutput = cmd /c "`"$vcvarsall`" $vsArch >nul 2>&1 && set"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] vcvarsall.bat returned exit code $LASTEXITCODE" -ForegroundColor Red
+    exit 1
+}
+
+foreach ($line in $envOutput) {
+    if ($line -match "^(.*?)=(.*)$") {
+        [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
     }
+}
 
-    $vsPath = & $vswhere -latest -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -property installationPath
+if (-not $env:VSINSTALLDIR) {
+    Write-Host "[ERROR] vcvarsall.bat did not populate VSINSTALLDIR." -ForegroundColor Red
+    exit 1
+}
 
-    if (-not $vsPath) {
-        Write-Host "[ERROR] Visual Studio C++ workload not found." -ForegroundColor Red
-        exit 1
-    }
-
-    $vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
-    if (-not (Test-Path $vcvarsall)) {
-        Write-Host "[ERROR] vcvarsall.bat not found at $vcvarsall" -ForegroundColor Red
-        exit 1
-    }
-
-    $vsArch = if ($Arch -eq "x86") { "x86" } else { "amd64" }
-
-    $envOutput = cmd /c "`"$vcvarsall`" $vsArch >nul 2>&1 && set"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] vcvarsall.bat returned exit code $LASTEXITCODE" -ForegroundColor Red
-        exit 1
-    }
-
-    foreach ($line in $envOutput) {
-        if ($line -match "^(.*?)=(.*)$") {
-            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
-        }
-    }
-
-    if (-not $env:VSINSTALLDIR) {
-        Write-Host "[ERROR] vcvarsall.bat did not populate VSINSTALLDIR." -ForegroundColor Red
-        exit 1
-    }
-
-    if (-not $env:LIB -or -not $env:INCLUDE) {
-        Write-Host "  [WARN] LIB or INCLUDE not set by vcvarsall.bat. Attempting to locate Windows SDK..." -ForegroundColor Yellow
-        $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10"
-        if (Test-Path $sdkRoot) {
-            $sdkVersions = Get-ChildItem "$sdkRoot\Lib" -Directory | Sort-Object Name -Descending
-            if ($sdkVersions) {
-                $sdkVersion = $sdkVersions[0].Name
-                $targetArch = if ($Arch -eq "x86") { "x86" } else { "x64" }
-                
-                if (-not $env:INCLUDE) {
-                    $env:INCLUDE = "$sdkRoot\Include\$sdkVersion\ucrt;$sdkRoot\Include\$sdkVersion\um;$sdkRoot\Include\$sdkVersion\shared"
-                }
-                if (-not $env:LIB) {
-                    $env:LIB = "$sdkRoot\Lib\$sdkVersion\ucrt\$targetArch;$sdkRoot\Lib\$sdkVersion\um\$targetArch"
-                }
-                Write-Host "  [OK] Manually set LIB and INCLUDE for Windows SDK $sdkVersion ($targetArch)" -ForegroundColor Green
+if (-not $env:LIB -or -not $env:INCLUDE) {
+    Write-Host "  [WARN] LIB or INCLUDE not set by vcvarsall.bat. Attempting to locate Windows SDK..." -ForegroundColor Yellow
+    $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10"
+    if (Test-Path $sdkRoot) {
+        $sdkVersions = Get-ChildItem "$sdkRoot\Lib" -Directory | Sort-Object Name -Descending
+        if ($sdkVersions) {
+            $sdkVersion = $sdkVersions[0].Name
+            $targetArch = if ($Arch -eq "x86") { "x86" } else { "x64" }
+            
+            if (-not $env:INCLUDE) {
+                $env:INCLUDE = "$sdkRoot\Include\$sdkVersion\ucrt;$sdkRoot\Include\$sdkVersion\um;$sdkRoot\Include\$sdkVersion\shared"
             }
+            if (-not $env:LIB) {
+                $env:LIB = "$sdkRoot\Lib\$sdkVersion\ucrt\$targetArch;$sdkRoot\Lib\$sdkVersion\um\$targetArch"
+            }
+            Write-Host "  [OK] Manually set LIB and INCLUDE for Windows SDK $sdkVersion ($targetArch)" -ForegroundColor Green
         }
     }
+}
 
-    Write-Host "  [OK] VS env loaded: $env:VSINSTALLDIR" -ForegroundColor Green
-}
-else {
-    Write-Host "  [OK] VS env already loaded: $env:VSINSTALLDIR" -ForegroundColor Green
-}
+Write-Host "  [OK] VS env loaded: $env:VSINSTALLDIR" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# Restore VCPKG_ROOT and PATH (minimal + Ninja + CMake)
+# Restore VCPKG_ROOT and PATH (minimal + Ninja)
 # ----------------------------------------------------------------
 if ($savedVcpkgRoot) {
     $env:VCPKG_ROOT = $savedVcpkgRoot
