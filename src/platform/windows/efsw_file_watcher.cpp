@@ -1,4 +1,7 @@
 // src/platform/windows/efsw_file_watcher.cpp
+
+#ifdef _WIN32
+
 #include "platform/file_watcher.h"
 #include <efsw/efsw.hpp>
 #include <spdlog/spdlog.h>
@@ -108,3 +111,5 @@ std::unique_ptr<IFileWatcher> make_file_watcher() {
 }
 
 } // namespace axiom::core
+
+#endif // _WIN32

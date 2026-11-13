@@ -1,4 +1,7 @@
 // src/platform/linux/efsw_file_watcher.cpp
+
+#ifdef __linux__
+
 #include "platform/file_watcher.h"
 #include <efsw/efsw.hpp>
 #include <spdlog/spdlog.h>
@@ -108,3 +111,5 @@ std::unique_ptr<IFileWatcher> make_file_watcher() {
 }
 
 } // namespace axiom::core
+
+#endif // __linux__
