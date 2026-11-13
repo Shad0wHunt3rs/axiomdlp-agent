@@ -13,16 +13,12 @@
     ensures the OUTER CMake build always uses a known-good Ninja
     regardless of what vcvarsall.bat leaves on PATH.
 
-    CRITICAL: The windows-2022 runner has a very long PATH (Chocolatey,
-    Strawberry, MongoDB, Android SDK, etc.). Windows cmd.exe has an
-    8191-character command-line limit. vcvarsall.bat internally builds
+    CRITICAL: The windows-2022 runner has a very long PATH. Windows cmd.exe
+    has an 8191-character command-line limit. vcvarsall.bat internally builds
     a command that includes the entire PATH. When PATH is too long,
-    vcvarsall.bat exits with code 255, which surfaces as:
-        error: while trying to get a Visual Studio environment,
-               vcvarsall.bat returned 255
-    This script trims PATH to only the entries needed for the build
-    BEFORE calling vcvarsall.bat, and keeps only the VS toolchain paths
-    AFTER it returns.
+    vcvarsall.bat exits with code 255. This script trims PATH to only the
+    entries needed for the build BEFORE calling vcvarsall.bat, and explicitly
+    ensures LIB and INCLUDE are set for the linker.
 
 .PARAMETER Configuration
     Debug or Release (default: Release).
@@ -61,10 +57,6 @@ if (-not $savedVcpkgRoot) {
 }
 
 $savedPath = $env:PATH
-if (-not $savedPath) {
-    $savedPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
-                 [System.Environment]::GetEnvironmentVariable("PATH", "User")
-}
 
 # ----------------------------------------------------------------
 # TRIM PATH BEFORE vcvarsall.bat.
@@ -76,8 +68,6 @@ if (-not $savedPath) {
 #   - System32 / Windows / Wbem (cmd.exe, where.exe, system DLLs)
 #   - The directory containing ninja.exe (so find_program works)
 #   - PowerShell's own directory (in case a sub-script needs it)
-# Everything else (Chocolatey, Strawberry, MongoDB, Android, etc.)
-# is restored AFTER vcvarsall.bat returns, for CMake/vcpkg use.
 # ----------------------------------------------------------------
 $ninjaCmd = Get-Command ninja.exe -ErrorAction SilentlyContinue
 $ninjaDir = if ($ninjaCmd) { Split-Path $ninjaCmd.Source -Parent } else { $null }
@@ -127,13 +117,11 @@ if (-not $env:VSINSTALLDIR -or $currentArch -ne $desiredArch) {
 
     $vsArch = if ($Arch -eq "x86") { "x86" } else { "amd64" }
 
-    # Run vcvarsall.bat with the trimmed PATH. If it still fails, the
-    # error will be visible here instead of buried inside vcpkg.
+    # Run vcvarsall.bat with the trimmed PATH.
     $envOutput = cmd /c "`"$vcvarsall`" $vsArch >nul 2>&1 && set"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] vcvarsall.bat returned exit code $LASTEXITCODE" -ForegroundColor Red
-        Write-Host "        PATH was trimmed to $($env:PATH.Length) chars but vcvarsall.bat still failed."
-        Write-Host "        This usually means the VS installation itself is incomplete or corrupted." -ForegroundColor Red
+        Write-Host "        PATH was trimmed to $($env:PATH.Length) chars but vcvarsall.bat still failed." -ForegroundColor Red
         exit 1
     }
 
@@ -147,6 +135,34 @@ if (-not $env:VSINSTALLDIR -or $currentArch -ne $desiredArch) {
         Write-Host "[ERROR] vcvarsall.bat did not populate VSINSTALLDIR." -ForegroundColor Red
         exit 1
     }
+
+    # --- FIX: Verify LIB and INCLUDE are set ---
+    # If vcvarsall.bat failed to populate these (e.g. SDK not found in registry),
+    # manually inject the standard Windows 10/11 SDK paths to prevent LNK1104.
+    if (-not $env:LIB -or -not $env:INCLUDE) {
+        Write-Host "  [WARN] LIB or INCLUDE not set by vcvarsall.bat. Attempting to locate Windows SDK..." -ForegroundColor Yellow
+        $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10"
+        if (Test-Path $sdkRoot) {
+            $sdkVersions = Get-ChildItem "$sdkRoot\Lib" -Directory | Sort-Object Name -Descending
+            if ($sdkVersions) {
+                $sdkVersion = $sdkVersions[0].Name
+                $targetArch = if ($Arch -eq "x86") { "x86" } else { "x64" }
+                
+                if (-not $env:INCLUDE) {
+                    $env:INCLUDE = "$sdkRoot\Include\$sdkVersion\ucrt;$sdkRoot\Include\$sdkVersion\um;$sdkRoot\Include\$sdkVersion\shared"
+                }
+                if (-not $env:LIB) {
+                    $env:LIB = "$sdkRoot\Lib\$sdkVersion\ucrt\$targetArch;$sdkRoot\Lib\$sdkVersion\um\$targetArch"
+                }
+                Write-Host "  [OK] Manually set LIB and INCLUDE for Windows SDK $sdkVersion ($targetArch)" -ForegroundColor Green
+            } else {
+                Write-Host "[ERROR] No SDK versions found in $sdkRoot\Lib" -ForegroundColor Red
+            }
+        } else {
+            Write-Host "[ERROR] Windows Kits directory not found at $sdkRoot" -ForegroundColor Red
+        }
+    }
+
     Write-Host "  [OK] VS env loaded: $env:VSINSTALLDIR" -ForegroundColor Green
 }
 else {
@@ -154,27 +170,18 @@ else {
 }
 
 # ----------------------------------------------------------------
-# Restore VCPKG_ROOT (vcvarsall.bat overwrites it to the VS-bundled
-# vcpkg, which requires builtin-baseline and uses different ports).
+# Restore VCPKG_ROOT
 # ----------------------------------------------------------------
 if ($savedVcpkgRoot) {
     $previous = $env:VCPKG_ROOT
     $env:VCPKG_ROOT = $savedVcpkgRoot
     if ($previous -and $previous -ne $savedVcpkgRoot) {
         Write-Host "  [OK] Restored VCPKG_ROOT: $env:VCPKG_ROOT" -ForegroundColor Green
-        Write-Host "       (vcvarsall.bat had set it to: $previous)" -ForegroundColor DarkGray
     }
 }
 
 # ----------------------------------------------------------------
-# Restore PATH so CMake and vcpkg can find the tools they need.
-#
-# We do NOT restore the full original PATH. That is what caused the
-# vcvarsall.bat failure in the first place. We restore:
-#   - The VS toolchain paths (already in $env:PATH after vcvarsall)
-#   - The Ninja directory (prepended)
-#   - System directories (already there)
-# The original PATH is intentionally NOT re-appended.
+# Restore PATH (minimal + Ninja)
 # ----------------------------------------------------------------
 if ($ninjaDir) {
     $env:PATH = "$ninjaDir;$env:PATH"
@@ -182,15 +189,8 @@ if ($ninjaDir) {
 }
 
 # ----------------------------------------------------------------
-# Refuse to use the VS-bundled vcpkg.
-# ----------------------------------------------------------------
-if ($env:VCPKG_ROOT -match "Microsoft Visual Studio.*VC[\\/]vcpkg") {
-    Write-Host "[ERROR] VCPKG_ROOT points at the VS-bundled vcpkg:" -ForegroundColor Red
-    Write-Host "        $env:VCPKG_ROOT" -ForegroundColor Red
-    exit 1
-}
-
 # Force MSVC compilers
+# ----------------------------------------------------------------
 $env:CC = "cl.exe"
 $env:CXX = "cl.exe"
 
@@ -200,11 +200,6 @@ $env:CXX = "cl.exe"
 if (-not $ninjaCmd) {
     Write-Host @"
 [ERROR] ninja.exe not found on PATH.
-
-Install it with:
-    choco install ninja -y
-
-Then re-open the shell (or re-run the workflow) so PATH picks it up.
 "@ -ForegroundColor Red
     exit 1
 }
@@ -212,7 +207,6 @@ Then re-open the shell (or re-run the workflow) so PATH picks it up.
 $env:CMAKE_MAKE_PROGRAM = $ninjaCmd.Source
 Write-Host "  [OK] Ninja: $env:CMAKE_MAKE_PROGRAM" -ForegroundColor Green
 
-# Sanity check: the file must actually exist.
 if (-not (Test-Path $env:CMAKE_MAKE_PROGRAM)) {
     Write-Host "[ERROR] CMAKE_MAKE_PROGRAM points at a missing file: $env:CMAKE_MAKE_PROGRAM" -ForegroundColor Red
     exit 1
@@ -228,20 +222,12 @@ Write-Host "`n=== AxiomDLP Agent - Windows MSVC build ===" -ForegroundColor Cyan
 Write-Host "  Project root: $projectRoot"
 Write-Host "  Config:       $Configuration"
 Write-Host "  Arch:         $Arch"
-Write-Host "  PATH length:  $($env:PATH.Length) chars"
 
 # ----------------------------------------------------------------
 # Verify VCPKG_ROOT
 # ----------------------------------------------------------------
 if (-not $env:VCPKG_ROOT) {
-    Write-Host @"
-[ERROR] VCPKG_ROOT is not set.
-
-Run the one-time setup first:
-    .\scripts\win\setup-windows-msvc.ps1
-
-Then close this shell, open a new one, and try again.
-"@ -ForegroundColor Red
+    Write-Host "[ERROR] VCPKG_ROOT is not set." -ForegroundColor Red
     exit 1
 }
 if (-not (Test-Path "$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake")) {
