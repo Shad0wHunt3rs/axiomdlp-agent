@@ -319,6 +319,9 @@ target_compile_definitions(axiomdlp-agent PRIVATE
 
 if(AXIOM_USE_MQTT)
     target_compile_definitions(axiomdlp-agent PRIVATE AXIOM_HAVE_MQTT=1)
+    # FIX: Tell the mosquitto headers we are linking the static library,
+    # not the DLL. This removes the __imp_ prefixes from the symbol names.
+    target_compile_definitions(axiomdlp-agent PRIVATE LIBMOSQUITTO_STATIC)
 endif()
 
 target_link_libraries(axiomdlp-agent PRIVATE
