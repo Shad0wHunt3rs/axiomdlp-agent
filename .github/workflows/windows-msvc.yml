@@ -73,25 +73,23 @@ jobs:
         shell: powershell
 
       # ----------------------------------------------------------------
-      # VCPKG_KEEP_ENV_VARS=PATH
-      #   vcpkg sanitises PATH when spawning nested CMake. Propagate
-      #   PATH so find_program(NINJA) sees the Ninja 1.10.2 above.
+      # Do NOT set VCPKG_FORCE_SYSTEM_BINARIES.
       #
-      # VCPKG_FORCE_SYSTEM_BINARIES=1
-      #   Use the system Ninja; never download or verify vcpkg's own.
-      #   Defeats the `ninja -v` regression.
+      # vcpkg 2025.10.17 needs pwsh (PowerShell Core 7.x) for compiler
+      # detection. pwsh is not on the windows-2022 runner by default,
+      # so vcpkg downloads it. VCPKG_FORCE_SYSTEM_BINARIES=1 blocks
+      # that download and causes "Could not fetch powershell-core".
       #
-      # VCPKG_VISUAL_STUDIO_PATH
-      #   Tell vcpkg exactly which VS installation to use, bypassing
-      #   its auto-detection. Avoids any ambiguity about which
-      #   vcvarsall.bat gets invoked.
+      # Ninja is safe: vcpkg 2025.10.17 calls find_program(NINJA) first,
+      # finds our Ninja 1.10.2 on PATH (propagated via
+      # VCPKG_KEEP_ENV_VARS), and never downloads its own. The
+      # `ninja -v` bug cannot fire.
       # ----------------------------------------------------------------
       - name: Build x64 Release
         run: .\scripts\win\build-windows-msvc.ps1 -Arch x64
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
-          VCPKG_FORCE_SYSTEM_BINARIES: 1
           VCPKG_KEEP_ENV_VARS: PATH
           VCPKG_VISUAL_STUDIO_PATH: "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise"
 
@@ -100,7 +98,6 @@ jobs:
         shell: powershell
         env:
           VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\triplets
-          VCPKG_FORCE_SYSTEM_BINARIES: 1
           VCPKG_KEEP_ENV_VARS: PATH
           VCPKG_VISUAL_STUDIO_PATH: "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise"
 
