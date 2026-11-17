@@ -9,7 +9,7 @@
   },
   "server": {
     "base_url": "http://127.0.0.1:3000",
-    "api_token": "axdlp_user_Ozg4nkYld0lTwfYmUjaBC2PFxIyzm6u7Xxhy7T41",
+    "api_token": "axdlp_user_5ra9Zj2SW2ND1CbEaNBNjOkdZe4ePfk9QGTxA2wq",
     "heartbeat_interval_seconds": 60,
     "reconnect_backoff_seconds": 10,
     "reconnect_backoff_max_seconds": 300,
@@ -22,23 +22,20 @@
     "filesystem_watcher": {
       "enabled": true,
       "watch_paths": [
-        "/home/kali/Downloads"
+        "/home/kali/Documents"
       ],
-      "exclude_paths": [
-        "*/logs/*",
-        "*/.cache/*"
-      ],
+      "exclude_paths": [],
       "debounce_ms": 300
     },
     "inventory": {
       "enabled": true,
       "watch_paths": [
-        "/home/kali/Downloads"
+        "/home/kali/Documents"
       ],
       "exclude_paths": [
         "*/logs/*"
       ],
-      "interval_seconds": 60,
+      "interval_seconds": 10,
       "compute_hashes": true,
       "max_file_size_bytes": 104857600,
       "scannable_categories": [
@@ -55,18 +52,60 @@
       "enabled": true,
       "batch_size": 50,
       "batch_max_bytes": 52428800,
-      "scan_interval_seconds": 30,
+      "scan_interval_seconds": 10,
       "chunk_size_bytes": 1048576,
       "chunk_overlap_bytes": 256,
       "max_file_bytes": 104857600,
       "max_retries": 3,
       "request_timeout_seconds": 300,
       "text_extensions": [
-        "txt", "md", "log", "csv", "tsv", "json", "yaml", "yml", "toml", "xml",
-        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx", "py", "js", "ts", "jsx", "tsx",
-        "go", "rs", "java", "kt", "scala", "cs", "swift", "rb", "php", "pl", "lua",
-        "sql", "sh", "bash", "zsh", "ps1", "html", "css", "scss", "less", "conf",
-        "cfg", "ini", "env", "properties"
+        "txt",
+        "md",
+        "log",
+        "csv",
+        "tsv",
+        "json",
+        "yaml",
+        "yml",
+        "toml",
+        "xml",
+        "c",
+        "cpp",
+        "cc",
+        "cxx",
+        "h",
+        "hpp",
+        "hxx",
+        "py",
+        "js",
+        "ts",
+        "jsx",
+        "tsx",
+        "go",
+        "rs",
+        "java",
+        "kt",
+        "scala",
+        "cs",
+        "swift",
+        "rb",
+        "php",
+        "pl",
+        "lua",
+        "sql",
+        "sh",
+        "bash",
+        "zsh",
+        "ps1",
+        "html",
+        "css",
+        "scss",
+        "less",
+        "conf",
+        "cfg",
+        "ini",
+        "env",
+        "properties"
       ]
     }
   }

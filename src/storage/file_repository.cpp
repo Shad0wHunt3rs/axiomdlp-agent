@@ -7,6 +7,7 @@
 #include <sqlite3.h>
 
 #include <chrono>
+#include <optional>
 #include <string>
 
 namespace axiom::core {
@@ -57,9 +58,14 @@ constexpr const char* kFileRowColumns =
 
 // Read a full FileRow from the current row of `s`, starting at column
 // index `c`. `c` is advanced past every column read.
+//
+// B6 fix: the id column is now captured into FileRow::id. The scanner
+// uses it to route update_scan_result_by_id / mark_* / record_scan_error_by_id
+// to the exact row it read, regardless of whether another row shares
+// the same path.
 FileRow read_file_row(sqlite3_stmt* s, int& c) {
     FileRow r;
-    (void)sqlite3_column_int64(s, c++);  // id (skipped)
+    r.id              = sqlite3_column_int64(s, c++);
     r.dev             = static_cast<std::uint64_t>(sqlite3_column_int64(s, c++));
     r.inode           = static_cast<std::uint64_t>(sqlite3_column_int64(s, c++));
     r.path            = text_col(s, c++);
@@ -117,6 +123,13 @@ bool FileStore::rollback()          { return db_.rollback(); }
 // ----------------------------------------------------------------
 
 bool FileStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
+    // B7 fix — when content_hash changes, ALL scan-state fields are
+    // reset to the values from the fresh row (which default to "not
+    // scanned"). Before this change, only scan_status was reset;
+    // is_sensitive / sensitivity / last_scanned_at / scan_attempts /
+    // scan_error kept their previous values until the next scan cycle
+    // completed. A file that was scanned as "contains EMAIL" and then
+    // overwritten with safe content read is_sensitive=1 during the gap.
     const char* sql = R"SQL(
         INSERT INTO files
             (dev, inode, path, basename, dirname, extension,
@@ -160,6 +173,31 @@ bool FileStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
                 WHEN files.content_hash = excluded.content_hash
                     THEN files.scan_status
                 ELSE excluded.scan_status
+            END,
+            is_sensitive   = CASE
+                WHEN files.content_hash = excluded.content_hash
+                    THEN files.is_sensitive
+                ELSE excluded.is_sensitive
+            END,
+            sensitivity    = CASE
+                WHEN files.content_hash = excluded.content_hash
+                    THEN files.sensitivity
+                ELSE excluded.sensitivity
+            END,
+            last_scanned_at = CASE
+                WHEN files.content_hash = excluded.content_hash
+                    THEN files.last_scanned_at
+                ELSE excluded.last_scanned_at
+            END,
+            scan_attempts  = CASE
+                WHEN files.content_hash = excluded.content_hash
+                    THEN files.scan_attempts
+                ELSE excluded.scan_attempts
+            END,
+            scan_error     = CASE
+                WHEN files.content_hash = excluded.content_hash
+                    THEN files.scan_error
+                ELSE excluded.scan_error
             END,
             last_seen      = excluded.last_seen,
             walk_id        = excluded.walk_id
@@ -215,13 +253,17 @@ bool FileStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
 // Pruning
 // ----------------------------------------------------------------
 
-bool FileStore::prune_stale(std::uint64_t current_walk_id) {
+std::optional<std::size_t> FileStore::prune_stale(std::uint64_t current_walk_id) {
     const char* sql = "DELETE FROM files WHERE walk_id < ?;";
     Stmt stmt(db_.handle(), sql);
-    if (!stmt.ok()) return false;
+    if (!stmt.ok()) return std::nullopt;
 
-    sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(current_walk_id));
-    return sqlite3_step(stmt.get()) == SQLITE_DONE;
+    sqlite3_bind_int64(stmt.get(), 1,
+                       static_cast<sqlite3_int64>(current_walk_id));
+
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) return std::nullopt;
+
+    return static_cast<std::size_t>(sqlite3_changes(db_.handle()));
 }
 
 // ----------------------------------------------------------------
@@ -381,10 +423,10 @@ std::optional<ScanVerdict> FileStore::find_scan_verdict_by_hash(
     return v;
 }
 
-bool FileStore::update_scan_result_by_path(const std::string& path,
-                                           const std::string& content_hash,
-                                           bool sensitive,
-                                           const std::string& sensitivity) {
+bool FileStore::update_scan_result_by_id(std::int64_t id,
+                                        const std::string& content_hash,
+                                        bool sensitive,
+                                        const std::string& sensitivity) {
     const char* sql =
         "UPDATE files SET "
         "  content_hash    = ?, "
@@ -393,7 +435,7 @@ bool FileStore::update_scan_result_by_path(const std::string& path,
         "  scan_status     = 'scanned', "
         "  last_scanned_at = ?, "
         "  scan_error      = '' "
-        "WHERE path = ?";
+        "WHERE id = ?";
 
     Stmt stmt(db_.handle(), sql);
     if (!stmt.ok()) return false;
@@ -402,61 +444,61 @@ bool FileStore::update_scan_result_by_path(const std::string& path,
     sqlite3_bind_int  (stmt.get(), 2, sensitive ? 1 : 0);
     sqlite3_bind_text (stmt.get(), 3, sensitivity.c_str(),    -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt.get(), 4, now_seconds());
-    sqlite3_bind_text (stmt.get(), 5, path.c_str(),           -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 5, id);
 
     return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
 
-bool FileStore::record_scan_error_by_path(const std::string& path,
-                                          const std::string& error) {
+bool FileStore::record_scan_error_by_id(std::int64_t id,
+                                       const std::string& error) {
     const char* sql =
         "UPDATE files SET "
         "  scan_status     = 'scan_error', "
         "  scan_attempts   = scan_attempts + 1, "
         "  scan_error      = ?, "
         "  last_scanned_at = ? "
-        "WHERE path = ?";
+        "WHERE id = ?";
 
     Stmt stmt(db_.handle(), sql);
     if (!stmt.ok()) return false;
 
     sqlite3_bind_text (stmt.get(), 1, error.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt.get(), 2, now_seconds());
-    sqlite3_bind_text (stmt.get(), 3, path.c_str(),  -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 3, id);
 
     return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
 
-bool FileStore::mark_file_missing(const std::string& path) {
+bool FileStore::mark_file_missing(std::int64_t id) {
     const char* sql =
-        "UPDATE files SET scan_status = 'missing' WHERE path = ?";
+        "UPDATE files SET scan_status = 'missing' WHERE id = ?";
 
     Stmt stmt(db_.handle(), sql);
     if (!stmt.ok()) return false;
 
-    sqlite3_bind_text(stmt.get(), 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 1, id);
     return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
 
-bool FileStore::mark_not_applicable(const std::string& path) {
+bool FileStore::mark_not_applicable(std::int64_t id) {
     const char* sql =
-        "UPDATE files SET scan_status = 'not_applicable' WHERE path = ?";
+        "UPDATE files SET scan_status = 'not_applicable' WHERE id = ?";
 
     Stmt stmt(db_.handle(), sql);
     if (!stmt.ok()) return false;
 
-    sqlite3_bind_text(stmt.get(), 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 1, id);
     return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
 
-bool FileStore::mark_skipped_too_large(const std::string& path) {
+bool FileStore::mark_skipped_too_large(std::int64_t id) {
     const char* sql =
-        "UPDATE files SET scan_status = 'skipped_too_large' WHERE path = ?";
+        "UPDATE files SET scan_status = 'skipped_too_large' WHERE id = ?";
 
     Stmt stmt(db_.handle(), sql);
     if (!stmt.ok()) return false;
 
-    sqlite3_bind_text(stmt.get(), 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 1, id);
     return sqlite3_step(stmt.get()) == SQLITE_DONE;
 }
 

@@ -4,35 +4,15 @@
 //
 // Wire shape (docs/mqtt_protocol.md §9.3):
 //   Request  → axiomdlp/agents/{id}/scan/batch  (QoS 1)
-//     {
-//       "v": 1,
-//       "correlation_id": "<ulid>",
-//       "agent_id": <int>,
-//       "chunks": [
-//         { "file_hash": "...", "path": "...",
-//           "chunk_index": N, "chunk_count": M,
-//           "content_b64": "<base64>" },
-//         ...
-//       ]
-//     }
 //   Response → axiomdlp/replies/{instance_uuid}
-//     {
-//       "v": 1, "correlation_id": "<ulid>",
-//       "ok": true,
-//       "results": [
-//         { "file_hash": "...", "chunk_index": N,
-//           "sensitive": bool, "entity_type": "...",
-//           "risk_score": int, "action": "block|alert|allow",
-//           "error": "..." }
-//       ]
-//     }
-//   Failure:
-//     { "v": 1, "ok": false, "error": "not_found" | "agent_revoked" |
-//                                       "invalid_request" | "internal" }
 //
-// Per-chunk errors are reported as `results[].error` with the batch `ok`
-// still true. Files with any chunk error stay 'pending' so they retry
-// next cycle; we do NOT commit a partial verdict.
+// B2 fix: per-chunk verdict cache, keyed by file content hash, so
+// retries only re-send the chunks that failed.
+//
+// B6 fix: every update to the files row (commit, error, missing,
+// not_applicable, skipped_too_large) goes through *_by_id, matching
+// the SQLite ROWID captured in FileRow::id. The previous *_by_path
+// variants matched on path, which is not unique.
 
 #include "features/content_scanner/content_scanner_module.h"
 #include "storage/file_repository.h"
@@ -49,6 +29,7 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace axiom::core {
@@ -59,6 +40,9 @@ using namespace std::chrono_literals;
 namespace {
 
 constexpr const char* kStateKeyAgentId = "agent_id";
+
+constexpr auto        kChunkCacheTTL        = std::chrono::minutes(10);
+constexpr std::size_t kChunkCacheMaxEntries = 20000;
 
 void interruptible_sleep(std::atomic<bool>& stop_flag,
                          std::chrono::seconds total) {
@@ -98,7 +82,8 @@ ReadResult read_file_bounded(const std::string& path, std::size_t max_bytes) {
     if (file_size < 0) { r.error = "cannot determine file size"; return r; }
     std::rewind(f);
 
-    std::size_t to_read = std::min<std::size_t>(static_cast<std::size_t>(file_size), max_bytes);
+    std::size_t to_read = std::min<std::size_t>(
+        static_cast<std::size_t>(file_size), max_bytes);
     r.data.resize(to_read);
     std::size_t got = std::fread(r.data.data(), 1, to_read, f);
     if (got < to_read) {
@@ -187,13 +172,12 @@ void ContentScannerModule::shutdown() {
 HealthStatus ContentScannerModule::health() const {
     if (ctx_ == nullptr) return HealthStatus::unknown("not initialized");
     if (!enabled_)       return HealthStatus::ok("disabled");
-    if (!running_.load(std::memory_order_relaxed)) return HealthStatus::failed("scanner thread not running");
+    if (!running_.load(std::memory_order_relaxed))
+        return HealthStatus::failed("scanner thread not running");
     return HealthStatus::ok("scanned=" + std::to_string(total_scanned_));
 }
 
 void ContentScannerModule::sync_loop() {
-    // Wait until agent_sync has persisted agent_id. Content scanner has
-    // no way to make useful requests without it.
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         if (ctx_->shutdown.is_requested()) return;
         if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
@@ -209,10 +193,9 @@ void ContentScannerModule::sync_loop() {
         std::this_thread::sleep_for(1s);
     }
 
-    if (stop_requested_.load(std::memory_order_relaxed) || ctx_->shutdown.is_requested()) return;
+    if (stop_requested_.load(std::memory_order_relaxed) ||
+        ctx_->shutdown.is_requested()) return;
 
-    // Small grace period so agent_sync's initial register/heartbeat has
-    // settled before we hammer the scan/batch topic.
     interruptible_sleep(stop_requested_, std::chrono::seconds(5));
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
@@ -223,9 +206,37 @@ void ContentScannerModule::sync_loop() {
     }
 }
 
+void ContentScannerModule::sweep_chunk_cache() {
+    const auto cutoff = std::chrono::steady_clock::now() - kChunkCacheTTL;
+    for (auto it = chunk_cache_.begin(); it != chunk_cache_.end();) {
+        if (it->second.last_activity < cutoff) {
+            it = chunk_cache_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    if (chunk_cache_.size() <= kChunkCacheMaxEntries) return;
+
+    std::vector<std::pair<std::chrono::steady_clock::time_point, std::string>> sorted;
+    sorted.reserve(chunk_cache_.size());
+    for (const auto& [hash, cached] : chunk_cache_) {
+        sorted.emplace_back(cached.last_activity, hash);
+    }
+    std::sort(sorted.begin(), sorted.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    const std::size_t to_evict = chunk_cache_.size() - kChunkCacheMaxEntries;
+    for (std::size_t i = 0; i < to_evict; ++i) {
+        chunk_cache_.erase(sorted[i].second);
+    }
+    SPDLOG_WARN("content_scanner: chunk cache exceeded cap, evicted {}",
+                to_evict);
+}
+
 void ContentScannerModule::process_one_cycle() {
-    // Re-check agent_id: it can go stale if the server says not_found
-    // or if a prior cycle's re-enroll cleared it.
+    sweep_chunk_cache();
+
     if (agent_id_ <= 0) {
         if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
             try { agent_id_ = std::stoi(*saved); } catch (const std::exception&) { /* ignore */ }
@@ -268,32 +279,35 @@ bool ContentScannerModule::prepare_file(
         std::map<std::string, FileProgress>& progress) {
 
     if (!ext_in_list(row.extension, text_extensions_)) {
-        ctx_->file_store.mark_not_applicable(row.path);
+        ctx_->file_store.mark_not_applicable(row.id);
         ++total_skipped_;
         return false;
     }
     if (row.size > max_file_bytes_) {
-        ctx_->file_store.mark_skipped_too_large(row.path);
+        ctx_->file_store.mark_skipped_too_large(row.id);
         ++total_skipped_;
         return false;
     }
     if (!file_exists(row.path)) {
-        ctx_->file_store.mark_file_missing(row.path);
+        ctx_->file_store.mark_file_missing(row.id);
         ++total_skipped_;
         return false;
     }
 
     auto read = read_file_bounded(row.path, max_file_bytes_);
     if (!read.ok()) {
-        ctx_->file_store.record_scan_error_by_path(row.path, read.error);
+        ctx_->file_store.record_scan_error_by_id(row.id, read.error);
         return false;
     }
 
     std::string new_hash = util::sha256_hex(read.data.data(), read.data.size());
 
+    // Full-verdict dedup: an identical file was already scanned somewhere
+    // else. Commit (by id) and skip.
     if (auto cached = ctx_->file_store.find_scan_verdict_by_hash(new_hash)) {
-        ctx_->file_store.update_scan_result_by_path(
-            row.path, new_hash, cached->sensitive, cached->sensitivity);
+        ctx_->file_store.update_scan_result_by_id(
+            row.id, new_hash, cached->sensitive, cached->sensitivity);
+        chunk_cache_.erase(new_hash);
         ++total_scanned_;
         if (cached->sensitive) ++total_sensitive_;
         return false;
@@ -301,26 +315,61 @@ bool ContentScannerModule::prepare_file(
 
     auto ranges = compute_chunk_ranges(read.data.size(), chunk_size_, chunk_overlap_);
     if (ranges.empty()) {
-        ctx_->file_store.update_scan_result_by_path(row.path, new_hash, false, "");
+        ctx_->file_store.update_scan_result_by_id(row.id, new_hash, false, "");
+        chunk_cache_.erase(new_hash);
         ++total_scanned_;
         return false;
     }
 
+    const auto total_chunks = static_cast<std::uint32_t>(ranges.size());
+
+    CachedChunkResults* cached_chunks = nullptr;
+    if (auto it = chunk_cache_.find(new_hash); it != chunk_cache_.end()) {
+        if (it->second.total_chunks_expected == total_chunks) {
+            cached_chunks = &it->second;
+            cached_chunks->last_activity = std::chrono::steady_clock::now();
+        } else {
+            chunk_cache_.erase(it);
+        }
+    }
+
     FileProgress fp;
+    fp.id              = row.id;                 // B6 fix
     fp.path            = row.path;
-    fp.chunks_expected = static_cast<std::uint32_t>(ranges.size());
+    fp.chunks_expected = total_chunks;
+
+    if (cached_chunks) {
+        for (const auto& [idx, v] : cached_chunks->chunks) {
+            fp.chunks_returned++;
+            if (v.sensitive) {
+                fp.sensitive = true;
+                if (fp.sensitivity.empty()) {
+                    fp.sensitivity = v.entity_type;
+                }
+            }
+        }
+    }
+
     progress[new_hash] = fp;
 
-    for (std::size_t i = 0; i < ranges.size(); ++i) {
+    if (fp.chunks_returned >= fp.chunks_expected) {
+        return false;
+    }
+
+    for (std::uint32_t i = 0; i < total_chunks; ++i) {
+        if (cached_chunks && cached_chunks->chunks.count(i)) {
+            continue;
+        }
         const auto [start, end] = ranges[i];
         Chunk c;
         c.file_hash   = new_hash;
         c.path        = row.path;
-        c.chunk_index = static_cast<std::uint32_t>(i);
-        c.chunk_count = static_cast<std::uint32_t>(ranges.size());
+        c.chunk_index = i;
+        c.chunk_count = total_chunks;
         c.content.assign(read.data.begin() + start, read.data.begin() + end);
         out_chunks.push_back(std::move(c));
     }
+
     return true;
 }
 
@@ -333,8 +382,6 @@ void ContentScannerModule::send_chunks_in_batches(
         if (stop_requested_.load(std::memory_order_relaxed)) return;
         if (ctx_->shutdown.is_requested()) return;
 
-        // Re-check agent_id inside the loop — a prior batch may have
-        // received not_found and cleared it.
         if (agent_id_ <= 0) {
             if (auto saved = ctx_->state_store.get(kStateKeyAgentId)) {
                 try { agent_id_ = std::stoi(*saved); } catch (const std::exception&) { /* ignore */ }
@@ -355,7 +402,6 @@ void ContentScannerModule::send_chunks_in_batches(
         }
         if (j == i) break;
 
-        // Build the chunk array — content_b64, matching messages.go ScanChunk.
         json batch_chunks = json::array();
         for (std::size_t k = i; k < j; ++k) {
             batch_chunks.push_back({
@@ -383,8 +429,6 @@ void ContentScannerModule::send_chunks_in_batches(
 
         if (!resp) {
             SPDLOG_DEBUG("content_scanner: scan batch timed out or transport down");
-            // Do not advance i — leave chunks in the buffer so next
-            // cycle can retry them. Return now; caller commits nothing.
             return;
         }
 
@@ -403,14 +447,11 @@ void ContentScannerModule::send_chunks_in_batches(
                 agent_id_ = 0;
                 return;
             }
-            // invalid_request / internal — log already done; leave chunks
-            // buffered so next cycle retries. Do not advance i.
             return;
         }
 
         merge_batch_response(*resp, progress);
 
-        // Wipe chunk content from memory (security + memory hygiene).
         for (std::size_t k = i; k < j; ++k) {
             std::fill(chunks[k].content.begin(), chunks[k].content.end(), 0);
             chunks[k].content.clear();
@@ -434,8 +475,6 @@ void ContentScannerModule::merge_batch_response(
         auto it = progress.find(file_hash);
         if (it == progress.end()) continue;
 
-        // Per-chunk error means we could not score this chunk (PII service
-        // down, etc). Skip it — the file stays incomplete and retries.
         if (r.contains("error") && !r["error"].get<std::string>().empty()) {
             SPDLOG_DEBUG("content_scanner: chunk error ({}): {}",
                          file_hash.substr(0, 12),
@@ -443,12 +482,24 @@ void ContentScannerModule::merge_batch_response(
             continue;
         }
 
+        const bool sensitive = r.value("sensitive", false);
+        const std::string entity_type = r.value("entity_type", "");
+        const std::uint32_t chunk_index =
+            static_cast<std::uint32_t>(r.value("chunk_index", 0));
+
         it->second.chunks_returned += 1;
-        if (r.value("sensitive", false)) {
+        if (sensitive) {
             it->second.sensitive = true;
             if (it->second.sensitivity.empty()) {
-                it->second.sensitivity = r.value("entity_type", "");
+                it->second.sensitivity = entity_type;
             }
+        }
+
+        auto& cached = chunk_cache_[file_hash];
+        cached.chunks[chunk_index] = CachedChunkVerdict{sensitive, entity_type};
+        cached.last_activity = std::chrono::steady_clock::now();
+        if (cached.total_chunks_expected == 0) {
+            cached.total_chunks_expected = it->second.chunks_expected;
         }
     }
 }
@@ -461,8 +512,15 @@ void ContentScannerModule::commit_completed_files(
 
     for (auto& [hash, fp] : progress) {
         if (fp.chunks_returned < fp.chunks_expected) { ++incomplete; continue; }
-        ctx_->file_store.update_scan_result_by_path(
-            fp.path, hash, fp.sensitive, fp.sensitivity);
+
+        if (!ctx_->file_store.update_scan_result_by_id(
+                fp.id, hash, fp.sensitive, fp.sensitivity)) {
+            SPDLOG_WARN("content_scanner: failed to commit scan result for {}",
+                        fp.path);
+            continue;
+        }
+
+        chunk_cache_.erase(hash);
         ++total_scanned_;
         if (fp.sensitive) ++total_sensitive_;
         ++complete;

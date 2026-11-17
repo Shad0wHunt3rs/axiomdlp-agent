@@ -13,6 +13,7 @@
 #include <chrono>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -154,6 +155,11 @@ void InventoryScanner::scan_one_root(const std::string& root,
                 result.was_cancelled = true;
                 return;
             }
+            // If a batch-level transaction op failed, bail out of the
+            // walk. scan_all will log the error and skip prune_stale.
+            if (result.commit_failed) {
+                return;
+            }
         }
 
         const auto& entry   = *it;
@@ -250,16 +256,6 @@ void InventoryScanner::scan_one_root(const std::string& root,
 
         // ------------------------------------------------------------
         // Decide whether to hash and queue this file for scanning.
-        //
-        // A file is eligible for the content scanner only if:
-        //   - it's a regular file (not a directory, not a symlink)
-        //   - its category is in the inventory's scannable list
-        //   - its extension is in the content scanner's text allowlist
-        //   - its size is at or below the configured limit
-        //
-        // Files that fail any check are marked not_applicable or
-        // skipped_too_large right now, so they never enter the scanner
-        // queue and no hashing work is wasted on them.
         // ------------------------------------------------------------
         const bool is_regular    = !row.is_directory && !row.is_symlink;
         const bool category_ok   = is_scannable_category(row.category,
@@ -273,9 +269,6 @@ void InventoryScanner::scan_one_root(const std::string& root,
         } else if (!category_ok) {
             row.scan_status = "not_applicable";
         } else if (!extension_ok) {
-            // Right category but the scanner can't handle this file
-            // type (e.g. PDF, DOCX). Mark it so it doesn't sit in the
-            // pending queue waiting for a scan that will never run.
             row.scan_status = "not_applicable";
         } else if (!size_ok) {
             row.scan_status = "skipped_too_large";
@@ -302,18 +295,63 @@ void InventoryScanner::scan_one_root(const std::string& root,
             ++since_commit;
 
             if (since_commit >= kBatchSize) {
-                ctx_.file_store.commit();
-                ctx_.file_store.begin_transaction();
+                // B3 fix — check both the commit and the re-arm. Before
+                // this change, a failed commit silently switched SQLite
+                // to autocommit mode and the next batch of rows landed
+                // without the batch transaction, leaving a partially
+                // committed table with no error in the log.
+                if (!ctx_.file_store.commit()) {
+                    SPDLOG_ERROR("InventoryScanner: mid-scan commit failed "
+                                 "for '{}'; aborting scan", root);
+                    result.commit_failed = true;
+                    return;
+                }
+                if (!ctx_.file_store.begin_transaction()) {
+                    SPDLOG_ERROR("InventoryScanner: mid-scan begin_transaction "
+                                 "failed for '{}'; aborting scan", root);
+                    result.commit_failed = true;
+                    return;
+                }
                 since_commit = 0;
+            }
+        } else {
+            // B3 fix — count the failure. Log at WARN so a pattern of
+            // failures (disk full, lock contention, corrupt row) shows
+            // up in the log without spamming one line per file.
+            ++result.files_failed;
+            if (result.files_failed == 1) {
+                SPDLOG_WARN("InventoryScanner: first upsert failure "
+                            "(path='{}'); subsequent failures counted silently",
+                            path_str);
             }
         }
     }
 }
 
+// scan_all runs one full inventory pass.
+//
+// B3 fix — transaction error handling:
+//
+//   Before this change, begin_transaction / commit / begin_transaction
+//   return values were discarded. A failed commit silently switched
+//   SQLite to autocommit mode: subsequent inserts bypassed the batch
+//   transaction, the scan "completed successfully" with a partially
+//   committed table, and prune_stale then deleted the "stale" rows
+//   that had actually just failed to insert — corrupting the DB
+//   without a single log line.
+//
+//   After: every transaction op is checked. A failure sets
+//   commit_failed, rolls back what we can, skips prune_stale (the DB
+//   state is unknown), logs at ERROR, and still writes a finish_walk
+//   row so operators see the failed pass.
 InventoryResult InventoryScanner::scan_all(const std::atomic<bool>& stop_flag) {
     InventoryResult r;
 
-    const auto start = std::chrono::steady_clock::now();
+    const auto start       = std::chrono::steady_clock::now();
+    const auto start_epoch = std::chrono::system_clock::now();
+    const std::int64_t started_at_epoch =
+        std::chrono::duration_cast<std::chrono::seconds>(
+            start_epoch.time_since_epoch()).count();
 
     if (!ctx_.file_store.initialize_schema()) {
         SPDLOG_ERROR("InventoryScanner: file store not initialized");
@@ -326,11 +364,45 @@ InventoryResult InventoryScanner::scan_all(const std::atomic<bool>& stop_flag) {
         return r;
     }
 
-    r.walk_id = 1;
+    // Begin a new walk. If begin_walk fails (walks table missing, disk
+    // full during insert), fall back to walk_id=1 with pruning disabled
+    // — the scan still runs and files are still upserted; stale rows
+    // from deleted files survive this pass and will be caught by the
+    // next successful scan.
+    std::uint64_t walk_id = ctx_.file_store.begin_walk(started_at_epoch);
+    bool prune_enabled    = true;
+    if (walk_id == 0) {
+        SPDLOG_WARN("InventoryScanner: begin_walk failed — stale-row pruning "
+                    "disabled for this pass");
+        walk_id       = 1;
+        prune_enabled = false;
+    }
+    r.walk_id = walk_id;
 
-    SPDLOG_INFO("InventoryScanner: starting scan over {} root(s)", roots.size());
+    SPDLOG_INFO("InventoryScanner: starting scan over {} root(s) (walk_id={})",
+                roots.size(), walk_id);
 
-    ctx_.file_store.begin_transaction();
+    // B3 fix — check the initial begin_transaction. If this fails,
+    // every upsert below would go into autocommit mode instead of a
+    // single transactional batch.
+    if (!ctx_.file_store.begin_transaction()) {
+        SPDLOG_ERROR("InventoryScanner: initial begin_transaction failed; "
+                     "scan aborted (walk_id={})", walk_id);
+        r.commit_failed = true;
+
+        const std::int64_t finished_at_epoch =
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+        r.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        if (prune_enabled) {
+            ctx_.file_store.finish_walk(walk_id,
+                                        started_at_epoch,
+                                        finished_at_epoch,
+                                        0, 0, 0, 0, r.duration_ms);
+        }
+        return r;
+    }
 
     for (const auto& root : roots) {
         if (stop_flag.load(std::memory_order_relaxed)) {
@@ -339,21 +411,110 @@ InventoryResult InventoryScanner::scan_all(const std::atomic<bool>& stop_flag) {
             r.was_cancelled = true;
             break;
         }
-        scan_one_root(root, r.walk_id, stop_flag, r);
-        if (r.was_cancelled) break;
+        scan_one_root(root, walk_id, stop_flag, r);
+        if (r.was_cancelled || r.commit_failed) break;
     }
-
-    ctx_.file_store.commit();
 
     r.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
 
+    // If a mid-scan transaction op failed, the DB is in an unknown
+    // state: some rows landed, some didn't. Roll back whatever we can
+    // (best effort), skip pruning (deleting "stale" rows would delete
+    // the rows that failed to insert), log at ERROR, and record the
+    // failed pass in the walks table so operators can see it.
+    if (r.commit_failed) {
+        if (!ctx_.file_store.rollback()) {
+            SPDLOG_ERROR("InventoryScanner: rollback failed after commit error "
+                         "(walk_id={})", walk_id);
+        }
+
+        const std::int64_t finished_at_epoch =
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+        if (prune_enabled) {
+            ctx_.file_store.finish_walk(walk_id,
+                                        started_at_epoch,
+                                        finished_at_epoch,
+                                        r.files_seen, 0, 0, 0, r.duration_ms);
+        }
+
+        SPDLOG_ERROR("InventoryScanner: scan FAILED (walk_id={}, seen={}, "
+                     "failed={}, ms={}) — partial commit, prune skipped",
+                     walk_id, r.files_seen, r.files_failed, r.duration_ms);
+        return r;
+    }
+
+    // B3 fix — check the final commit.
+    if (!ctx_.file_store.commit()) {
+        SPDLOG_ERROR("InventoryScanner: final commit failed; scan incomplete "
+                     "(walk_id={})", walk_id);
+        ctx_.file_store.rollback();   // best effort
+        r.commit_failed = true;
+
+        const std::int64_t finished_at_epoch =
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+        if (prune_enabled) {
+            ctx_.file_store.finish_walk(walk_id,
+                                        started_at_epoch,
+                                        finished_at_epoch,
+                                        r.files_seen, 0, 0, 0, r.duration_ms);
+        }
+        return r;
+    }
+
+    // Prune rows left over from earlier walks, but only when the scan
+    // completed. Then record the walk in the walks table so operators
+    // can see scan history.
+    std::optional<std::size_t> pruned;
+    if (prune_enabled) {
+        if (!r.was_cancelled) {
+            pruned = ctx_.file_store.prune_stale(walk_id);
+            if (!pruned) {
+                SPDLOG_WARN("InventoryScanner: prune_stale failed for walk_id={}",
+                            walk_id);
+            }
+        }
+
+        const std::int64_t finished_at_epoch =
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+
+        const std::size_t files_deleted = pruned.value_or(0);
+        if (!ctx_.file_store.finish_walk(walk_id,
+                                         started_at_epoch,
+                                         finished_at_epoch,
+                                         r.files_seen,
+                                         0,               // files_new (not tracked yet)
+                                         0,               // files_changed (not tracked yet)
+                                         files_deleted,
+                                         r.duration_ms)) {
+            SPDLOG_WARN("InventoryScanner: finish_walk failed for walk_id={}",
+                        walk_id);
+        }
+    }
+
+    const std::size_t deleted = pruned.value_or(0);
+
     if (r.was_cancelled) {
-        SPDLOG_INFO("InventoryScanner: cancelled after {} files ({} ms)",
-                    r.files_seen, r.duration_ms);
+        if (r.files_failed > 0) {
+            SPDLOG_INFO("InventoryScanner: cancelled after {} files "
+                        "({} failed, {} ms, walk_id={})",
+                        r.files_seen, r.files_failed, r.duration_ms, walk_id);
+        } else {
+            SPDLOG_INFO("InventoryScanner: cancelled after {} files "
+                        "({} ms, walk_id={})",
+                        r.files_seen, r.duration_ms, walk_id);
+        }
+    } else if (r.files_failed > 0 || deleted > 0) {
+        SPDLOG_INFO("InventoryScanner: finished ({} files, {} failed, "
+                    "{} pruned, {} ms, walk_id={})",
+                    r.files_seen, r.files_failed, deleted,
+                    r.duration_ms, walk_id);
     } else {
-        SPDLOG_INFO("InventoryScanner: finished ({} files, {} ms)",
-                    r.files_seen, r.duration_ms);
+        SPDLOG_INFO("InventoryScanner: finished ({} files, {} ms, walk_id={})",
+                    r.files_seen, r.duration_ms, walk_id);
     }
 
     return r;

@@ -39,6 +39,12 @@ public:
         const std::string&                        topic,
         std::function<void(const nlohmann::json&)> handler) = 0;
 
+    // BUG-B19: remove every handler registered for `topic`. Idempotent —
+    // safe to call when the topic has no handlers. Introduced so callers
+    // can drop handlers when the resource they serve (e.g. a previous
+    // agent_id) is no longer valid.
+    virtual void unsubscribe(const std::string& topic) = 0;
+
     // Whether the transport is connected and can send requests. The
     // feature modules use this to avoid hammering request() during the
     // first few seconds of startup while the transport is still dialing

@@ -17,7 +17,7 @@
 #include "storage/state_repository.h"
 
 #include <mosquitto.h>
-#include <mqtt_protocol.h>  // <-- Added for MQTT v5 property macros on Windows
+#include <mqtt_protocol.h>  // <-- MQTT v5 property macros on Windows
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <spdlog/spdlog.h>
@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <utility>
@@ -50,12 +51,16 @@ constexpr int kReceiveMaximum       = 100;
 constexpr int kMaximumPacketSize    = 134217728;
 constexpr int kKeepaliveSeconds     = 60;
 
-std::string random_hex_32() {
+// BUG-B12: random_hex_32 now returns std::optional<std::string> and
+// returns std::nullopt on RAND_bytes failure instead of falling back to
+// a deterministic value. The previous fallback produced duplicate
+// correlation IDs (breaking request/response routing) and a stable
+// instance_uuid that could cause two agents to share an MQTT client ID.
+// Aborting is the correct behavior on entropy failure.
+std::optional<std::string> random_hex_32() {
     unsigned char raw[16];
     if (RAND_bytes(raw, sizeof(raw)) != 1) {
-        for (std::size_t i = 0; i < sizeof(raw); ++i) {
-            raw[i] = static_cast<unsigned char>(i * 31 + 7);
-        }
+        return std::nullopt;
     }
     static constexpr char kHex[] = "0123456789abcdef";
     std::string out(32, '\0');
@@ -107,6 +112,11 @@ bool MqttTransportModule::initialize(ModuleContext& context) {
     }
 
     load_or_generate_instance_uuid();
+    if (instance_uuid_.empty()) {
+        SPDLOG_ERROR("mqtt_transport: cannot initialize without instance_uuid "
+                     "(OS entropy source failed)");
+        return false;
+    }
     reply_topic_ = "axiomdlp/replies/" + instance_uuid_;
     agent_id_.store(load_agent_id_from_state(), std::memory_order_relaxed);
 
@@ -538,9 +548,27 @@ void MqttTransportModule::handle_server_revoke(const nlohmann::json& body) {
     else                                ctx_->shutdown.request(ShutdownReason::AuthRevoked);
 }
 
+// subscribe_connected_topics brings the broker's view of our
+// subscriptions in line with the current agent_id.
+//
+// BUG-B1: two things can drift:
+//
+//   1. agent_id changed while connected (agent re-enrolled). The broker
+//      still has subscriptions for the old id. If a retained
+//      ServerRevoke fires on {old_id}/revoke, this healthy connection
+//      would incorrectly shut itself down. So we unsubscribe from the
+//      old topics first.
+//
+//   2. agent_id changed while disconnected. Clean Start is false, so
+//      the broker may retain the old subscriptions across the blip.
+//      last_subscribed_agent_id_ persists across teardown so the diff
+//      check here catches this case too.
 void MqttTransportModule::subscribe_connected_topics() {
     std::lock_guard<std::mutex> lock(mosq_mu_);
-    if (!mosq_) return;
+    if (!mosq_ || !connected_.load(std::memory_order_relaxed)) return;
+
+    const int current_aid = agent_id_.load(std::memory_order_relaxed);
+    const int prev_aid    = last_subscribed_agent_id_.load(std::memory_order_relaxed);
 
     auto do_sub = [this](const std::string& topic, int qos) {
         int mid = 0;
@@ -553,14 +581,36 @@ void MqttTransportModule::subscribe_connected_topics() {
         }
     };
 
+    auto do_unsub = [this](const std::string& topic) {
+        int mid = 0;
+        const int rc = mosquitto_unsubscribe(mosq_, &mid, topic.c_str());
+        if (rc != MOSQ_ERR_SUCCESS) {
+            SPDLOG_WARN("mqtt_transport: unsubscribe '{}' failed: {}",
+                        topic, mosquitto_strerror(rc));
+        } else {
+            SPDLOG_INFO("mqtt_transport: unsubscribed '{}'", topic);
+        }
+    };
+
+    if (prev_aid > 0 && prev_aid != current_aid) {
+        const std::string prefix =
+            "axiomdlp/agents/" + std::to_string(prev_aid) + "/";
+        do_unsub(prefix + "command");
+        do_unsub(prefix + "policy");
+        do_unsub(prefix + "revoke");
+    }
+
     do_sub(reply_topic_, 1);
 
-    const int aid = agent_id_.load(std::memory_order_relaxed);
-    if (aid > 0) {
-        do_sub("axiomdlp/agents/" + std::to_string(aid) + "/command", 2);
-        do_sub("axiomdlp/agents/" + std::to_string(aid) + "/policy",  2);
-        do_sub("axiomdlp/agents/" + std::to_string(aid) + "/revoke",  2);
+    if (current_aid > 0) {
+        const std::string prefix =
+            "axiomdlp/agents/" + std::to_string(current_aid) + "/";
+        do_sub(prefix + "command", 2);
+        do_sub(prefix + "policy",  2);
+        do_sub(prefix + "revoke",  2);
     }
+
+    last_subscribed_agent_id_.store(current_aid, std::memory_order_relaxed);
 }
 
 void MqttTransportModule::set_agent_id(int agent_id) {
@@ -588,7 +638,13 @@ MqttTransportModule::request(const std::string&    topic,
         return std::nullopt;
     }
 
-    const std::string cid = random_hex_32();
+    auto cid_opt = random_hex_32();
+    if (!cid_opt) {
+        SPDLOG_ERROR("mqtt_transport: RAND_bytes failed — cannot create correlation ID");
+        return std::nullopt;
+    }
+    const std::string cid = *cid_opt;
+
     nlohmann::json body   = payload;
     body["v"]              = 1;
     body["correlation_id"] = cid;
@@ -660,6 +716,12 @@ void MqttTransportModule::subscribe(
     subs_[topic].push_back(std::move(handler));
 }
 
+// BUG-B19: remove every handler registered for `topic`. Idempotent.
+void MqttTransportModule::unsubscribe(const std::string& topic) {
+    std::lock_guard lock(subs_mu_);
+    subs_.erase(topic);
+}
+
 bool MqttTransportModule::publish(const std::string&    topic,
                                   const nlohmann::json& payload,
                                   int                   qos,
@@ -693,7 +755,13 @@ void MqttTransportModule::load_or_generate_instance_uuid() {
         SPDLOG_WARN("mqtt_transport: stored mqtt_instance_uuid has unexpected "
                     "length {} — regenerating", existing->size());
     }
-    instance_uuid_ = random_hex_32();
+    auto generated = random_hex_32();
+    if (!generated) {
+        SPDLOG_ERROR("mqtt_transport: RAND_bytes failed — cannot generate instance_uuid");
+        instance_uuid_.clear();
+        return;
+    }
+    instance_uuid_ = *generated;
     ctx_->state_store.set(kStateKeyMqttInstanceId, instance_uuid_);
     SPDLOG_INFO("mqtt_transport: generated new instance_uuid={}", instance_uuid_);
 }

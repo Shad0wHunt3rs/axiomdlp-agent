@@ -3,6 +3,13 @@
 // Phase 9: content scanner now talks to the Core over MQTT via
 // IRequestClient::request("axiomdlp/agents/{id}/scan/batch", ...).
 // See docs/mqtt_protocol.md §9.3 for the wire schema.
+//
+// B2 fix: per-chunk verdicts are cached across cycles, keyed by the
+// file's content hash.
+//
+// B6 fix: FileProgress now carries the FileRow id so commit_completed_files
+// can update by id (SQLite ROWID) instead of by path. Path is not unique
+// when a file is deleted and recreated at the same path.
 
 #pragma once
 
@@ -10,6 +17,7 @@
 #include "net/i_request_client.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -46,6 +54,10 @@ private:
     };
 
     struct FileProgress {
+        // B6 fix: SQLite ROWID of the files row this file came from.
+        // Used to route the final commit to the exact row, even if
+        // another row shares the same path.
+        std::int64_t  id              = 0;
         std::string   path;
         std::uint32_t chunks_expected = 0;
         std::uint32_t chunks_returned = 0;
@@ -53,8 +65,21 @@ private:
         std::string   sensitivity;
     };
 
+    // B2 fix — one chunk's verdict as remembered from a previous cycle.
+    struct CachedChunkVerdict {
+        bool        sensitive   = false;
+        std::string entity_type;
+    };
+
+    struct CachedChunkResults {
+        std::map<std::uint32_t, CachedChunkVerdict> chunks;
+        std::chrono::steady_clock::time_point       last_activity;
+        std::uint32_t                               total_chunks_expected = 0;
+    };
+
     void sync_loop();
     void process_one_cycle();
+    void sweep_chunk_cache();
 
     bool prepare_file(const FileRow& row,
                       std::vector<Chunk>& out_chunks,
@@ -69,7 +94,7 @@ private:
     void commit_completed_files(std::map<std::string, FileProgress>& progress);
 
     bool        enabled_             = true;
-    IRequestClient* req_             = nullptr;    // borrowed from ModuleContext
+    IRequestClient* req_             = nullptr;
     int         agent_id_            = 0;
 
     int         batch_size_          = 50;
@@ -86,6 +111,8 @@ private:
     std::thread       sync_thread_;
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> running_{false};
+
+    std::map<std::string, CachedChunkResults> chunk_cache_;
 
     std::size_t total_scanned_   = 0;
     std::size_t total_sensitive_ = 0;

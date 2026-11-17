@@ -16,8 +16,18 @@
 namespace axiom::core {
 
 // One row in the files table.
+//
+// B6 fix: id is now populated by every read path. update_scan_result_by_id
+// and the mark_* / record_scan_error_by_id helpers match on id (the
+// unique SQLite ROWID) instead of path. The previous implementation
+// matched on path, which is not unique — deleting a file and recreating
+// it at the same path creates two rows (different inodes), and path-
+// based updates hit both. The id is also necessary to distinguish the
+// row the scanner just read from any other row that happens to share
+// the same path.
 struct FileRow {
     // Identity
+    std::int64_t  id             = 0;    // SQLite ROWID; 0 = not-yet-inserted
     std::uint64_t dev            = 0;
     std::uint64_t inode          = 0;
 
@@ -92,10 +102,23 @@ public:
     bool initialize_schema();
 
     // Insert or update one file. Keyed by (dev, inode).
+    //
+    // B7 fix: when content_hash changes, every scan-state field is
+    // reset to the value from the fresh row (which defaults to "not
+    // scanned"). Before this fix, only scan_status was reset; a file
+    // that was is_sensitive=1 (e.g. "contains EMAIL") and whose
+    // content was overwritten with safe text would keep is_sensitive=1
+    // and sensitivity="EMAIL" until the next scan cycle finished.
+    // Enforcement code reading is_sensitive during that window saw
+    // stale data.
     bool upsert_file(const FileRow& row, std::uint64_t walk_id);
 
     // Remove files whose walk_id is older than `current_walk_id`.
-    bool prune_stale(std::uint64_t current_walk_id);
+    //
+    // Returns the number of rows deleted on success, or std::nullopt on
+    // SQL error. Called by InventoryScanner::scan_all after a
+    // successful non-cancelled scan.
+    std::optional<std::size_t> prune_stale(std::uint64_t current_walk_id);
 
     // Walk bookkeeping.
     std::uint64_t begin_walk(std::int64_t started_at);
@@ -126,26 +149,28 @@ public:
     std::optional<ScanVerdict> find_scan_verdict_by_hash(
         const std::string& content_hash) const;
 
-    // Record a successful scan result. Updates by path, sets content_hash
-    // to the value the scanner observed.
-    bool update_scan_result_by_path(const std::string& path,
-                                    const std::string& content_hash,
-                                    bool sensitive,
-                                    const std::string& sensitivity);
+    // B6 fix — all scan-state writers below match on the unique ROWID.
+    // The previous * _by_path variants matched on path, which is not
+    // unique (delete+recreate at the same path leaves two rows).
 
-    // Record a failed scan attempt. Increments scan_attempts, stores the
-    // error, marks status as 'scan_error'.
-    bool record_scan_error_by_path(const std::string& path,
-                                   const std::string& error);
+    // Record a successful scan result for the row with the given id.
+    bool update_scan_result_by_id(std::int64_t id,
+                                  const std::string& content_hash,
+                                  bool sensitive,
+                                  const std::string& sensitivity);
+
+    // Record a failed scan attempt (bumps scan_attempts).
+    bool record_scan_error_by_id(std::int64_t id,
+                                 const std::string& error);
 
     // Mark a file that no longer exists on disk.
-    bool mark_file_missing(const std::string& path);
+    bool mark_file_missing(std::int64_t id);
 
     // Mark a file whose extension is outside the scanner's scope.
-    bool mark_not_applicable(const std::string& path);
+    bool mark_not_applicable(std::int64_t id);
 
     // Mark a file that exceeds the scanner's max_file_bytes limit.
-    bool mark_skipped_too_large(const std::string& path);
+    bool mark_skipped_too_large(std::int64_t id);
 
     // ----------------------------------------------------------------
     // Transport support

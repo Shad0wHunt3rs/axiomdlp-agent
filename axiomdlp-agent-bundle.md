@@ -1,6 +1,6 @@
 # AxiomDLP Agent — Source Bundle
 
-- **Generated:** 2026-11-12 10:05:24 UTC
+- **Generated:** 2026-11-14 12:28:30 UTC
 - **Root:** `/home/kali/axiomdlp-agent`
 
 This bundle contains **only the project's own source code** —
@@ -31,6 +31,7 @@ If you need any of them, ask the user — do not guess.
 ./compile_commands.json
 ./config
 ./config/agent.default.json
+./config/agent.default.json.bak
 ./config/agent.default_win.json
 ./config/agent.schema.json
 ./docs
@@ -109,15 +110,15 @@ If you need any of them, ask the user — do not guess.
 ./src/net
 ./src/net/i_request_client.h
 ./src/platform
-./src/platform/common
-./src/platform/common/efsw_file_watcher.cpp
 ./src/platform/file_watcher.h
 ./src/platform/linux
+./src/platform/linux/efsw_file_watcher.cpp
 ./src/platform/linux/paths.cpp
 ./src/platform/linux/service.cpp
 ./src/platform/paths.h
 ./src/platform/service.h
 ./src/platform/windows
+./src/platform/windows/efsw_file_watcher.cpp
 ./src/platform/windows/paths.cpp
 ./src/platform/windows/service.cpp
 ./src/storage
@@ -325,9 +326,14 @@ endif()
 # ----------------------------------------------------------------
 if(AXIOM_USE_MQTT)
     if(AXIOM_USE_VCPKG_DEPS)
+        # vcpkg exports the target as unofficial::mosquitto::mosquitto
+        find_package(unofficial-mosquitto CONFIG QUIET)
         find_package(mosquitto CONFIG QUIET)
 
-        if(mosquitto_FOUND)
+        if(TARGET unofficial::mosquitto::mosquitto)
+            add_library(AXIOM_MOSQUITTO ALIAS unofficial::mosquitto::mosquitto)
+            set(mosquitto_FOUND TRUE)
+        elseif(mosquitto_FOUND)
             if(TARGET mosquitto::mosquitto)
                 add_library(AXIOM_MOSQUITTO ALIAS mosquitto::mosquitto)
             elseif(TARGET mosquitto::libmosquitto)
@@ -420,9 +426,17 @@ endif()
 # Platform-specific sources
 # ----------------------------------------------------------------
 if(WIN32)
-    set(AXIOM_PLATFORM_SOURCES src/platform/windows/paths.cpp src/platform/windows/service.cpp)
+    set(AXIOM_PLATFORM_SOURCES 
+        src/platform/windows/paths.cpp 
+        src/platform/windows/service.cpp
+        src/platform/windows/efsw_file_watcher.cpp
+    )
 elseif(UNIX AND NOT APPLE)
-    set(AXIOM_PLATFORM_SOURCES src/platform/linux/paths.cpp src/platform/linux/service.cpp)
+    set(AXIOM_PLATFORM_SOURCES 
+        src/platform/linux/paths.cpp 
+        src/platform/linux/service.cpp
+        src/platform/linux/efsw_file_watcher.cpp
+    )
 endif()
 
 # ----------------------------------------------------------------
@@ -440,7 +454,6 @@ add_executable(axiomdlp-agent
     src/util/file_hash.cpp
     src/util/base64.cpp
     src/util/ulid.cpp
-    src/platform/common/efsw_file_watcher.cpp
     src/features/agent_sync/agent_sync_module.cpp
     src/features/content_scanner/content_scanner_module.cpp
     src/features/event_logger/event_logger_module.cpp
@@ -468,6 +481,7 @@ target_compile_definitions(axiomdlp-agent PRIVATE
 
 if(AXIOM_USE_MQTT)
     target_compile_definitions(axiomdlp-agent PRIVATE AXIOM_HAVE_MQTT=1)
+    target_compile_definitions(axiomdlp-agent PRIVATE LIBMOSQUITTO_STATIC)
 endif()
 
 target_link_libraries(axiomdlp-agent PRIVATE
@@ -529,11 +543,7 @@ endif()
 ```json
 {
   "version": 6,
-  "cmakeMinimumRequired": {
-    "major": 3,
-    "minor": 24,
-    "patch": 0
-  },
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
   "configurePresets": [
     {
       "name": "base",
@@ -543,146 +553,98 @@ endif()
     },
     {
       "name": "linux-x86_64-debug",
-      "displayName": "Linux x86_64 \u2014 Debug",
+      "displayName": "Linux x86_64 — Debug",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "linux-x86_64-release",
-      "displayName": "Linux x86_64 \u2014 Release",
+      "displayName": "Linux x86_64 — Release",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
-      }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
       "name": "linux-i686-debug",
-      "displayName": "Linux i686 (32-bit) \u2014 Debug",
+      "displayName": "Linux i686 (32-bit) — Debug",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "linux-i686-release",
-      "displayName": "Linux i686 (32-bit) \u2014 Release",
+      "displayName": "Linux i686 (32-bit) — Release",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-i686.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
-      }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
       "name": "windows-x64-msvc-debug",
-      "displayName": "Windows x64 \u2014 Debug (MSVC + vcpkg)",
+      "displayName": "Windows x64 — Debug (MSVC + vcpkg)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/windows-x64-msvc-debug",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "CMAKE_MAKE_PROGRAM": "$env{CMAKE_MAKE_PROGRAM}"
       },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "windows-x64-msvc-release",
-      "displayName": "Windows x64 \u2014 Release (MSVC + vcpkg)",
+      "displayName": "Windows x64 — Release (MSVC + vcpkg)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/windows-x64-msvc-release",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "CMAKE_MAKE_PROGRAM": "$env{CMAKE_MAKE_PROGRAM}"
       },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "windows-x86-msvc-debug",
-      "displayName": "Windows x86 \u2014 Debug (MSVC + vcpkg)",
+      "displayName": "Windows x86 — Debug (MSVC + vcpkg)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/windows-x86-msvc-debug",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "VCPKG_TARGET_TRIPLET": "x86-windows-static",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "CMAKE_MAKE_PROGRAM": "$env{CMAKE_MAKE_PROGRAM}"
       },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "windows-x86-msvc-release",
-      "displayName": "Windows x86 \u2014 Release (MSVC + vcpkg)",
+      "displayName": "Windows x86 — Release (MSVC + vcpkg)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/windows-x86-msvc-release",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "x86-windows-static",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "CMAKE_MAKE_PROGRAM": "$env{CMAKE_MAKE_PROGRAM}"
       },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     }
   ],
   "buildPresets": [
-    {
-      "name": "linux-x86_64-debug",
-      "configurePreset": "linux-x86_64-debug"
-    },
-    {
-      "name": "linux-x86_64-release",
-      "configurePreset": "linux-x86_64-release"
-    },
-    {
-      "name": "linux-i686-debug",
-      "configurePreset": "linux-i686-debug"
-    },
-    {
-      "name": "linux-i686-release",
-      "configurePreset": "linux-i686-release"
-    },
-    {
-      "name": "windows-x64-msvc-debug",
-      "configurePreset": "windows-x64-msvc-debug",
-      "configuration": "Debug"
-    },
-    {
-      "name": "windows-x64-msvc-release",
-      "configurePreset": "windows-x64-msvc-release",
-      "configuration": "Release"
-    },
-    {
-      "name": "windows-x86-msvc-debug",
-      "configurePreset": "windows-x86-msvc-debug",
-      "configuration": "Debug"
-    },
-    {
-      "name": "windows-x86-msvc-release",
-      "configurePreset": "windows-x86-msvc-release",
-      "configuration": "Release"
-    }
+    { "name": "linux-x86_64-debug",   "configurePreset": "linux-x86_64-debug" },
+    { "name": "linux-x86_64-release", "configurePreset": "linux-x86_64-release" },
+    { "name": "linux-i686-debug",     "configurePreset": "linux-i686-debug" },
+    { "name": "linux-i686-release",   "configurePreset": "linux-i686-release" },
+    { "name": "windows-x64-msvc-debug",   "configurePreset": "windows-x64-msvc-debug",   "configuration": "Debug" },
+    { "name": "windows-x64-msvc-release", "configurePreset": "windows-x64-msvc-release", "configuration": "Release" },
+    { "name": "windows-x86-msvc-debug",   "configurePreset": "windows-x86-msvc-debug",   "configuration": "Debug" },
+    { "name": "windows-x86-msvc-release", "configurePreset": "windows-x86-msvc-release", "configuration": "Release" }
   ]
 }
 ```
@@ -3952,7 +3914,65 @@ log "  skipped:  $skipped"
   },
   "server": {
     "base_url": "http://127.0.0.1:3000",
-    "api_token": "axdlp_user_Ozg4nkYld0lTwfYmUjaBC2PFxIyzm6u7Xxhy7T41",
+    "api_token": "axadlp_placeholder_will_not_be_used",
+    "heartbeat_interval_seconds": 60,
+    "reconnect_backoff_seconds": 10,
+    "reconnect_backoff_max_seconds": 300,
+    "mqtt_port": 1883,
+    "mqtt_tls": false,
+    "mqtt_ca_path": "",
+    "mqtt_keepalive_seconds": 60
+  },
+  "modules": {
+    "filesystem_watcher": {
+      "enabled": false,
+      "watch_paths": ["/home/kali/Documents"],
+      "exclude_paths": [],
+      "debounce_ms": 300
+    },
+    "inventory": {
+      "enabled": true,
+      "watch_paths": ["/home/kali/Documents"],
+      "exclude_paths": ["*/logs/*"],
+      "interval_seconds": 10,
+      "compute_hashes": true,
+      "max_file_size_bytes": 104857600,
+      "scannable_categories": ["document", "code", "data", "config"]
+    },
+    "agent_sync": {
+      "enabled": false
+    },
+    "content_scanner": {
+      "enabled": false,
+      "batch_size": 50,
+      "batch_max_bytes": 52428800,
+      "scan_interval_seconds": 30,
+      "chunk_size_bytes": 1048576,
+      "chunk_overlap_bytes": 256,
+      "max_file_bytes": 104857600,
+      "max_retries": 3,
+      "request_timeout_seconds": 300,
+      "text_extensions": ["txt","md","log","csv","tsv","json","yaml","yml","toml","xml","c","cpp","cc","cxx","h","hpp","hxx","py","js","ts","jsx","tsx","go","rs","java","kt","scala","cs","swift","rb","php","pl","lua","sql","sh","bash","zsh","ps1","html","css","scss","less","conf","cfg","ini","env","properties"]
+    }
+  }
+}
+```
+
+### \`config/agent.default.json.bak\`
+
+```
+{
+  "logging": {
+    "dir": "logs",
+    "file": "agent.log",
+    "level": "info"
+  },
+  "storage": {
+    "db_path": "data/agent.db"
+  },
+  "server": {
+    "base_url": "http://127.0.0.1:3000",
+    "api_token": "axdlp_user_lRXU1mczF0aHzzOx80M9leIDNcbprFfVcKPcA0tF",
     "heartbeat_interval_seconds": 60,
     "reconnect_backoff_seconds": 10,
     "reconnect_backoff_max_seconds": 300,
@@ -3965,7 +3985,7 @@ log "  skipped:  $skipped"
     "filesystem_watcher": {
       "enabled": true,
       "watch_paths": [
-        "/home/kali/Downloads"
+        "/home/kali/Documents"
       ],
       "exclude_paths": [
         "*/logs/*",
@@ -3976,7 +3996,7 @@ log "  skipped:  $skipped"
     "inventory": {
       "enabled": true,
       "watch_paths": [
-        "/home/kali/Downloads"
+        "/home/kali/Documents"
       ],
       "exclude_paths": [
         "*/logs/*"
@@ -4005,11 +4025,53 @@ log "  skipped:  $skipped"
       "max_retries": 3,
       "request_timeout_seconds": 300,
       "text_extensions": [
-        "txt", "md", "log", "csv", "tsv", "json", "yaml", "yml", "toml", "xml",
-        "c", "cpp", "cc", "cxx", "h", "hpp", "hxx", "py", "js", "ts", "jsx", "tsx",
-        "go", "rs", "java", "kt", "scala", "cs", "swift", "rb", "php", "pl", "lua",
-        "sql", "sh", "bash", "zsh", "ps1", "html", "css", "scss", "less", "conf",
-        "cfg", "ini", "env", "properties"
+        "txt",
+        "md",
+        "log",
+        "csv",
+        "tsv",
+        "json",
+        "yaml",
+        "yml",
+        "toml",
+        "xml",
+        "c",
+        "cpp",
+        "cc",
+        "cxx",
+        "h",
+        "hpp",
+        "hxx",
+        "py",
+        "js",
+        "ts",
+        "jsx",
+        "tsx",
+        "go",
+        "rs",
+        "java",
+        "kt",
+        "scala",
+        "cs",
+        "swift",
+        "rb",
+        "php",
+        "pl",
+        "lua",
+        "sql",
+        "sh",
+        "bash",
+        "zsh",
+        "ps1",
+        "html",
+        "css",
+        "scss",
+        "less",
+        "conf",
+        "cfg",
+        "ini",
+        "env",
+        "properties"
       ]
     }
   }
@@ -6232,6 +6294,7 @@ private:
 #include <chrono>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -6529,10 +6592,38 @@ void InventoryScanner::scan_one_root(const std::string& root,
     }
 }
 
+// scan_all runs one full inventory pass.
+//
+// B4/B5 fix:
+//
+// Before this change, scan_all hard-coded walk_id=1 on every pass, so
+// upsert_file stamped every row with the same walk_id. The prune_stale
+// function existed but was never called — deleted files stayed in the
+// `files` table forever, including sensitive ones. The walks table was
+// empty, so operators had no record of when the last scan ran.
+//
+// Now:
+//   1. begin_walk() inserts a fresh row into `walks` and returns its id.
+//      Every file upserted this pass carries that walk_id.
+//   2. A file deleted from disk since the previous scan still carries
+//      the older walk_id (upsert only touches files that still exist).
+//   3. prune_stale(walk_id) removes every row with walk_id < current —
+//      i.e., files that were not seen this pass.
+//   4. finish_walk() records the completed pass (files_seen, files_deleted,
+//      duration_ms) in the walks table.
+//
+// Pruning only runs on a *complete* scan. A cancelled scan has not
+// visited every directory, so pruning would delete rows for files that
+// still exist. Cancelled scans still call finish_walk so operators can
+// see the abort in the walks table.
 InventoryResult InventoryScanner::scan_all(const std::atomic<bool>& stop_flag) {
     InventoryResult r;
 
-    const auto start = std::chrono::steady_clock::now();
+    const auto start       = std::chrono::steady_clock::now();
+    const auto start_epoch = std::chrono::system_clock::now();
+    const std::int64_t started_at_epoch =
+        std::chrono::duration_cast<std::chrono::seconds>(
+            start_epoch.time_since_epoch()).count();
 
     if (!ctx_.file_store.initialize_schema()) {
         SPDLOG_ERROR("InventoryScanner: file store not initialized");
@@ -6545,9 +6636,23 @@ InventoryResult InventoryScanner::scan_all(const std::atomic<bool>& stop_flag) {
         return r;
     }
 
-    r.walk_id = 1;
+    // Begin a new walk. If begin_walk fails (walks table missing, disk
+    // full during insert), fall back to walk_id=1 with pruning disabled
+    // — the scan still runs and files are still upserted; stale rows
+    // from deleted files survive this pass and will be caught by the
+    // next successful scan.
+    std::uint64_t walk_id = ctx_.file_store.begin_walk(started_at_epoch);
+    bool prune_enabled    = true;
+    if (walk_id == 0) {
+        SPDLOG_WARN("InventoryScanner: begin_walk failed — stale-row pruning "
+                    "disabled for this pass");
+        walk_id      = 1;
+        prune_enabled = false;
+    }
+    r.walk_id = walk_id;
 
-    SPDLOG_INFO("InventoryScanner: starting scan over {} root(s)", roots.size());
+    SPDLOG_INFO("InventoryScanner: starting scan over {} root(s) (walk_id={})",
+                roots.size(), walk_id);
 
     ctx_.file_store.begin_transaction();
 
@@ -6558,7 +6663,7 @@ InventoryResult InventoryScanner::scan_all(const std::atomic<bool>& stop_flag) {
             r.was_cancelled = true;
             break;
         }
-        scan_one_root(root, r.walk_id, stop_flag, r);
+        scan_one_root(root, walk_id, stop_flag, r);
         if (r.was_cancelled) break;
     }
 
@@ -6567,12 +6672,50 @@ InventoryResult InventoryScanner::scan_all(const std::atomic<bool>& stop_flag) {
     r.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
 
+    // Prune rows left over from earlier walks, but only when the scan
+    // completed. Then record the walk (successful or cancelled) in the
+    // walks table so operators can see scan history.
+    std::optional<std::size_t> pruned;
+    if (prune_enabled) {
+        if (!r.was_cancelled) {
+            pruned = ctx_.file_store.prune_stale(walk_id);
+            if (!pruned) {
+                SPDLOG_WARN("InventoryScanner: prune_stale failed for walk_id={}",
+                            walk_id);
+            }
+        }
+
+        const std::int64_t finished_at_epoch =
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+
+        const std::size_t files_deleted = pruned.value_or(0);
+        if (!ctx_.file_store.finish_walk(walk_id,
+                                         started_at_epoch,
+                                         finished_at_epoch,
+                                         r.files_seen,
+                                         0,               // files_new (not tracked yet)
+                                         0,               // files_changed (not tracked yet)
+                                         files_deleted,
+                                         r.duration_ms)) {
+            SPDLOG_WARN("InventoryScanner: finish_walk failed for walk_id={}",
+                        walk_id);
+        }
+    }
+
     if (r.was_cancelled) {
-        SPDLOG_INFO("InventoryScanner: cancelled after {} files ({} ms)",
-                    r.files_seen, r.duration_ms);
+        SPDLOG_INFO("InventoryScanner: cancelled after {} files ({} ms, walk_id={})",
+                    r.files_seen, r.duration_ms, walk_id);
     } else {
-        SPDLOG_INFO("InventoryScanner: finished ({} files, {} ms)",
-                    r.files_seen, r.duration_ms);
+        const std::size_t deleted = pruned.value_or(0);
+        if (deleted > 0) {
+            SPDLOG_INFO("InventoryScanner: finished ({} files seen, {} pruned, "
+                        "{} ms, walk_id={})",
+                        r.files_seen, deleted, r.duration_ms, walk_id);
+        } else {
+            SPDLOG_INFO("InventoryScanner: finished ({} files, {} ms, walk_id={})",
+                        r.files_seen, r.duration_ms, walk_id);
+        }
     }
 
     return r;
@@ -6654,6 +6797,7 @@ private:
 #include "storage/state_repository.h"
 
 #include <mosquitto.h>
+#include <mqtt_protocol.h>  // <-- MQTT v5 property macros on Windows
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <spdlog/spdlog.h>
@@ -6663,6 +6807,7 @@ private:
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <utility>
@@ -6686,12 +6831,16 @@ constexpr int kReceiveMaximum       = 100;
 constexpr int kMaximumPacketSize    = 134217728;
 constexpr int kKeepaliveSeconds     = 60;
 
-std::string random_hex_32() {
+// BUG-B12: random_hex_32 now returns std::optional<std::string> and
+// returns std::nullopt on RAND_bytes failure instead of falling back to
+// a deterministic value. The previous fallback produced duplicate
+// correlation IDs (breaking request/response routing) and a stable
+// instance_uuid that could cause two agents to share an MQTT client ID.
+// Aborting is the correct behavior on entropy failure.
+std::optional<std::string> random_hex_32() {
     unsigned char raw[16];
     if (RAND_bytes(raw, sizeof(raw)) != 1) {
-        for (std::size_t i = 0; i < sizeof(raw); ++i) {
-            raw[i] = static_cast<unsigned char>(i * 31 + 7);
-        }
+        return std::nullopt;
     }
     static constexpr char kHex[] = "0123456789abcdef";
     std::string out(32, '\0');
@@ -6743,6 +6892,11 @@ bool MqttTransportModule::initialize(ModuleContext& context) {
     }
 
     load_or_generate_instance_uuid();
+    if (instance_uuid_.empty()) {
+        SPDLOG_ERROR("mqtt_transport: cannot initialize without instance_uuid "
+                     "(OS entropy source failed)");
+        return false;
+    }
     reply_topic_ = "axiomdlp/replies/" + instance_uuid_;
     agent_id_.store(load_agent_id_from_state(), std::memory_order_relaxed);
 
@@ -7174,9 +7328,27 @@ void MqttTransportModule::handle_server_revoke(const nlohmann::json& body) {
     else                                ctx_->shutdown.request(ShutdownReason::AuthRevoked);
 }
 
+// subscribe_connected_topics brings the broker's view of our
+// subscriptions in line with the current agent_id.
+//
+// BUG-B1: two things can drift:
+//
+//   1. agent_id changed while connected (agent re-enrolled). The broker
+//      still has subscriptions for the old id. If a retained
+//      ServerRevoke fires on {old_id}/revoke, this healthy connection
+//      would incorrectly shut itself down. So we unsubscribe from the
+//      old topics first.
+//
+//   2. agent_id changed while disconnected. Clean Start is false, so
+//      the broker may retain the old subscriptions across the blip.
+//      last_subscribed_agent_id_ persists across teardown so the diff
+//      check here catches this case too.
 void MqttTransportModule::subscribe_connected_topics() {
     std::lock_guard<std::mutex> lock(mosq_mu_);
-    if (!mosq_) return;
+    if (!mosq_ || !connected_.load(std::memory_order_relaxed)) return;
+
+    const int current_aid = agent_id_.load(std::memory_order_relaxed);
+    const int prev_aid    = last_subscribed_agent_id_.load(std::memory_order_relaxed);
 
     auto do_sub = [this](const std::string& topic, int qos) {
         int mid = 0;
@@ -7189,14 +7361,36 @@ void MqttTransportModule::subscribe_connected_topics() {
         }
     };
 
+    auto do_unsub = [this](const std::string& topic) {
+        int mid = 0;
+        const int rc = mosquitto_unsubscribe(mosq_, &mid, topic.c_str());
+        if (rc != MOSQ_ERR_SUCCESS) {
+            SPDLOG_WARN("mqtt_transport: unsubscribe '{}' failed: {}",
+                        topic, mosquitto_strerror(rc));
+        } else {
+            SPDLOG_INFO("mqtt_transport: unsubscribed '{}'", topic);
+        }
+    };
+
+    if (prev_aid > 0 && prev_aid != current_aid) {
+        const std::string prefix =
+            "axiomdlp/agents/" + std::to_string(prev_aid) + "/";
+        do_unsub(prefix + "command");
+        do_unsub(prefix + "policy");
+        do_unsub(prefix + "revoke");
+    }
+
     do_sub(reply_topic_, 1);
 
-    const int aid = agent_id_.load(std::memory_order_relaxed);
-    if (aid > 0) {
-        do_sub("axiomdlp/agents/" + std::to_string(aid) + "/command", 2);
-        do_sub("axiomdlp/agents/" + std::to_string(aid) + "/policy",  2);
-        do_sub("axiomdlp/agents/" + std::to_string(aid) + "/revoke",  2);
+    if (current_aid > 0) {
+        const std::string prefix =
+            "axiomdlp/agents/" + std::to_string(current_aid) + "/";
+        do_sub(prefix + "command", 2);
+        do_sub(prefix + "policy",  2);
+        do_sub(prefix + "revoke",  2);
     }
+
+    last_subscribed_agent_id_.store(current_aid, std::memory_order_relaxed);
 }
 
 void MqttTransportModule::set_agent_id(int agent_id) {
@@ -7224,7 +7418,13 @@ MqttTransportModule::request(const std::string&    topic,
         return std::nullopt;
     }
 
-    const std::string cid = random_hex_32();
+    auto cid_opt = random_hex_32();
+    if (!cid_opt) {
+        SPDLOG_ERROR("mqtt_transport: RAND_bytes failed — cannot create correlation ID");
+        return std::nullopt;
+    }
+    const std::string cid = *cid_opt;
+
     nlohmann::json body   = payload;
     body["v"]              = 1;
     body["correlation_id"] = cid;
@@ -7296,6 +7496,12 @@ void MqttTransportModule::subscribe(
     subs_[topic].push_back(std::move(handler));
 }
 
+// BUG-B19: remove every handler registered for `topic`. Idempotent.
+void MqttTransportModule::unsubscribe(const std::string& topic) {
+    std::lock_guard lock(subs_mu_);
+    subs_.erase(topic);
+}
+
 bool MqttTransportModule::publish(const std::string&    topic,
                                   const nlohmann::json& payload,
                                   int                   qos,
@@ -7329,7 +7535,13 @@ void MqttTransportModule::load_or_generate_instance_uuid() {
         SPDLOG_WARN("mqtt_transport: stored mqtt_instance_uuid has unexpected "
                     "length {} — regenerating", existing->size());
     }
-    instance_uuid_ = random_hex_32();
+    auto generated = random_hex_32();
+    if (!generated) {
+        SPDLOG_ERROR("mqtt_transport: RAND_bytes failed — cannot generate instance_uuid");
+        instance_uuid_.clear();
+        return;
+    }
+    instance_uuid_ = *generated;
     ctx_->state_store.set(kStateKeyMqttInstanceId, instance_uuid_);
     SPDLOG_INFO("mqtt_transport: generated new instance_uuid={}", instance_uuid_);
 }
@@ -7414,6 +7626,8 @@ public:
     void subscribe(const std::string& topic,
                    std::function<void(const nlohmann::json&)> handler) override;
 
+    void unsubscribe(const std::string& topic) override;
+
     bool is_connected() const override;
 
     void set_agent_id(int agent_id) override;
@@ -7473,6 +7687,14 @@ private:
     std::string      instance_uuid_;
     std::string      reply_topic_;
     std::atomic<int> agent_id_{0};
+
+    // BUG-B1: track which agent_id's per-agent topics the broker
+    // believes we are subscribed to. Persists across connection teardown
+    // so the diff check in subscribe_connected_topics can drop stale
+    // {prev_id}/{command,policy,revoke} subscriptions even when the
+    // agent_id changed while we were disconnected (Clean Start is false
+    // so the broker may retain them across the blip).
+    std::atomic<int> last_subscribed_agent_id_{0};
 
     struct mosquitto* mosq_ = nullptr;
     mutable std::mutex mosq_mu_;    // guards mosq_ against cross-thread use
@@ -8823,6 +9045,12 @@ public:
         const std::string&                        topic,
         std::function<void(const nlohmann::json&)> handler) = 0;
 
+    // BUG-B19: remove every handler registered for `topic`. Idempotent —
+    // safe to call when the topic has no handlers. Introduced so callers
+    // can drop handlers when the resource they serve (e.g. a previous
+    // agent_id) is no longer valid.
+    virtual void unsubscribe(const std::string& topic) = 0;
+
     // Whether the transport is connected and can send requests. The
     // feature modules use this to avoid hammering request() during the
     // first few seconds of startup while the transport is still dialing
@@ -8836,219 +9064,6 @@ public:
     // agent needs to re-register).
     virtual void set_agent_id(int agent_id) = 0;
 };
-
-} // namespace axiom::core
-```
-
-### \`src/platform/common/efsw_file_watcher.cpp\`
-
-```cpp
-// src/platform/common/efsw_file_watcher.cpp
-//
-// EfswFileWatcher — IFileWatcher implementation backed by the efsw library.
-//
-// This is the ONLY file in the project that includes <efsw/efsw.hpp>.
-// Everything else uses the IFileWatcher interface.
-//
-// efsw handles the platform differences internally:
-//   - Linux:   inotify
-//   - Windows: I/O Completion Ports (ReadDirectoryChangesW)
-//
-// The watcher runs on efsw's own background thread. Our callback is
-// invoked on that thread.
-
-#include "platform/file_watcher.h"
-
-#include <efsw/efsw.hpp>
-
-#include <spdlog/spdlog.h>
-
-#include <filesystem>
-#include <memory>
-#include <system_error>
-
-namespace axiom::core {
-
-namespace {
-
-// ----------------------------------------------------------------
-// Map efsw's Action enum to our string event types.
-// ----------------------------------------------------------------
-const char* action_to_string(efsw::Action action) {
-    switch (action) {
-        case efsw::Actions::Add:      return file_event_types::kCreated;
-        case efsw::Actions::Delete:   return file_event_types::kDeleted;
-        case efsw::Actions::Modified: return file_event_types::kModified;
-        case efsw::Actions::Moved:    return file_event_types::kMoved;
-    }
-    return "unknown";
-}
-
-// ----------------------------------------------------------------
-// The concrete watcher.
-//
-// Inherits both:
-//   - IFileWatcher            (our public interface)
-//   - efsw::FileWatchListener (efsw's callback contract)
-// ----------------------------------------------------------------
-class EfswFileWatcher final : public IFileWatcher,
-                              private efsw::FileWatchListener {
-public:
-    EfswFileWatcher() = default;
-
-    ~EfswFileWatcher() override {
-        stop();
-    }
-
-    bool start(const std::vector<std::string>& paths,
-               Callback callback) override {
-        if (running_) {
-            SPDLOG_WARN("EfswFileWatcher: already running");
-            return false;
-        }
-
-        if (paths.empty()) {
-            SPDLOG_WARN("EfswFileWatcher: no paths to watch");
-            return false;
-        }
-
-        callback_ = std::move(callback);
-        watcher_  = std::make_unique<efsw::FileWatcher>();
-
-        // Try to watch each path. Skip-with-warning on failure; only
-        // fail the whole start() if NO path could be watched.
-        //
-        // We pre-check existence and directory-ness ourselves, because
-        // efsw's addWatch returns a bare negative WatchID with no
-        // diagnostic. Without this, "permission denied", "does not
-        // exist", and "unsupported filesystem" all produce the same
-        // misleading log line.
-        std::size_t added              = 0;
-        std::size_t skipped_missing    = 0;
-        std::size_t skipped_notdir     = 0;
-        std::size_t skipped_addwatch   = 0;
-
-        for (const auto& path : paths) {
-            std::error_code ec;
-
-            // 1. Exists?
-            if (!std::filesystem::exists(path, ec)) {
-                SPDLOG_WARN("EfswFileWatcher: skipping '{}' (does not exist)",
-                            path);
-                ++skipped_missing;
-                continue;
-            }
-
-            // 2. Is a directory? efsw cannot watch a regular file, and
-            //    silently refuses.
-            if (!std::filesystem::is_directory(path, ec)) {
-                SPDLOG_WARN("EfswFileWatcher: skipping '{}' (not a directory)",
-                            path);
-                ++skipped_notdir;
-                continue;
-            }
-
-            // 3. Hand it to efsw. If addWatch still refuses, the cause
-            //    is genuinely a permission or filesystem limitation,
-            //    and we say so plainly.
-            const efsw::WatchID id =
-                watcher_->addWatch(path, this, /*recursive=*/true);
-
-            if (id < 0) {
-                SPDLOG_WARN("EfswFileWatcher: skipping '{}' "
-                            "(permission denied or unsupported filesystem)",
-                            path);
-                ++skipped_addwatch;
-                continue;
-            }
-
-            SPDLOG_INFO("EfswFileWatcher: watching '{}' (id={})", path, id);
-            ++added;
-        }
-
-        if (added == 0) {
-            SPDLOG_ERROR("EfswFileWatcher: no paths could be watched");
-            watcher_.reset();
-            callback_ = nullptr;
-            return false;
-        }
-
-        watcher_->watch();
-        running_ = true;
-
-        SPDLOG_INFO("EfswFileWatcher: started, watching {} path(s) "
-                    "({} missing, {} not a directory, {} addWatch failures)",
-                    added, skipped_missing, skipped_notdir, skipped_addwatch);
-        return true;
-    }
-
-    void stop() override {
-        if (!running_) {
-            return;
-        }
-
-        watcher_.reset();
-        callback_ = nullptr;
-        running_  = false;
-
-        SPDLOG_INFO("EfswFileWatcher: stopped");
-    }
-
-private:
-    void handleFileAction(efsw::WatchID /*watchid*/,
-                          const std::string& dir,
-                          const std::string& filename,
-                          efsw::Action action,
-                          const std::string& old_filename) override {
-        FileEvent fe;
-
-        // efsw may or may not include a trailing slash in `dir`.
-        // Handle both cases cleanly to avoid producing paths with
-        // a double slash (e.g., "/tmp/dlp-test//file.txt").
-        if (!dir.empty() && dir.back() == '/') {
-            fe.path = dir + filename;
-        } else {
-            fe.path = dir + "/" + filename;
-        }
-
-        fe.event_type = action_to_string(action);
-        fe.old_path   = old_filename;
-        fe.timestamp  = std::chrono::system_clock::now();
-
-        // Populate is_directory. Consumers (FilesystemModule) use this
-        // to skip directory-entry-change noise.
-        //
-        // efsw does not tell us, so we ask the filesystem ourselves.
-        // For Delete actions the path no longer exists, so we leave
-        // the flag false - we cannot stat what has been removed, and
-        // a false negative here is harmless (the event is still
-        // published and can be filtered downstream if needed).
-        if (action != efsw::Actions::Delete) {
-            std::error_code ec;
-            fe.is_directory = std::filesystem::is_directory(fe.path, ec);
-        }
-
-        if (callback_) {
-            try {
-                callback_(fe);
-            } catch (const std::exception& e) {
-                SPDLOG_ERROR("EfswFileWatcher: callback threw: {}", e.what());
-            } catch (...) {
-                SPDLOG_ERROR("EfswFileWatcher: callback threw unknown exception");
-            }
-        }
-    }
-
-    std::unique_ptr<efsw::FileWatcher> watcher_;
-    Callback                           callback_;
-    bool                               running_ = false;
-};
-
-} // namespace
-
-std::unique_ptr<IFileWatcher> make_file_watcher() {
-    return std::make_unique<EfswFileWatcher>();
-}
 
 } // namespace axiom::core
 ```
@@ -9157,6 +9172,126 @@ protected:
 std::unique_ptr<IFileWatcher> make_file_watcher();
 
 } // namespace axiom::core
+```
+
+### \`src/platform/linux/efsw_file_watcher.cpp\`
+
+```cpp
+// src/platform/linux/efsw_file_watcher.cpp
+
+#ifdef __linux__
+
+#include "platform/file_watcher.h"
+#include <efsw/efsw.hpp>
+#include <spdlog/spdlog.h>
+#include <filesystem>
+#include <memory>
+#include <system_error>
+
+namespace axiom::core {
+
+namespace {
+const char* action_to_string(efsw::Action action) {
+    switch (action) {
+        case efsw::Actions::Add:      return file_event_types::kCreated;
+        case efsw::Actions::Delete:   return file_event_types::kDeleted;
+        case efsw::Actions::Modified: return file_event_types::kModified;
+        case efsw::Actions::Moved:    return file_event_types::kMoved;
+    }
+    return "unknown";
+}
+
+class EfswFileWatcher final : public IFileWatcher,
+                              private efsw::FileWatchListener {
+public:
+    EfswFileWatcher() = default;
+    ~EfswFileWatcher() override { stop(); }
+
+    bool start(const std::vector<std::string>& paths, Callback callback) override {
+        if (running_) { SPDLOG_WARN("EfswFileWatcher: already running"); return false; }
+        if (paths.empty()) { SPDLOG_WARN("EfswFileWatcher: no paths to watch"); return false; }
+
+        callback_ = std::move(callback);
+        watcher_  = std::make_unique<efsw::FileWatcher>();
+
+        std::size_t added = 0;
+        for (const auto& path : paths) {
+            std::error_code ec;
+            if (!std::filesystem::exists(path, ec)) {
+                SPDLOG_WARN("EfswFileWatcher: skipping '{}' (does not exist)", path);
+                continue;
+            }
+            if (!std::filesystem::is_directory(path, ec)) {
+                SPDLOG_WARN("EfswFileWatcher: skipping '{}' (not a directory)", path);
+                continue;
+            }
+            const efsw::WatchID id = watcher_->addWatch(path, this, /*recursive=*/true);
+            if (id < 0) {
+                SPDLOG_WARN("EfswFileWatcher: skipping '{}' (permission denied)", path);
+                continue;
+            }
+            SPDLOG_INFO("EfswFileWatcher: watching '{}' (id={})", path, id);
+            ++added;
+        }
+
+        if (added == 0) {
+            SPDLOG_ERROR("EfswFileWatcher: no paths could be watched");
+            watcher_.reset();
+            callback_ = nullptr;
+            return false;
+        }
+
+        watcher_->watch();
+        running_ = true;
+        return true;
+    }
+
+    void stop() override {
+        if (!running_) return;
+        watcher_.reset();
+        callback_ = nullptr;
+        running_  = false;
+    }
+
+private:
+    // Linux efsw 1.7.2 uses const std::string&
+    void handleFileAction(efsw::WatchID,
+                          const std::string& dir,
+                          const std::string& filename,
+                          efsw::Action action,
+                          const std::string& old_filename) override {
+        FileEvent fe;
+        fe.path = (!dir.empty() && dir.back() == '/') ? dir + filename : dir + "/" + filename;
+        fe.event_type = action_to_string(action);
+        fe.old_path   = old_filename;
+        fe.timestamp  = std::chrono::system_clock::now();
+
+        if (action != efsw::Actions::Delete) {
+            std::error_code ec;
+            fe.is_directory = std::filesystem::is_directory(fe.path, ec);
+        }
+
+        if (callback_) {
+            try { callback_(fe); }
+            catch (const std::exception& e) { SPDLOG_ERROR("EfswFileWatcher: callback threw: {}", e.what()); }
+            catch (...) { SPDLOG_ERROR("EfswFileWatcher: callback threw unknown exception"); }
+        }
+    }
+
+    std::unique_ptr<efsw::FileWatcher> watcher_;
+    Callback                           callback_;
+    bool                               running_ = false;
+};
+
+} // namespace
+
+std::unique_ptr<IFileWatcher> make_file_watcher() {
+    return std::make_unique<EfswFileWatcher>();
+}
+
+} // namespace axiom::core
+
+#endif // __linux__
 ```
 
 ### \`src/platform/linux/paths.cpp\`
@@ -9610,6 +9745,126 @@ std::string default_service_name();
 } // namespace axiom::core
 ```
 
+### \`src/platform/windows/efsw_file_watcher.cpp\`
+
+```cpp
+// src/platform/windows/efsw_file_watcher.cpp
+
+#ifdef _WIN32
+
+#include "platform/file_watcher.h"
+#include <efsw/efsw.hpp>
+#include <spdlog/spdlog.h>
+#include <filesystem>
+#include <memory>
+#include <system_error>
+
+namespace axiom::core {
+
+namespace {
+const char* action_to_string(efsw::Action action) {
+    switch (action) {
+        case efsw::Actions::Add:      return file_event_types::kCreated;
+        case efsw::Actions::Delete:   return file_event_types::kDeleted;
+        case efsw::Actions::Modified: return file_event_types::kModified;
+        case efsw::Actions::Moved:    return file_event_types::kMoved;
+    }
+    return "unknown";
+}
+
+class EfswFileWatcher final : public IFileWatcher,
+                              private efsw::FileWatchListener {
+public:
+    EfswFileWatcher() = default;
+    ~EfswFileWatcher() override { stop(); }
+
+    bool start(const std::vector<std::string>& paths, Callback callback) override {
+        if (running_) { SPDLOG_WARN("EfswFileWatcher: already running"); return false; }
+        if (paths.empty()) { SPDLOG_WARN("EfswFileWatcher: no paths to watch"); return false; }
+
+        callback_ = std::move(callback);
+        watcher_  = std::make_unique<efsw::FileWatcher>();
+
+        std::size_t added = 0;
+        for (const auto& path : paths) {
+            std::error_code ec;
+            if (!std::filesystem::exists(path, ec)) {
+                SPDLOG_WARN("EfswFileWatcher: skipping '{}' (does not exist)", path);
+                continue;
+            }
+            if (!std::filesystem::is_directory(path, ec)) {
+                SPDLOG_WARN("EfswFileWatcher: skipping '{}' (not a directory)", path);
+                continue;
+            }
+            const efsw::WatchID id = watcher_->addWatch(path, this, /*recursive=*/true);
+            if (id < 0) {
+                SPDLOG_WARN("EfswFileWatcher: skipping '{}' (permission denied)", path);
+                continue;
+            }
+            SPDLOG_INFO("EfswFileWatcher: watching '{}' (id={})", path, id);
+            ++added;
+        }
+
+        if (added == 0) {
+            SPDLOG_ERROR("EfswFileWatcher: no paths could be watched");
+            watcher_.reset();
+            callback_ = nullptr;
+            return false;
+        }
+
+        watcher_->watch();
+        running_ = true;
+        return true;
+    }
+
+    void stop() override {
+        if (!running_) return;
+        watcher_.reset();
+        callback_ = nullptr;
+        running_  = false;
+    }
+
+private:
+    // Windows efsw 1.5.0 uses std::string by value
+    void handleFileAction(efsw::WatchID,
+                          const std::string& dir,
+                          const std::string& filename,
+                          efsw::Action action,
+                          std::string old_filename) override {
+        FileEvent fe;
+        fe.path = (!dir.empty() && dir.back() == '/') ? dir + filename : dir + "/" + filename;
+        fe.event_type = action_to_string(action);
+        fe.old_path   = old_filename;
+        fe.timestamp  = std::chrono::system_clock::now();
+
+        if (action != efsw::Actions::Delete) {
+            std::error_code ec;
+            fe.is_directory = std::filesystem::is_directory(fe.path, ec);
+        }
+
+        if (callback_) {
+            try { callback_(fe); }
+            catch (const std::exception& e) { SPDLOG_ERROR("EfswFileWatcher: callback threw: {}", e.what()); }
+            catch (...) { SPDLOG_ERROR("EfswFileWatcher: callback threw unknown exception"); }
+        }
+    }
+
+    std::unique_ptr<efsw::FileWatcher> watcher_;
+    Callback                           callback_;
+    bool                               running_ = false;
+};
+
+} // namespace
+
+std::unique_ptr<IFileWatcher> make_file_watcher() {
+    return std::make_unique<EfswFileWatcher>();
+}
+
+} // namespace axiom::core
+
+#endif // _WIN32
+```
+
 ### \`src/platform/windows/paths.cpp\`
 
 ```cpp
@@ -10017,6 +10272,7 @@ int uninstall_service(const std::string& service_name) {
 #include <sqlite3.h>
 
 #include <chrono>
+#include <optional>
 #include <string>
 
 namespace axiom::core {
@@ -10225,13 +10481,29 @@ bool FileStore::upsert_file(const FileRow& row, std::uint64_t walk_id) {
 // Pruning
 // ----------------------------------------------------------------
 
-bool FileStore::prune_stale(std::uint64_t current_walk_id) {
+// prune_stale removes every file row whose walk_id predates the current
+// pass. Called by InventoryScanner::scan_all after a successful
+// non-cancelled scan, with the walk_id of that scan.
+//
+// Returns the number of rows deleted on success, or std::nullopt on a
+// SQL error (prepare failure, step failure). The caller logs the count
+// and — on error — skips the finish_walk stats update rather than
+// recording a bogus files_deleted=0.
+//
+// Before this change, prune_stale existed but was never called and the
+// inventory scanner hard-coded walk_id=1 on every pass, so deleted
+// files stayed in the `files` table forever, including sensitive ones.
+std::optional<std::size_t> FileStore::prune_stale(std::uint64_t current_walk_id) {
     const char* sql = "DELETE FROM files WHERE walk_id < ?;";
     Stmt stmt(db_.handle(), sql);
-    if (!stmt.ok()) return false;
+    if (!stmt.ok()) return std::nullopt;
 
-    sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(current_walk_id));
-    return sqlite3_step(stmt.get()) == SQLITE_DONE;
+    sqlite3_bind_int64(stmt.get(), 1,
+                       static_cast<sqlite3_int64>(current_walk_id));
+
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) return std::nullopt;
+
+    return static_cast<std::size_t>(sqlite3_changes(db_.handle()));
 }
 
 // ----------------------------------------------------------------
@@ -10708,7 +10980,19 @@ public:
     bool upsert_file(const FileRow& row, std::uint64_t walk_id);
 
     // Remove files whose walk_id is older than `current_walk_id`.
-    bool prune_stale(std::uint64_t current_walk_id);
+    //
+    // B4/B5: called by InventoryScanner::scan_all after a successful,
+    // non-cancelled full pass. Files deleted from disk since the previous
+    // scan still carry the older walk_id; this call removes them so the
+    // `files` table does not grow unbounded. Before this fix, prune_stale
+    // existed but was never called, and walk_id was hard-coded to 1 on
+    // every scan — deleted files (including sensitive ones) stayed in the
+    // table forever.
+    //
+    // Returns the number of rows deleted on success. Returns std::nullopt
+    // on SQL error (the caller should log and continue — stale rows will
+    // be retried on the next scan).
+    std::optional<std::size_t> prune_stale(std::uint64_t current_walk_id);
 
     // Walk bookkeeping.
     std::uint64_t begin_walk(std::int64_t started_at);
@@ -12156,25 +12440,6 @@ PYEOF
 <#
 .SYNOPSIS
     Build AxiomDLP Agent on Windows with MSVC + vcpkg.
-
-.DESCRIPTION
-    Auto-initializes the Visual Studio environment (vcvarsall.bat) so this
-    script works from ANY PowerShell window. Preserves VCPKG_ROOT and PATH
-    across vcvarsall.bat, which rewrites both:
-      - VCPKG_ROOT -> VS-bundled vcpkg (wrong one)
-      - PATH       -> VS toolchain only (drops chocolatey, ninja, etc.)
-
-.PARAMETER Configuration
-    Debug or Release (default: Release).
-
-.PARAMETER Arch
-    x64 or x86 (default: x64).
-
-.PARAMETER Clean
-    If set, delete the build directory before configuring.
-
-.NOTES
-    This file is intentionally ASCII-only for maximum encoding compatibility.
 #>
 
 param(
@@ -12191,17 +12456,6 @@ $ErrorActionPreference = "Stop"
 
 # ----------------------------------------------------------------
 # Save VCPKG_ROOT AND PATH BEFORE VS env init.
-#
-# vcvarsall.bat rewrites both of these. VCPKG_ROOT gets replaced with
-# the VS-bundled vcpkg; PATH gets replaced with the VS toolchain only.
-# The PATH rewrite is what caused the CI failure:
-#
-#     error: Could not fetch ninja.
-#     CMake Error: CMAKE_MAKE_PROGRAM is not set.
-#
-# because after vcvarsall.bat, chocolatey's ninja.exe was no longer on
-# PATH, so vcpkg's detect_compiler port and CMake's Ninja generator
-# both failed to find it.
 # ----------------------------------------------------------------
 $savedVcpkgRoot = $env:VCPKG_ROOT
 if (-not $savedVcpkgRoot) {
@@ -12212,112 +12466,139 @@ if (-not $savedVcpkgRoot) {
 }
 
 $savedPath = $env:PATH
-if (-not $savedPath) {
-    $savedPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
-                 [System.Environment]::GetEnvironmentVariable("PATH", "User")
+
+# ----------------------------------------------------------------
+# Resolve CMake and Ninja BEFORE trimming the PATH.
+# Fallback to C:\tools if not found in the current PATH.
+# ----------------------------------------------------------------
+$ninjaPath = (Get-Command ninja.exe -ErrorAction SilentlyContinue).Source
+if (-not $ninjaPath -and (Test-Path "C:\tools\ninja\ninja.exe")) {
+    $ninjaPath = "C:\tools\ninja\ninja.exe"
 }
+if (-not $ninjaPath) {
+    Write-Host "[ERROR] ninja.exe not found on PATH or at C:\tools\ninja\ninja.exe." -ForegroundColor Red
+    exit 1
+}
+$ninjaDir = Split-Path $ninjaPath -Parent
+
+$cmakePath = (Get-Command cmake.exe -ErrorAction SilentlyContinue).Source
+if (-not $cmakePath -and (Test-Path "C:\tools\cmake\bin\cmake.exe")) {
+    $cmakePath = "C:\tools\cmake\bin\cmake.exe"
+}
+if (-not $cmakePath) {
+    Write-Host "[ERROR] cmake.exe not found on PATH or at C:\tools\cmake\bin\cmake.exe." -ForegroundColor Red
+    exit 1
+}
+$cmakeDir = Split-Path $cmakePath -Parent
+
+# ----------------------------------------------------------------
+# TRIM PATH BEFORE vcvarsall.bat.
+# We include CMake and Ninja dirs so they are not lost.
+# ----------------------------------------------------------------
+$minimalPathEntries = @(
+    "C:\Windows\system32",
+    "C:\Windows",
+    "C:\Windows\System32\Wbem",
+    "C:\Windows\System32\WindowsPowerShell\v1.0"
+)
+if ($ninjaDir -and (Test-Path $ninjaDir)) {
+    $minimalPathEntries = @($ninjaDir) + $minimalPathEntries
+}
+if ($cmakeDir -and (Test-Path $cmakeDir)) {
+    $minimalPathEntries = @($cmakeDir) + $minimalPathEntries
+}
+
+$env:PATH = ($minimalPathEntries -join ";")
+Write-Host "  [OK] PATH trimmed to $($env:PATH.Length) chars before vcvarsall.bat"
+Write-Host "       (ninja dir: $ninjaDir)"
+Write-Host "       (cmake dir: $cmakeDir)"
 
 # ----------------------------------------------------------------
 # Auto-initialize Visual Studio environment (MSVC toolchain)
+# Always run this to guarantee cl.exe is injected into the PATH,
+# even if the previous terminal session had VSINSTALLDIR set.
 # ----------------------------------------------------------------
 $desiredArch = if ($Arch -eq "x86") { "x86" } else { "x64" }
-$currentArch = $env:VSCMD_ARG_TGT_ARCH
-if (-not $env:VSINSTALLDIR -or $currentArch -ne $desiredArch) {
-    Write-Host "Initializing Visual Studio environment..." -ForegroundColor Yellow
+Write-Host "Initializing Visual Studio environment..." -ForegroundColor Yellow
 
-    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path $vswhere)) {
-        Write-Host "[ERROR] Visual Studio Installer not found at $vswhere" -ForegroundColor Red
-        exit 1
-    }
-
-    $vsPath = & $vswhere -latest -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -property installationPath
-
-    if (-not $vsPath) {
-        Write-Host "[ERROR] Visual Studio C++ workload not found." -ForegroundColor Red
-        exit 1
-    }
-
-    $vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
-    if (-not (Test-Path $vcvarsall)) {
-        Write-Host "[ERROR] vcvarsall.bat not found at $vcvarsall" -ForegroundColor Red
-        exit 1
-    }
-
-    $vsArch = if ($Arch -eq "x86") { "x86" } else { "amd64" }
-
-    $envOutput = cmd /c "`"$vcvarsall`" $vsArch >nul 2>&1 && set"
-    foreach ($line in $envOutput) {
-        if ($line -match "^(.*?)=(.*)$") {
-            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
-        }
-    }
-
-    if (-not $env:VSINSTALLDIR) {
-        Write-Host "[ERROR] vcvarsall.bat did not populate VSINSTALLDIR." -ForegroundColor Red
-        exit 1
-    }
-    Write-Host "  [OK] VS env loaded: $env:VSINSTALLDIR" -ForegroundColor Green
-}
-else {
-    Write-Host "  [OK] VS env already loaded: $env:VSINSTALLDIR" -ForegroundColor Green
-}
-
-# ----------------------------------------------------------------
-# Restore VCPKG_ROOT (vcvarsall.bat overwrites it to the VS-bundled
-# vcpkg, which requires builtin-baseline and uses different ports).
-# ----------------------------------------------------------------
-if ($savedVcpkgRoot) {
-    $previous = $env:VCPKG_ROOT
-    $env:VCPKG_ROOT = $savedVcpkgRoot
-    if ($previous -and $previous -ne $savedVcpkgRoot) {
-        Write-Host "  [OK] Restored VCPKG_ROOT: $env:VCPKG_ROOT" -ForegroundColor Green
-        Write-Host "       (vcvarsall.bat had set it to: $previous)" -ForegroundColor DarkGray
-    }
-}
-
-# ----------------------------------------------------------------
-# Restore PATH so chocolatey-installed tools (ninja in particular)
-# remain visible to CMake and to vcpkg. VS toolchain paths stay first
-# so cl.exe wins over any other compiler that might be on the original
-# PATH; the original PATH is appended after.
-# ----------------------------------------------------------------
-if ($savedPath) {
-    $env:PATH = $env:PATH + ";" + $savedPath
-    Write-Host "  [OK] Restored PATH (VS env first, original appended)" -ForegroundColor Green
-}
-
-# ----------------------------------------------------------------
-# Refuse to use the VS-bundled vcpkg - it requires builtin-baseline
-# in vcpkg.json which the standalone vcpkg does not need.
-# ----------------------------------------------------------------
-if ($env:VCPKG_ROOT -match "Microsoft Visual Studio.*VC[\\/]vcpkg") {
-    Write-Host "[ERROR] VCPKG_ROOT points at the VS-bundled vcpkg:" -ForegroundColor Red
-    Write-Host "        $env:VCPKG_ROOT" -ForegroundColor Red
-    Write-Host "        This is different from your standalone vcpkg." -ForegroundColor Red
-    Write-Host "        Set VCPKG_ROOT to the standalone path (e.g. C:\Users\User\vcpkg)" -ForegroundColor Red
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (-not (Test-Path $vswhere)) {
+    Write-Host "[ERROR] Visual Studio Installer not found at $vswhere" -ForegroundColor Red
     exit 1
 }
 
-# Force MSVC compilers (overrides any GCC on PATH)
-$env:CC = "cl.exe"
-$env:CXX = "cl.exe"
+$vsPath = & $vswhere -latest -products * `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+    -property installationPath
+
+if (-not $vsPath) {
+    Write-Host "[ERROR] Visual Studio C++ workload not found." -ForegroundColor Red
+    exit 1
+}
+
+$vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+if (-not (Test-Path $vcvarsall)) {
+    Write-Host "[ERROR] vcvarsall.bat not found at $vcvarsall" -ForegroundColor Red
+    exit 1
+}
+
+$vsArch = if ($Arch -eq "x86") { "x86" } else { "amd64" }
+
+$envOutput = cmd /c "`"$vcvarsall`" $vsArch >nul 2>&1 && set"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] vcvarsall.bat returned exit code $LASTEXITCODE" -ForegroundColor Red
+    exit 1
+}
+
+foreach ($line in $envOutput) {
+    if ($line -match "^(.*?)=(.*)$") {
+        [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
+    }
+}
+
+if (-not $env:VSINSTALLDIR) {
+    Write-Host "[ERROR] vcvarsall.bat did not populate VSINSTALLDIR." -ForegroundColor Red
+    exit 1
+}
+
+if (-not $env:LIB -or -not $env:INCLUDE) {
+    Write-Host "  [WARN] LIB or INCLUDE not set by vcvarsall.bat. Attempting to locate Windows SDK..." -ForegroundColor Yellow
+    $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10"
+    if (Test-Path $sdkRoot) {
+        $sdkVersions = Get-ChildItem "$sdkRoot\Lib" -Directory | Sort-Object Name -Descending
+        if ($sdkVersions) {
+            $sdkVersion = $sdkVersions[0].Name
+            $targetArch = if ($Arch -eq "x86") { "x86" } else { "x64" }
+            
+            if (-not $env:INCLUDE) {
+                $env:INCLUDE = "$sdkRoot\Include\$sdkVersion\ucrt;$sdkRoot\Include\$sdkVersion\um;$sdkRoot\Include\$sdkVersion\shared"
+            }
+            if (-not $env:LIB) {
+                $env:LIB = "$sdkRoot\Lib\$sdkVersion\ucrt\$targetArch;$sdkRoot\Lib\$sdkVersion\um\$targetArch"
+            }
+            Write-Host "  [OK] Manually set LIB and INCLUDE for Windows SDK $sdkVersion ($targetArch)" -ForegroundColor Green
+        }
+    }
+}
+
+Write-Host "  [OK] VS env loaded: $env:VSINSTALLDIR" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# Belt-and-braces: pin CMAKE_MAKE_PROGRAM to ninja.exe if we can find
-# it on the restored PATH. CMake normally finds it via PATH, but doing
-# this explicitly ensures the Ninja generator works even if a future
-# environment change hides ninja again.
+# Restore VCPKG_ROOT and PATH (minimal + Ninja)
 # ----------------------------------------------------------------
-$ninjaCmd = Get-Command ninja.exe -ErrorAction SilentlyContinue
-if ($ninjaCmd) {
-    $env:CMAKE_MAKE_PROGRAM = $ninjaCmd.Source
-    Write-Host "  [OK] CMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM" -ForegroundColor Green
-} else {
-    Write-Host "  [WARN] ninja.exe not found on PATH; CMake will search and vcpkg may download its own copy" -ForegroundColor Yellow
+if ($savedVcpkgRoot) {
+    $env:VCPKG_ROOT = $savedVcpkgRoot
 }
+
+if ($ninjaDir) {
+    $env:PATH = "$ninjaDir;$env:PATH"
+    Write-Host "  [OK] Ninja dir prepended to PATH: $ninjaDir" -ForegroundColor Green
+}
+
+$env:CC = "cl.exe"
+$env:CXX = "cl.exe"
+$env:CMAKE_MAKE_PROGRAM = $ninjaPath
+Write-Host "  [OK] Ninja: $env:CMAKE_MAKE_PROGRAM" -ForegroundColor Green
 
 # ----------------------------------------------------------------
 # Locate project root
@@ -12330,22 +12611,8 @@ Write-Host "  Project root: $projectRoot"
 Write-Host "  Config:       $Configuration"
 Write-Host "  Arch:         $Arch"
 
-# ----------------------------------------------------------------
-# Verify VCPKG_ROOT
-# ----------------------------------------------------------------
 if (-not $env:VCPKG_ROOT) {
-    Write-Host @"
-[ERROR] VCPKG_ROOT is not set.
-
-Run the one-time setup first:
-    .\scripts\win\setup-windows-msvc.ps1
-
-Then close this shell, open a new one, and try again.
-"@ -ForegroundColor Red
-    exit 1
-}
-if (-not (Test-Path "$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake")) {
-    Write-Host "[ERROR] vcpkg toolchain file not found at $env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" -ForegroundColor Red
+    Write-Host "[ERROR] VCPKG_ROOT is not set." -ForegroundColor Red
     exit 1
 }
 Write-Host "  [OK] VCPKG_ROOT: $env:VCPKG_ROOT" -ForegroundColor Green
@@ -12361,32 +12628,18 @@ if ($Clean -and (Test-Path $buildDir)) {
     Remove-Item -Recurse -Force $buildDir
 }
 
-# Auto-clean if cached compiler is not MSVC
-$cacheFile = Join-Path $buildDir "CMakeCache.txt"
-if (Test-Path $cacheFile) {
-    $cacheText = Get-Content $cacheFile -Raw
-    if ($cacheText -match "CMAKE_C_COMPILER:[^=]*=.*(gcc|cc\.exe)" -or
-        $cacheText -match "CMAKE_CXX_COMPILER:[^=]*=.*(g\+\+|c\+\+\.exe)") {
-        Write-Host "  Stale CMake cache with GCC compiler found; cleaning build dir..." -ForegroundColor Yellow
-        Remove-Item -Recurse -Force $buildDir
-    }
-}
-
 # ----------------------------------------------------------------
-# Configure
+# Configure & Build using the absolute CMake path
 # ----------------------------------------------------------------
 Write-Host "`n--- Configure (preset: $presetName) ---" -ForegroundColor Yellow
-cmake --preset $presetName
+& $cmakePath --preset $presetName "-DCMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Configure failed." -ForegroundColor Red
     exit $LASTEXITCODE
 }
 
-# ----------------------------------------------------------------
-# Build
-# ----------------------------------------------------------------
 Write-Host "`n--- Build ---" -ForegroundColor Yellow
-cmake --build --preset $presetName --config $Configuration
+& $cmakePath --build --preset $presetName --config $Configuration
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Build failed." -ForegroundColor Red
     exit $LASTEXITCODE
@@ -12415,21 +12668,131 @@ else {
     One-time setup for building AxiomDLP Agent on Windows with MSVC + vcpkg.
 
 .DESCRIPTION
-    - Verifies Visual Studio 2022 (or Build Tools) with the C++ workload.
-    - Downloads the vcpkg repository as a ZIP (no git clone).
-    - Downloads the prebuilt vcpkg.exe (no compilation).
+    - Verifies Visual Studio (2022) with the C++ workload.
+    - Downloads a PINNED vcpkg registry (2025.10.17) as a ZIP. This
+      release knows about MSVC 14.44 (shipped on windows-2022 since
+      ~April 2024) and auto-detects the installed toolset correctly
+      during the HOST triplet compiler-detection step.
+    - Downloads a matching prebuilt vcpkg.exe. Tries several release
+      tags in order, then falls back to bootstrap-vcpkg.bat.
+    - Retries every download up to 5 times with exponential backoff.
+    - Validates magic bytes on every download:
+         * ZIP (vcpkg registry)  must start with 0x50 0x4B ("PK")
+         * EXE (vcpkg-tool)      must start with 0x4D 0x5A ("MZ")
+      A 404 on github.com returns an HTML page with status 200 through
+      a redirect; the magic byte check catches that and retries.
     - Verifies vcpkg.exe runs and the recipe folder is complete.
     - Persists VCPKG_ROOT for the current workflow (GITHUB_ENV), the
       current user (registry), and the current process.
 
+    WHY PIN 2025.10.17:
+      * vcpkg 2024.01.12 and 2024.11.16 do NOT know about MSVC 14.44
+        (shipped on windows-2022 since ~April 2024) and pass an older
+        toolset version to vcvarsall.bat, which exits 255.
+      * 2025.10.17 has the correct MSVC 14.44 detection logic.
+      * The Ninja `-v` regression that affects newer vcpkg releases is
+        neutralised by VCPKG_KEEP_ENV_VARS=PATH and
+        VCPKG_FORCE_SYSTEM_BINARIES=1 (see the workflow build steps),
+        so 2025.10.17 is safe to use.
+
 .NOTES
     This file is intentionally ASCII-only for maximum encoding compatibility.
-    Fast mode: uses codeload ZIP + GitHub release exe. No git, no bootstrap.
 #>
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (fast mode) ===" -ForegroundColor Cyan
+# ----------------------------------------------------------------
+# PINNED VCPKG VERSION
+#
+# - $VCPKG_TAG      : registry release (used for the ZIP and the
+#                     cache key in the workflow).
+# - $VCPKG_TOOL_TAGS: release tags on microsoft/vcpkg-tool. Tried in
+#                     order. `latest` is a safe final fallback.
+# ----------------------------------------------------------------
+$VCPKG_TAG       = "2025.10.17"
+$VCPKG_TOOL_TAGS = @("2025-10-10", "2025-09-12", "latest")
+
+Write-Host "=== AxiomDLP Agent - Windows MSVC bootstrap (pinned vcpkg $VCPKG_TAG) ===" -ForegroundColor Cyan
+
+# ----------------------------------------------------------------
+# Magic byte validator
+# ----------------------------------------------------------------
+function Test-MagicBytes {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$true)][int[]]$Expected
+    )
+
+    if (-not (Test-Path $FilePath)) { return $false }
+
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($FilePath)
+        $actual = New-Object byte[] $Expected.Count
+        $read = $stream.Read($actual, 0, $Expected.Count)
+        if ($read -lt $Expected.Count) { return $false }
+        for ($i = 0; $i -lt $Expected.Count; $i++) {
+            if ($actual[$i] -ne $Expected[$i]) { return $false }
+        }
+        return $true
+    }
+    finally {
+        if ($stream) { $stream.Close() }
+    }
+}
+
+# ----------------------------------------------------------------
+# Retry helper
+# ----------------------------------------------------------------
+function Download-WithRetry {
+    param(
+        [Parameter(Mandatory=$true)][string]$Url,
+        [Parameter(Mandatory=$true)][string]$OutFile,
+        [int[]]$ExpectedMagicBytes = @(),
+        [int]$MaxAttempts = 5,
+        [int]$BaseDelaySeconds = 3
+    )
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Write-Host "  Downloading $Url (attempt $attempt/$MaxAttempts)..." -ForegroundColor Yellow
+
+            Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 300
+
+            if (-not (Test-Path $OutFile) -or (Get-Item $OutFile).Length -eq 0) {
+                throw "Downloaded file is missing or empty: $OutFile"
+            }
+
+            if ($ExpectedMagicBytes.Count -gt 0) {
+                if (-not (Test-MagicBytes -FilePath $OutFile -Expected $ExpectedMagicBytes)) {
+                    $size = (Get-Item $OutFile).Length
+                    throw "Downloaded file does not start with expected magic bytes (size=$size). Likely an HTML error page."
+                }
+            }
+
+            Write-Host "  [OK] Downloaded $((Get-Item $OutFile).Length) bytes" -ForegroundColor Green
+            return
+        }
+        catch {
+            Write-Host "  [WARN] Attempt $attempt failed: $_" -ForegroundColor Yellow
+
+            if (Test-Path $OutFile) {
+                Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+            }
+
+            if ($attempt -lt $MaxAttempts) {
+                $delay = $BaseDelaySeconds * [math]::Pow(2, $attempt - 1)
+                Write-Host "  Retrying in $delay seconds..." -ForegroundColor Yellow
+                Start-Sleep -Seconds $delay
+            }
+            else {
+                throw
+            }
+        }
+    }
+}
 
 # ----------------------------------------------------------------
 # 1. Verify Visual Studio
@@ -12465,34 +12828,42 @@ if (-not $vsInstall) {
 Write-Host "  [OK] Found: $vsInstall" -ForegroundColor Green
 
 # ----------------------------------------------------------------
-# 2. vcpkg recipes (ZIP) + prebuilt vcpkg.exe
+# 2. vcpkg recipes (ZIP) + prebuilt vcpkg.exe  (both PINNED)
 # ----------------------------------------------------------------
 $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "$env:USERPROFILE\vcpkg" }
-$vcpkgZip = "$env:USERPROFILE\vcpkg.zip"
+$vcpkgZip  = "$env:USERPROFILE\vcpkg.zip"
 $toolchain = "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
 
-Write-Host "`n[2/4] Setting up vcpkg at $vcpkgRoot..." -ForegroundColor Yellow
-
-# --- 2a. Recipe folder (ports/, scripts/, triplets/)
-if (-not (Test-Path $toolchain)) {
-    Write-Host "  Downloading vcpkg recipes ZIP (no git clone)..." -ForegroundColor Yellow
-
-    $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/heads/master"
-    try {
-        Invoke-WebRequest -Uri $zipUrl -OutFile $vcpkgZip -UseBasicParsing
+$needsInstall = $true
+if (Test-Path $toolchain) {
+    $existingTag = $null
+    $tagFile = "$vcpkgRoot\.vcpkg-tag"
+    if (Test-Path $tagFile) {
+        $existingTag = (Get-Content $tagFile -Raw).Trim()
     }
-    catch {
-        Write-Host "  master not found; trying main branch..." -ForegroundColor Yellow
-        $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/heads/main"
-        Invoke-WebRequest -Uri $zipUrl -OutFile $vcpkgZip -UseBasicParsing
+    if ($existingTag -eq $VCPKG_TAG) {
+        Write-Host "`n[2/4] Pinned vcpkg $VCPKG_TAG already present at $vcpkgRoot" -ForegroundColor Green
+        $needsInstall = $false
     }
+    else {
+        Write-Host "`n[2/4] Existing vcpkg at $vcpkgRoot (tag='$existingTag') is not pinned to $VCPKG_TAG; replacing..." -ForegroundColor Yellow
+    }
+}
+
+if ($needsInstall) {
+    Write-Host "`n[2/4] Setting up pinned vcpkg $VCPKG_TAG at $vcpkgRoot..." -ForegroundColor Yellow
+
+    # ------------------------------------------------------------
+    # Recipe ZIP  (magic bytes: "PK")
+    # ------------------------------------------------------------
+    $zipUrl = "https://codeload.github.com/microsoft/vcpkg/zip/refs/tags/$VCPKG_TAG"
+    Download-WithRetry -Url $zipUrl -OutFile $vcpkgZip -ExpectedMagicBytes @(0x50, 0x4B)
 
     Write-Host "  Extracting..." -ForegroundColor Yellow
     Expand-Archive -Path $vcpkgZip -DestinationPath "$env:USERPROFILE" -Force
 
     $extracted = Get-ChildItem "$env:USERPROFILE" -Directory -Filter "vcpkg-*" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -ne "vcpkg" } | Select-Object -First 1
-
+        Where-Object { $_.Name -ne "vcpkg" } | Select-Object -First 1
     if (-not $extracted) {
         Write-Host "[ERROR] Could not find extracted vcpkg-* folder." -ForegroundColor Red
         exit 1
@@ -12503,45 +12874,70 @@ if (-not (Test-Path $toolchain)) {
     }
     Rename-Item $extracted.FullName $vcpkgRoot
     Remove-Item $vcpkgZip -Force -ErrorAction SilentlyContinue
-}
-else {
-    Write-Host "  [OK] vcpkg recipes already present." -ForegroundColor Green
-}
 
-# --- 2b. Prebuilt vcpkg.exe
-if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-    Write-Host "  Downloading prebuilt vcpkg.exe (no compilation)..." -ForegroundColor Yellow
-    $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/latest/download/vcpkg.exe"
-    Invoke-WebRequest -Uri $exeUrl -OutFile "$vcpkgRoot\vcpkg.exe" -UseBasicParsing
-}
-else {
-    Write-Host "  [OK] vcpkg.exe already present." -ForegroundColor Green
+    $VCPKG_TAG | Out-File -FilePath "$vcpkgRoot\.vcpkg-tag" -Encoding ascii -NoNewline
+
+    # ------------------------------------------------------------
+    # vcpkg.exe  (magic bytes: "MZ")
+    # ------------------------------------------------------------
+    $toolDownloaded = $false
+    $usedTag = $null
+    foreach ($tag in $VCPKG_TOOL_TAGS) {
+        $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$tag/vcpkg.exe"
+        try {
+            Download-WithRetry -Url $exeUrl -OutFile "$vcpkgRoot\vcpkg.exe" -ExpectedMagicBytes @(0x4D, 0x5A)
+            $toolDownloaded = $true
+            $usedTag = $tag
+            break
+        }
+        catch {
+            Write-Host "  [WARN] vcpkg-tool tag '$tag' failed; trying next fallback..." -ForegroundColor Yellow
+            if (Test-Path "$vcpkgRoot\vcpkg.exe") {
+                Remove-Item "$vcpkgRoot\vcpkg.exe" -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    if (-not $toolDownloaded) {
+        Write-Host "  All explicit tags failed; running bootstrap-vcpkg.bat..." -ForegroundColor Yellow
+        Push-Location $vcpkgRoot
+        try {
+            & ".\bootstrap-vcpkg.bat" -disableMetrics
+            if ($LASTEXITCODE -ne 0) {
+                throw "bootstrap-vcpkg.bat returned exit code $LASTEXITCODE"
+            }
+        }
+        finally {
+            Pop-Location
+        }
+        if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+            Write-Host "[ERROR] bootstrap-vcpkg.bat did not produce vcpkg.exe" -ForegroundColor Red
+            exit 1
+        }
+        $usedTag = "bootstrap"
+    }
+
+    Write-Host "  [OK] vcpkg.exe ready (source: $usedTag)" -ForegroundColor Green
 }
 
 # ----------------------------------------------------------------
-# 3. Verify vcpkg.exe runs and recipe folder is complete
+# 3. Verify vcpkg installation
 # ----------------------------------------------------------------
 Write-Host "`n[3/4] Verifying vcpkg installation..." -ForegroundColor Yellow
 
 if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-    Write-Host "[ERROR] vcpkg.exe missing at $vcpkgRoot" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg.exe missing at $vcpkgRoot" -ForegroundColor Red; exit 1
 }
 if (-not (Test-Path $toolchain)) {
-    Write-Host "[ERROR] vcpkg toolchain file missing at $toolchain" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg toolchain file missing at $toolchain" -ForegroundColor Red; exit 1
 }
 if (-not (Test-Path "$vcpkgRoot\ports")) {
-    Write-Host "[ERROR] vcpkg ports directory missing at $vcpkgRoot\ports" -ForegroundColor Red
-    Write-Host "        The recipe ZIP may have extracted incorrectly." -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg ports directory missing at $vcpkgRoot\ports" -ForegroundColor Red; exit 1
 }
 if (-not (Test-Path "$vcpkgRoot\triplets")) {
-    Write-Host "[ERROR] vcpkg triplets directory missing at $vcpkgRoot\triplets" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg triplets directory missing at $vcpkgRoot\triplets" -ForegroundColor Red; exit 1
 }
 
-# vcpkg.exe must actually run - catches wrong-architecture exe downloads
 try {
     $vcpkgVersionOutput = & "$vcpkgRoot\vcpkg.exe" version 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -12552,44 +12948,24 @@ try {
     Write-Host "  [OK] vcpkg.exe runs: $vcpkgVersionOutput" -ForegroundColor Green
 }
 catch {
-    Write-Host "[ERROR] vcpkg.exe failed to execute: $_" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] vcpkg.exe failed to execute: $_" -ForegroundColor Red; exit 1
 }
 
-Write-Host "  [OK] vcpkg ready: $vcpkgRoot" -ForegroundColor Green
+Write-Host "  [OK] vcpkg ready: $vcpkgRoot (pinned $VCPKG_TAG)" -ForegroundColor Green
 
 # ----------------------------------------------------------------
 # 4. Persist VCPKG_ROOT
-#
-# Three independent mechanisms, so this works both under GitHub
-# Actions and on a developer workstation:
-#
-#   a) $GITHUB_ENV (CI only)  — the ONLY way to propagate an env var
-#      from one workflow step to the next. Each step is a fresh
-#      PowerShell process, so `$env:VCPKG_ROOT = ...` inside this
-#      step is invisible to the next step unless we also write to
-#      $GITHUB_ENV.
-#
-#   b) User-scope registry    — what `setx`/SetEnvironmentVariable
-#      "User" writes. Picked up by new login shells. Used locally and
-#      as a fallback if $GITHUB_ENV is somehow unavailable.
-#
-#   c) Current process        — makes the "Close this shell, open a
-#      new one" message on a developer workstation true, and lets the
-#      same PowerShell session run the build immediately.
 # ----------------------------------------------------------------
 Write-Host "`n[4/4] Setting VCPKG_ROOT=$vcpkgRoot..." -ForegroundColor Yellow
 
-# (a) GitHub Actions cross-step propagation
 if ($env:GITHUB_ENV) {
     Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
-    Write-Host "  [OK] Wrote VCPKG_ROOT to GITHUB_ENV (propagates to next steps)" -ForegroundColor Green
+    Write-Host "  [OK] Wrote VCPKG_ROOT to GITHUB_ENV" -ForegroundColor Green
 }
 else {
-    Write-Host "  [--] GITHUB_ENV not set (not running under GitHub Actions); skipping" -ForegroundColor DarkGray
+    Write-Host "  [--] GITHUB_ENV not set; skipping" -ForegroundColor DarkGray
 }
 
-# (b) User-scope registry (for developer workstations and CI fallback)
 try {
     [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "User")
     Write-Host "  [OK] Set VCPKG_ROOT in User-scope registry" -ForegroundColor Green
@@ -12602,17 +12978,11 @@ catch {
     }
 }
 
-# (c) Current process
 $env:VCPKG_ROOT = $vcpkgRoot
 Write-Host "  [OK] Set VCPKG_ROOT in current process" -ForegroundColor Green
 
-Write-Host "`n=== Setup complete ===" -ForegroundColor Cyan
+Write-Host "`n=== Setup complete (vcpkg $VCPKG_TAG) ===" -ForegroundColor Cyan
 Write-Host "  VCPKG_ROOT=$env:VCPKG_ROOT" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "If running locally: close this shell, open a new one, then run:" -ForegroundColor Cyan
-Write-Host "  .\scripts\win\build-windows-msvc.ps1" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "If running under GitHub Actions: proceed to the next step." -ForegroundColor Cyan
 ```
 
 ---
@@ -14240,6 +14610,6 @@ the user** — do not assume their contents.
 
 ## Summary
 
-- Files included: **73**
+- Files included: **75**
 - Files skipped:  **24**
-- Bundle size:    488K
+- Bundle size:    504K

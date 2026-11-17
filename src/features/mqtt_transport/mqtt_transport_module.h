@@ -62,6 +62,8 @@ public:
     void subscribe(const std::string& topic,
                    std::function<void(const nlohmann::json&)> handler) override;
 
+    void unsubscribe(const std::string& topic) override;
+
     bool is_connected() const override;
 
     void set_agent_id(int agent_id) override;
@@ -121,6 +123,14 @@ private:
     std::string      instance_uuid_;
     std::string      reply_topic_;
     std::atomic<int> agent_id_{0};
+
+    // BUG-B1: track which agent_id's per-agent topics the broker
+    // believes we are subscribed to. Persists across connection teardown
+    // so the diff check in subscribe_connected_topics can drop stale
+    // {prev_id}/{command,policy,revoke} subscriptions even when the
+    // agent_id changed while we were disconnected (Clean Start is false
+    // so the broker may retain them across the blip).
+    std::atomic<int> last_subscribed_agent_id_{0};
 
     struct mosquitto* mosq_ = nullptr;
     mutable std::mutex mosq_mu_;    // guards mosq_ against cross-thread use
